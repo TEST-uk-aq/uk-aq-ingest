@@ -1,8 +1,8 @@
 # Agent Notes
 
 ## Main Repo
-- `CIC-test-uk-aq-ops` is the main repo for this project and the default starting point for cross-repo work.
-- Ops repo path: `/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-Operations/CIC-test-uk-aq-ops`.
+- `TEST-uk-aq-ops` is the main repo for this project and the default starting point for cross-repo work.
+- Ops repo path: `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-ops`.
 - When working on mirrored CIC-Test scripts, treat the edited copy in the current CIC-Test repo as the source of truth and keep the sibling CIC-Test repo copy in sync.
 - Do not inspect or modify any `LIVE` repo unless the user explicitly asks.
 
@@ -44,10 +44,10 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - Permission confirmed: all files under `/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-Test-UK-AQ-Schema/CIC-test-uk-aq-schema` may be edited (except `archive/`).
 - Read the schema files at the start of the session.
 - Schema edits in the allowed paths do not require extra confirmation (except under `archive/`).
-- Canonical SQL DDL must live in the schema repo (`.../CIC-test-uk-aq-schema/schemas/...`), not only in ingest/ops worker folders.
+- Canonical SQL DDL must live in the schema directory at `/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-Test-UK-AQ-Schema/CIC-test-uk-aq-schema/schemas/`, not only in ingest/ops worker folders.
 - When adding/changing Obs AQI tables, update both:
   - `schemas/obs_aqi_db/uk_aq_obs_aqi_db_schema.sql` (main schema file), and
-  - a focused schema-repo SQL file in `schemas/obs_aqi_db/` if one is used for targeted apply.
+  - a focused schema SQL file in `schemas/obs_aqi_db/` if one is used for targeted apply.
 
 ## Naming
 - Prefer `uk_aq` in filenames, scripts, and docs (avoid `ukair`).
@@ -86,11 +86,11 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - This project was never completed, so assume all existing code is still relevant.
 
 ## Environment Variables
-- Whenever a new environment variable is added to any repo, add a corresponding row to the master CSV at `CIC-test-uk-aq-ops/env-vars-master.csv`. Place it in the correct section, fill in the env var name, default value, and which services require it (GitHub/Supabase/Cloudflare/GCP). Leave the Test Value and Live Value columns blank — the user maintains those.
+- Whenever a new environment variable is added to any repo, add a corresponding row to the master CSV at `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-ops/env-vars-master.csv`. Place it in the correct section, fill in the env var name, default value, and which services require it (GitHub/Supabase/Cloudflare/GCP). Leave the Test Value and Live Value columns blank — the user maintains those.
 - Whenever a new env var is added/removed/renamed in ingest workflows or scripts, also update `config/uk_aq_github_env_targets.csv` in this repo so GitHub variable/secret targeting stays correct.
 - Keep `scripts/uk_aq_sync_github_secrets.sh` in sync with the target map and env set; update the script when env handling rules or target behavior changes.
 - This repo has an env sync script: `scripts/uk_aq_sync_github_secrets.sh`.
-- The script syncs `.env` keys to GitHub and packages `.env.supabase` into GitHub secret `SUPABASE_SECRETS_ENV`; the Supabase edge deploy workflow applies that payload via `supabase secrets set`.
+- The script syncs `.env` keys to GitHub and packages `.env.supabase` into GitHub secret `SUPABASE_SECRETS_ENV`; ingest Supabase edge deploy workflows apply that payload via `supabase secrets set`.
 
 ## Documentation
 - Add a script note to `system_docs/uk_aq_scripts.md` when new scripts are added.
