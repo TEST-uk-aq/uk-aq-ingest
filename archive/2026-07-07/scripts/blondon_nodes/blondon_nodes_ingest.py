@@ -76,7 +76,7 @@ SPECIES_CONFIG: Dict[str, Dict[str, Any]] = {
         "pollutant_label": "daqi_pm25",
         "kind": "daqi_index",
         "mapping_kind": "derived_index",
-        "observed_property_code": "pm25index",
+        "observed_property_code": None,
         "is_aqi_eligible": False,
     },
     "NO2Index": {
@@ -87,7 +87,7 @@ SPECIES_CONFIG: Dict[str, Dict[str, Any]] = {
         "pollutant_label": "daqi_no2",
         "kind": "daqi_index",
         "mapping_kind": "derived_index",
-        "observed_property_code": "no2index",
+        "observed_property_code": None,
         "is_aqi_eligible": False,
     },
 }

@@ -40,10 +40,6 @@ def expected_diagnostics(species: list[str]) -> list[dict[str, Any]]:
                     if name == "PM25"
                     else 12
                     if name == "NO2"
-                    else 19
-                    if name == "PM25Index"
-                    else 20
-                    if name == "NO2Index"
                     else None
                 ),
                 "observed_property_code": config["observed_property_code"],
@@ -63,8 +59,8 @@ def test_species_mapping_contract() -> None:
     assert SPECIES_CONFIG["NO2"]["is_aqi_eligible"] is True
     assert SPECIES_CONFIG["PM25Index"]["mapping_kind"] == "derived_index"
     assert SPECIES_CONFIG["NO2Index"]["mapping_kind"] == "derived_index"
-    assert SPECIES_CONFIG["PM25Index"]["observed_property_code"] == "pm25index"
-    assert SPECIES_CONFIG["NO2Index"]["observed_property_code"] == "no2index"
+    assert SPECIES_CONFIG["PM25Index"]["observed_property_code"] is None
+    assert SPECIES_CONFIG["NO2Index"]["observed_property_code"] is None
 
 
 def test_upsert_phenomena_uses_central_rpc_and_returns_ids() -> None:
@@ -77,15 +73,12 @@ def test_upsert_phenomena_uses_central_rpc_and_returns_ids() -> None:
     assert len(result) == 4
     assert observed_property_ids["breathelondon_nodes:pm2.5"] == 9
     assert observed_property_ids["breathelondon_nodes:no2"] == 12
-    assert observed_property_ids["breathelondon_nodes:pm2.5:daqi"] == 19
-    assert observed_property_ids["breathelondon_nodes:no2:daqi"] == 20
+    assert observed_property_ids["breathelondon_nodes:pm2.5:daqi"] is None
     assert writer.public.calls[0][0] == "uk_aq_rpc_phenomena_upsert"
     payload = writer.public.calls[0][1]
     assert set(payload) == {"rows"}
     assert payload["rows"][0]["mapping_kind"] == "raw_observed_property"
     assert payload["rows"][2]["mapping_kind"] == "derived_index"
-    assert payload["rows"][2]["observed_property_code"] == "pm25index"
-    assert payload["rows"][3]["observed_property_code"] == "no2index"
 
 
 def test_upsert_phenomena_rejects_rpc_warning() -> None:

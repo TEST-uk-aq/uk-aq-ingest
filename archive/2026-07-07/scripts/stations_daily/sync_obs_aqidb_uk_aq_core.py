@@ -87,16 +87,6 @@ CORE_UPSERT_RPC = "uk_aq_rpc_core_table_upsert"
 CORE_DELETE_KEYS_RPC = "uk_aq_rpc_core_table_delete_keys"
 REPAIR_OBSERVED_PROPERTIES_RPC = "uk_aq_rpc_repair_observed_property_id_drift"
 REPAIR_OBSERVED_PROPERTIES_ENV = "OBS_AQIDB_REPAIR_OBSERVED_PROPERTY_IDS"
-BREATHE_LONDON_NODES_CONNECTOR_CODE = "blondon_nodes"
-BREATHE_LONDON_DAQI_INDEX_SOURCE_LABELS: Dict[str, str] = {
-    "breathelondon_nodes:pm2.5:daqi": "pm25index",
-    "breathelondon_nodes:no2:daqi": "no2index",
-}
-BREATHE_LONDON_DAQI_INDEX_SPECIES: Dict[str, str] = {
-    "PM25Index": "pm25index",
-    "PM10Index": "pm10index",
-    "NO2Index": "no2index",
-}
 
 # Static source metadata fallback copied from ingest uk_aq_core DDL
 # (`schemas/ingest_db/uk_aq_core_schema.sql`) for the four mirrored tables.
@@ -1066,118 +1056,6 @@ def repair_observed_properties_id_alignment(
     if remaining:
         raise SyncError("Observed properties ID repair ran, but mismatches remain; refusing to continue sync.")
 
-
-def verify_blondon_daqi_index_metadata(*, src_client: PostgrestClient) -> None:
-    """Refuse to mirror stale connector 2 DAQI index metadata into ObsAQIDB."""
-    connectors = src_client.fetch_all_rows(
-        "connectors",
-        profile=CORE_SCHEMA,
-        select="id,connector_code",
-        order="id.asc",
-    )
-    connector_id: Optional[int] = None
-    for row in connectors:
-        if row.get("connector_code") == BREATHE_LONDON_NODES_CONNECTOR_CODE:
-            connector_id = as_int(row.get("id"), context="blondon_nodes connector id")
-            break
-    if connector_id is None:
-        return
-
-    observed_properties = src_client.fetch_all_rows(
-        "observed_properties",
-        profile=CORE_SCHEMA,
-        select="id,code",
-        order="code.asc",
-    )
-    observed_property_ids_by_code = {
-        observed_property_key(row): as_int(row.get("id"), context="observed_properties.id")
-        for row in observed_properties
-    }
-
-    expected_ids_by_source_label: Dict[str, int] = {}
-    missing_codes: List[str] = []
-    for source_label, code in BREATHE_LONDON_DAQI_INDEX_SOURCE_LABELS.items():
-        observed_property_id = observed_property_ids_by_code.get(code)
-        if observed_property_id is None:
-            missing_codes.append(code)
-        else:
-            expected_ids_by_source_label[source_label] = observed_property_id
-    if missing_codes:
-        raise SyncError(
-            "Source ingest DB is missing canonical Breathe London DAQI index observed_properties: "
-            + ", ".join(sorted(missing_codes))
-        )
-
-    phenomena = src_client.fetch_all_rows(
-        "phenomena",
-        profile=CORE_SCHEMA,
-        select="id,connector_id,source_label,observed_property_id",
-        order="id.asc",
-    )
-    phenomenon_expected_ids: Dict[int, int] = {}
-    bad_phenomena: List[str] = []
-    for row in phenomena:
-        if as_int(row.get("connector_id"), context="phenomena.connector_id") != connector_id:
-            continue
-        source_label = str(row.get("source_label") or "")
-        expected_id = expected_ids_by_source_label.get(source_label)
-        if expected_id is None:
-            continue
-        phenomenon_id = as_int(row.get("id"), context="phenomena.id")
-        phenomenon_expected_ids[phenomenon_id] = expected_id
-        actual_id = row.get("observed_property_id")
-        if actual_id is None or as_int(actual_id, context="phenomena.observed_property_id") != expected_id:
-            expected_code = BREATHE_LONDON_DAQI_INDEX_SOURCE_LABELS[source_label]
-            bad_phenomena.append(
-                f"source_label={source_label} phenomenon_id={phenomenon_id} "
-                f"observed_property_id={actual_id} expected_code={expected_code} expected_id={expected_id}"
-            )
-
-    timeseries = src_client.fetch_all_rows(
-        "timeseries",
-        profile=CORE_SCHEMA,
-        select="id,connector_id,phenomenon_id,observed_property_id,extras",
-        order="id.asc",
-    )
-    bad_timeseries: List[str] = []
-    checked_timeseries = 0
-    for row in timeseries:
-        if as_int(row.get("connector_id"), context="timeseries.connector_id") != connector_id:
-            continue
-        extras = row.get("extras") or {}
-        if not isinstance(extras, dict):
-            extras = {}
-        if extras.get("measurement_kind") != "daqi_index":
-            continue
-        expected_code = BREATHE_LONDON_DAQI_INDEX_SPECIES.get(str(extras.get("species") or ""))
-        if expected_code is None:
-            continue
-        expected_id = observed_property_ids_by_code.get(expected_code)
-        if expected_id is None:
-            continue
-        checked_timeseries += 1
-        actual_id = row.get("observed_property_id")
-        if actual_id is None or as_int(actual_id, context="timeseries.observed_property_id") != expected_id:
-            bad_timeseries.append(
-                f"timeseries_id={row.get('id')} species={extras.get('species')} "
-                f"phenomenon_id={row.get('phenomenon_id')} observed_property_id={actual_id} "
-                f"expected_code={expected_code} expected_id={expected_id}"
-            )
-
-    if bad_phenomena or bad_timeseries:
-        detail = "; ".join((bad_phenomena + bad_timeseries)[:20])
-        raise SyncError(
-            "Refusing to mirror Breathe London DAQI index metadata with NULL/wrong observed_property_id. "
-            "Repair ingest DB observed_property_mappings, phenomena, and timeseries first. "
-            f"bad_phenomena={len(bad_phenomena)} bad_timeseries={len(bad_timeseries)} examples: {detail}"
-        )
-
-    print(
-        "Breathe London DAQI index metadata pre-sync check passed: "
-        f"phenomena={len(phenomenon_expected_ids)} timeseries={checked_timeseries}"
-    )
-
-
 def timeseries_key(row: Dict[str, Any]) -> Tuple[int, str, str]:
     return (
         as_int(row.get("connector_id"), context="timeseries.connector_id"),
@@ -1377,7 +1255,6 @@ def main() -> int:
         repair_observed_properties_id_alignment(src_client=src_client, dst_client=dst_client)
     else:
         verify_observed_properties_id_alignment(src_client=src_client, dst_client=dst_client)
-    verify_blondon_daqi_index_metadata(src_client=src_client)
     verify_timeseries_id_alignment(src_client=src_client, dst_client=dst_client)
 
     table_stats: Dict[str, Dict[str, Any]] = {}
