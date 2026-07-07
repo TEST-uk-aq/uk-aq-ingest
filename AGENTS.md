@@ -41,10 +41,10 @@ Prepare SQL, deploy commands, and validation commands, but do not run them.
 Only when explicitly requested in the prompt. May run database, deployment, or cloud commands.
 
 ## Schema
-- Permission confirmed: all files under `/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-Test-UK-AQ-Schema/CIC-test-uk-aq-schema` may be edited (except `archive/`).
+- Permission confirmed: all files under `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema` may be edited (except `archive/`).
 - Read the schema files at the start of the session.
 - Schema edits in the allowed paths do not require extra confirmation (except under `archive/`).
-- Canonical SQL DDL must live in the schema directory at `/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-Test-UK-AQ-Schema/CIC-test-uk-aq-schema/schemas/`, not only in ingest/ops worker folders.
+- Canonical SQL DDL must live in the schema directory at `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema/schemas/`, not only in ingest/ops worker folders.
 - When adding/changing Obs AQI tables, update both:
   - `schemas/obs_aqi_db/uk_aq_obs_aqi_db_schema.sql` (main schema file), and
   - a focused schema SQL file in `schemas/obs_aqi_db/` if one is used for targeted apply.
@@ -74,7 +74,7 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - Files in `archive/` can be referenced for context but must never be modified once created. Adding new files/directories under `archive/` is allowed.
 - Do not create archive copies for routine/small edits by default.
 - Create archive snapshots before major/high-risk changes (for example: broad refactors, cross-repo updates, schema-shape migrations, or large workflow rewires), and whenever the user explicitly asks.
-- For `/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-Test-UK-AQ-Schema/CIC-test-uk-aq-schema`, edits are allowed for any file except under `archive/` directories. Archive files are read-only; new files may be added under `archive/` but must never be modified once created.
+- For `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema`, edits are allowed for any file except under `archive/` directories. Archive files are read-only; new files may be added under `archive/` but must never be modified once created.
 - The agent has permission to read files under `/Users/mikehinford/Dropbox/Apps/github-uk-air-quality-networks/CIC-Test` (including subdirectories).
 - Archive paths are retired for active execution. Active scripts, workers, services, and runner-path defaults must only target non-archive paths, and archive fallbacks must not be used for active runtime code paths.
 
@@ -102,7 +102,7 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - When functions or logic change, update the relevant `system_docs/` pages accordingly.
 - `system_docs/` is markdown-only; store data files under `network_info/` in the relevant network directory.
 - Naming for any file/function: single-network uses the network name prefix; all SOS networks use `uk_air_sos_`; all networks use `uk_aq_`.
-- DB schemas live outside this repo at `/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-Test-UK-AQ-Schema/CIC-test-uk-aq-schema/schemas`.
+- DB schemas live outside this repo at `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema/schemas`.
 
 ## Station Name Enrichment
 - Keep enrichment logic centralized in `scripts/uk_aq_enrich_station_names.py` so report scripts stay in sync.
