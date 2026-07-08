@@ -41,6 +41,14 @@ DROPBOX_UPLOAD_URL = "https://content.dropboxapi.com/2/files/upload"
 UK_AIR_BASE_URL = "https://uk-air.defra.gov.uk"
 UK_AIR_SITE_INFO_URL = f"{UK_AIR_BASE_URL}/networks/site-info"
 UK_AIR_FLAT_FILES_URL = f"{UK_AIR_BASE_URL}/data/flat_files"
+UK_AIR_FLAT_FILES_SITE_REF_RE = re.compile(
+    r"data/flat_files\?site_id=([A-Za-z0-9]+)",
+    flags=re.IGNORECASE,
+)
+UK_AIR_SITE_PHOTO_SITE_REF_RE = re.compile(
+    r"assets/site-photos/([A-Za-z0-9]+)_site\.(?:jpg|jpeg|png)",
+    flags=re.IGNORECASE,
+)
 
 # Default match_type for pollutant rules is "contains"; use (match_type, value) tuples if needed.
 NETWORK_POLLUTANT_RULES = {
@@ -323,6 +331,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--discover-site-refs",
+        action="store_true",
+        help=(
+            "Discover DEFRA flat-file site refs from official UK-AIR "
+            "site-info pages for AURN register rows."
+        ),
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=500,
@@ -488,6 +504,13 @@ def _flat_files_url(site_ref: str) -> str:
     return f"{UK_AIR_FLAT_FILES_URL}?site_id={site_ref}"
 
 
+def _aurn_in_networks(networks: Iterable[str]) -> bool:
+    return any(
+        network.strip() == "Automatic Urban and Rural Monitoring Network (AURN)"
+        for network in networks
+    )
+
+
 def _validate_site_ref_mapping(
     uk_air_ref: str,
     site_ref: str,
@@ -517,6 +540,48 @@ def _validate_site_ref_mapping(
         )
 
     return site_info_url, _utc_now_iso()
+
+
+def _discover_site_ref_mapping(
+    uk_air_ref: str,
+    timeout: int,
+    user_agent: str,
+) -> Optional[Dict[str, Optional[str]]]:
+    headers = {"User-Agent": user_agent}
+    site_info_url = f"{UK_AIR_SITE_INFO_URL}?uka_id={uk_air_ref}"
+    resp = requests.get(site_info_url, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    text = resp.text
+    if uk_air_ref not in text:
+        LOG.warning(
+            "UK-AIR site-info page did not contain expected uk_air_ref=%s",
+            uk_air_ref,
+        )
+        return None
+
+    matches = sorted(set(UK_AIR_FLAT_FILES_SITE_REF_RE.findall(text)))
+    if not matches:
+        matches = sorted(set(UK_AIR_SITE_PHOTO_SITE_REF_RE.findall(text)))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"Multiple flat-file site refs discovered for uk_air_ref={uk_air_ref}: "
+            f"{', '.join(matches)}"
+        )
+
+    site_ref = matches[0].upper()
+    source_url, source_checked_at = _validate_site_ref_mapping(
+        uk_air_ref,
+        site_ref,
+        timeout,
+        user_agent,
+    )
+    return {
+        "site_ref": site_ref,
+        "source_url": source_url,
+        "source_checked_at": source_checked_at,
+    }
 
 
 def _load_site_ref_map(
@@ -659,6 +724,7 @@ def _load_register(
     snapshot_at: Optional[str],
     site_ref_map_csv: Optional[str],
     validate_site_ref_map: bool,
+    discover_site_refs: bool,
     timeout: int,
     user_agent: str,
     batch_size: int,
@@ -677,6 +743,8 @@ def _load_register(
     network_refs: Set[str] = set()
     skipped_missing_ref = 0
     mapped_site_refs = 0
+    discovered_site_refs = 0
+    discovered_by_uk_air_ref: Dict[str, Dict[str, Optional[str]]] = {}
 
     for raw in _read_csv_rows(csv_path):
         uk_air_ref = _clean_str(raw.get("UK-AIR ID"))
@@ -687,6 +755,21 @@ def _load_register(
         for ref in networks:
             network_refs.add(ref)
         site_ref_info = site_ref_by_uk_air_ref.get(uk_air_ref, {})
+        if (
+            not site_ref_info.get("site_ref")
+            and discover_site_refs
+            and _aurn_in_networks(networks)
+        ):
+            if uk_air_ref not in discovered_by_uk_air_ref:
+                discovered = _discover_site_ref_mapping(
+                    uk_air_ref,
+                    timeout,
+                    user_agent,
+                )
+                discovered_by_uk_air_ref[uk_air_ref] = discovered or {}
+            site_ref_info = discovered_by_uk_air_ref.get(uk_air_ref, {})
+            if site_ref_info.get("site_ref"):
+                discovered_site_refs += 1
         payload = {
             "uk_air_ref": uk_air_ref,
             "site_ref": site_ref_info.get("site_ref"),
@@ -722,6 +805,8 @@ def _load_register(
         mapped_site_refs,
         max(len(rows) - mapped_site_refs, 0),
     )
+    if discover_site_refs:
+        LOG.info("Rows with discovered DEFRA flat-file site_ref: %s", discovered_site_refs)
     if skipped_missing_ref:
         LOG.warning("Skipped rows missing UK-AIR ref: %s", skipped_missing_ref)
     LOG.info("Unique network labels: %s", len(network_refs))
@@ -826,6 +911,7 @@ def main() -> int:
             args.snapshot_at,
             args.site_ref_map_csv,
             args.validate_site_ref_map,
+            args.discover_site_refs,
             args.timeout,
             args.user_agent,
             args.batch_size,

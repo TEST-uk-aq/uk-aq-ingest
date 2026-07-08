@@ -1000,7 +1000,8 @@ Notes:
 Purpose:
 - Download the UK-AIR "Search for monitoring sites" CSV (all sites).
 - Use the CSV as the authoritative register for site refs, names, coordinates, and network membership.
-- Populate DEFRA flat-file `site_ref` values from `network_info/uk_air_sos/uk_air_sos_site_refs.csv` when loading.
+- Populate DEFRA flat-file `site_ref` values from official UK-AIR site-info pages when loading.
+- Use `network_info/uk_air_sos/uk_air_sos_site_refs.csv` as a seed/override map where needed.
 
 Common commands:
 ```
@@ -1010,6 +1011,7 @@ python3 scripts/uk_air_sos/uk_air_sos_site_register.py --search-url "<search url
 python3 scripts/uk_air_sos/uk_air_sos_site_register.py --search-url "<search url>" --dropbox-upload --load
 python3 scripts/uk_air_sos/uk_air_sos_site_register.py --load-only --csv-path /path/to/uk-air-search-results.csv
 python3 scripts/uk_air_sos/uk_air_sos_site_register.py --load-only --csv-path /path/to/uk-air-search-results.csv --site-ref-map-csv network_info/uk_air_sos/uk_air_sos_site_refs.csv
+python3 scripts/uk_air_sos/uk_air_sos_site_register.py --load-only --csv-path /path/to/uk-air-search-results.csv --discover-site-refs --validate-site-ref-map --dry-run
 ```
 
 Environment:
@@ -1021,7 +1023,8 @@ Environment:
 Notes:
 - The script writes a timestamped filename locally and to Dropbox (e.g., `uk_air_sos_site_register_YYYYMMDDTHHMMSSZ.csv`).
 - When `--load` is used, it preserves existing `uk_air_sos_networks.network_display_name` values and upserts `uk_air_sos_network_pollutants`.
-- `--site-ref-map-csv` is optional; missing UK-AIR refs are loaded with `site_ref = null` rather than guessed.
+- `--discover-site-refs` checks official `networks/site-info?uka_id=<uk_air_ref>` pages for flat-file links.
+- `--site-ref-map-csv` is optional; unresolved UK-AIR refs are loaded with `site_ref = null` rather than guessed.
 - `--validate-site-ref-map` checks mapped refs against official UK-AIR site-info and flat-file pages before loading.
 
 ### `scripts/uk_air_sos/uk_air_sos_membership_report.py`
