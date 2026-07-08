@@ -9,10 +9,11 @@ This page summarizes how SOS data lands in tables and how stations map to multip
 - `phenomena`: pollutant definitions tied to a connector.
 - `observations`: time/value pairs keyed by `connector_id` + `timeseries_id` + `observed_at`.
 - Placeholder SOS station refs (for example `9999999999`) are skipped during ingest and flagged via `station_metadata.exclude_from_ui=true`.
-- `uk_air_sos_site_register`: UK-AIR site register snapshot (includes `uk_air_id` + source network labels).
+- `uk_air_sos_site_register`: UK-AIR site register snapshot (includes `uk_air_ref`, optional DEFRA flat-file `site_ref`, and source network labels).
 - `uk_air_sos_networks`: network lookup (source label -> internal `network_code` + UI display name).
 - `uk_air_sos_network_pollutants`: pollutant matching rules per network.
-- `uk_air_sos_station_refs`: map SOS `station_id` to `uk_air_id`.
+- `uk_air_sos_station_refs`: map SOS `station_id` to `uk_air_ref`.
+- `uk_air_sos_site_timeseries_refs`: map archive `site_ref` + pollutant to UK AQ station/timeseries rows for historical backfill.
 - `networks`: canonical network catalog referenced by `stations.network_id`.
 
 ## Ingest Steps
@@ -39,7 +40,7 @@ This page summarizes how SOS data lands in tables and how stations map to multip
 - Cloud Run path: `uk_air_sos_station_checkpoints` records station due-state and lag samples; station refs are selected first, then scoped timeseries are polled.
 
 ## Why Coordinate Matching Exists
-- UK-AIR register is keyed by `uk_air_id`, but SOS metadata does not always include it.
+- UK-AIR register is keyed by `uk_air_ref`, but SOS metadata does not always include it.
 - Station names are not unique and can vary; coordinates are the most stable tie-breaker.
 - Name + distance provides a reliable fallback for linking SOS stations to UK-AIR sites.
 
@@ -50,4 +51,5 @@ This page summarizes how SOS data lands in tables and how stations map to multip
 ## Notes on Station Granularity
 - SOS can emit multiple `timeseries_ref` per station.
 - We keep `stations` at the SOS `station_ref` level and `timeseries` at the phenomenon level.
-- Use `uk_air_sos_station_refs.uk_air_id` to group a station across phenomena or networks.
+- Use `uk_air_sos_station_refs.uk_air_ref` to group a station across phenomena or networks.
+- Use `uk_air_sos_site_timeseries_refs` when the source is an archive flat file keyed by DEFRA `site_ref` and pollutant.

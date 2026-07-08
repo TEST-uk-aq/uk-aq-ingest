@@ -500,7 +500,7 @@ class SupabaseWriter:
         while True:
             resp = (
                 self.raw.table("uk_air_sos_site_register")
-                .select("uk_air_id,site_name,latitude,longitude,networks,snapshot_at")
+                .select("uk_air_ref,site_name,latitude,longitude,networks,snapshot_at")
                 .eq("snapshot_at", snapshot_at)
                 .range(offset, offset + page_size - 1)
                 .execute()
@@ -538,7 +538,7 @@ class SupabaseWriter:
         for chunk in _chunked(list(station_ids), 200):
             resp = (
                 self.raw.table("uk_air_sos_station_refs")
-                .select("station_id,uk_air_id,match_method,match_distance_m,source_snapshot_at")
+                .select("station_id,uk_air_ref,match_method,match_distance_m,source_snapshot_at")
                 .in_("station_id", list(chunk))
                 .execute()
             )

@@ -552,20 +552,20 @@ def _load_register(
 
     rows: List[Dict[str, Any]] = []
     network_refs: Set[str] = set()
-    skipped_missing_id = 0
+    skipped_missing_ref = 0
 
     for raw in _read_csv_rows(csv_path):
-        uk_air_id = _clean_str(raw.get("UK-AIR ID"))
-        if not uk_air_id:
-            skipped_missing_id += 1
+        uk_air_ref = _clean_str(raw.get("UK-AIR ID"))
+        if not uk_air_ref:
+            skipped_missing_ref += 1
             continue
         networks = _parse_networks(raw.get("Networks"))
         for ref in networks:
             network_refs.add(ref)
         payload = {
-            "uk_air_id": uk_air_id,
-            "eu_site_id": _clean_str(raw.get("EU Site ID")),
-            "emep_site_id": _clean_str(raw.get("EMEP Site ID")),
+            "uk_air_ref": uk_air_ref,
+            "eu_site_ref": _clean_str(raw.get("EU Site ID")),
+            "emep_site_ref": _clean_str(raw.get("EMEP Site ID")),
             "site_name": _clean_str(raw.get("Site Name")),
             "environment_type": _clean_str(raw.get("Environment Type")),
             "zone": _clean_str(raw.get("Zone")),
@@ -587,8 +587,8 @@ def _load_register(
         rows.append(payload)
 
     LOG.info("Parsed rows: %s", len(rows))
-    if skipped_missing_id:
-        LOG.warning("Skipped rows missing UK-AIR ID: %s", skipped_missing_id)
+    if skipped_missing_ref:
+        LOG.warning("Skipped rows missing UK-AIR ref: %s", skipped_missing_ref)
     LOG.info("Unique network labels: %s", len(network_refs))
 
     if dry_run:
@@ -624,7 +624,7 @@ def _load_register(
         "uk_air_sos_site_register",
         rows,
         batch_size=batch_size,
-        on_conflict="uk_air_id,snapshot_at",
+        on_conflict="uk_air_ref,snapshot_at",
     )
     LOG.info("Upserted networks: %s", len(network_rows))
     LOG.info("Upserted register rows: %s", len(rows))
