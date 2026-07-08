@@ -62,6 +62,8 @@ Applied in `scripts/uk_air_sos/uk_air_sos_ingest.py`:
 - Use `--load-only` with `--csv-path` to load a local CSV without downloading.
 - The load step can discover DEFRA flat-file `site_ref` values from official UK-AIR `site-info` pages for archive backfill.
 - `network_info/uk_air_sos/uk_air_sos_site_refs.csv` is a seed/override map for refs that need explicit control.
+- The monthly register load refreshes `uk_air_sos_site_timeseries_refs` after the register snapshot is written. It maps through the authoritative `uk_air_ref` station link and exact canonical pollutant code.
+- Ambiguous active mappings fail the monthly workflow. Unmapped AURN sites remain unmapped and are reported in the workflow log.
 - The monthly workflow validates mapped and discovered refs against official UK-AIR site-info and flat-file pages before loading.
 - The load step keeps existing `uk_air_sos_networks.network_display_name` values and seeds `uk_air_sos_network_pollutants`.
 

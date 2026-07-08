@@ -710,6 +710,31 @@ def _upsert_network_pollutants(
         )
 
 
+def _refresh_site_timeseries_refs(
+    schemas: SupabaseSchemas,
+    source_snapshot_at: str,
+) -> Dict[str, Any]:
+    public_schema = os.getenv("UK_AQ_PUBLIC_SCHEMA") or "uk_aq_public"
+    response = schemas.client.schema(public_schema).rpc(
+        "uk_aq_rpc_uk_air_sos_site_timeseries_refs_refresh",
+        {"p_source_snapshot_at": source_snapshot_at},
+    ).execute()
+    result = response.data if hasattr(response, "data") else response.get("data")
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            "UK-AIR site/timeseries mapping refresh returned an invalid response."
+        )
+    LOG.info(
+        "Refreshed UK-AIR archive mappings: rows=%s mapped_site_refs=%s "
+        "unmapped_aurn_sites=%s mapped_sites_without_timeseries=%s",
+        result.get("mapping_rows_upserted", 0),
+        result.get("mapped_site_refs", 0),
+        result.get("unmapped_aurn_sites", 0),
+        result.get("mapped_sites_without_timeseries", 0),
+    )
+    return result
+
+
 def _read_csv_rows(csv_path: str) -> Iterable[Dict[str, str]]:
     with open(csv_path, "r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -848,6 +873,7 @@ def _load_register(
     )
     LOG.info("Upserted networks: %s", len(network_rows))
     LOG.info("Upserted register rows: %s", len(rows))
+    _refresh_site_timeseries_refs(schemas, snapshot_value)
 
 
 def main() -> int:

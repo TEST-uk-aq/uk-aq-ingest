@@ -26,6 +26,9 @@ This page summarizes how SOS data lands in tables and how stations map to multip
    - Discovers DEFRA flat-file `site_ref` values for AURN rows from official `networks/site-info?uka_id=<uk_air_ref>` pages.
    - Uses `network_info/uk_air_sos/uk_air_sos_site_refs.csv` as a seed/override map where needed.
    - The monthly workflow validates mapped and discovered `site_ref` values against `networks/site-info?site_id=<site_ref>` and `data/flat_files?site_id=<site_ref>` before loading them.
+   - After loading the register snapshot, calls `uk_aq_rpc_uk_air_sos_site_timeseries_refs_refresh` to map each validated `site_ref` and pollutant to the corresponding UK AQ station and timeseries.
+   - Successive ended/current timeseries receive non-overlapping validity dates. Multiple active timeseries for one `site_ref` + pollutant, or an invalid derived interval, fails the workflow before mappings are written.
+   - Unmapped AURN register sites are counted in the workflow log and are not guessed.
    - Upserts `uk_air_sos_networks` and `uk_air_sos_network_pollutants`.
 3) **Station-to-register matching**
    - If SOS metadata includes a UK-AIR ID, link directly.
