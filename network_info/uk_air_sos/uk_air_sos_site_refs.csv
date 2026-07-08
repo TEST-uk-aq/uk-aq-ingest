@@ -1,0 +1,4 @@
+uk_air_ref,site_ref,site_name,source_url,source_checked_at,notes
+UKA00611,BDMA,Bradford Mayo Avenue,https://uk-air.defra.gov.uk/networks/site-info?site_id=BDMA,,Validated against UK-AIR site-info and flat_files pages by monthly loader
+UKA00433,WEYB,Weybourne,https://uk-air.defra.gov.uk/networks/site-info?site_id=WEYB,,Validated against UK-AIR site-info and flat_files pages by monthly loader
+UKA00591,EA8,Ealing Horn Lane,https://uk-air.defra.gov.uk/networks/site-info?site_id=EA8,,Validated against UK-AIR site-info and flat_files pages by monthly loader

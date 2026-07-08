@@ -38,6 +38,8 @@ jobs:
         run: |
           python3 scripts/uk_air_sos/uk_air_sos_site_register.py \
             --output uk_air_sos_site_register.csv \
+            --site-ref-map-csv network_info/uk_air_sos/uk_air_sos_site_refs.csv \
+            --validate-site-ref-map \
             --dropbox-upload \
             --dropbox-dir network_info/uk_air_sos \
             --load

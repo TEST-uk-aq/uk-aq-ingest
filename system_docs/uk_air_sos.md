@@ -60,6 +60,8 @@ Applied in `scripts/uk_air_sos/uk_air_sos_ingest.py`:
 - The CSV network fields remain source metadata; they do not define the public station contract.
 - Use `--load` to load the CSV into `uk_air_sos_site_register` and `uk_air_sos_networks` in the same run.
 - Use `--load-only` with `--csv-path` to load a local CSV without downloading.
+- The load step uses `network_info/uk_air_sos/uk_air_sos_site_refs.csv` to populate known DEFRA flat-file `site_ref` values for archive backfill.
+- The monthly workflow validates those mapped refs against official UK-AIR site-info and flat-file pages before loading.
 - The load step keeps existing `uk_air_sos_networks.network_display_name` values and seeds `uk_air_sos_network_pollutants`.
 
 ## Station pollutant coverage

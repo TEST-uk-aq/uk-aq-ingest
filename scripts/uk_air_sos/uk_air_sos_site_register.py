@@ -38,6 +38,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token"
 DROPBOX_UPLOAD_URL = "https://content.dropboxapi.com/2/files/upload"
+UK_AIR_BASE_URL = "https://uk-air.defra.gov.uk"
+UK_AIR_SITE_INFO_URL = f"{UK_AIR_BASE_URL}/networks/site-info"
+UK_AIR_FLAT_FILES_URL = f"{UK_AIR_BASE_URL}/data/flat_files"
 
 # Default match_type for pollutant rules is "contains"; use (match_type, value) tuples if needed.
 NETWORK_POLLUTANT_RULES = {
@@ -304,6 +307,22 @@ def parse_args() -> argparse.Namespace:
         help="Snapshot timestamp (ISO format, default: now UTC).",
     )
     parser.add_argument(
+        "--site-ref-map-csv",
+        default="network_info/uk_air_sos/uk_air_sos_site_refs.csv",
+        help=(
+            "Optional CSV mapping UK-AIR refs to DEFRA flat-file site refs. "
+            "Expected columns: uk_air_ref,site_ref."
+        ),
+    )
+    parser.add_argument(
+        "--validate-site-ref-map",
+        action="store_true",
+        help=(
+            "Validate each mapped site_ref against official UK-AIR site-info "
+            "and flat-file pages before loading."
+        ),
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=500,
@@ -449,6 +468,100 @@ def _parse_networks(value: Optional[str]) -> List[str]:
     return [item.strip() for item in cleaned.split(";") if item.strip()]
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _first_clean(row: Dict[str, str], keys: Iterable[str]) -> Optional[str]:
+    for key in keys:
+        cleaned = _clean_str(row.get(key))
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _site_info_url(site_ref: str) -> str:
+    return f"{UK_AIR_SITE_INFO_URL}?site_id={site_ref}"
+
+
+def _flat_files_url(site_ref: str) -> str:
+    return f"{UK_AIR_FLAT_FILES_URL}?site_id={site_ref}"
+
+
+def _validate_site_ref_mapping(
+    uk_air_ref: str,
+    site_ref: str,
+    timeout: int,
+    user_agent: str,
+) -> Tuple[str, str]:
+    headers = {"User-Agent": user_agent}
+    site_info_url = _site_info_url(site_ref)
+    site_info_resp = requests.get(site_info_url, headers=headers, timeout=timeout)
+    site_info_resp.raise_for_status()
+    site_info_text = site_info_resp.text
+    if uk_air_ref not in site_info_text:
+        raise RuntimeError(
+            f"UK-AIR site-info page for site_ref={site_ref} did not contain "
+            f"uk_air_ref={uk_air_ref}."
+        )
+
+    flat_files_url = _flat_files_url(site_ref)
+    flat_files_resp = requests.get(flat_files_url, headers=headers, timeout=timeout)
+    flat_files_resp.raise_for_status()
+    flat_files_text = flat_files_resp.text
+    expected_site_data = f"/site_data/{site_ref}_"
+    if expected_site_data not in flat_files_text:
+        raise RuntimeError(
+            f"UK-AIR flat-files page for site_ref={site_ref} did not contain "
+            f"expected site_data links."
+        )
+
+    return site_info_url, _utc_now_iso()
+
+
+def _load_site_ref_map(
+    csv_path: Optional[str],
+    validate: bool,
+    timeout: int,
+    user_agent: str,
+) -> Dict[str, Dict[str, Optional[str]]]:
+    if not csv_path:
+        return {}
+    path = Path(csv_path)
+    if not path.exists():
+        LOG.info("UK-AIR site_ref map not found; continuing without it: %s", path)
+        return {}
+
+    refs: Dict[str, Dict[str, Optional[str]]] = {}
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            uk_air_ref = _first_clean(row, ("uk_air_ref", "UK-AIR ID", "uk_air_id"))
+            site_ref = _first_clean(row, ("site_ref", "site_id", "Site ID"))
+            if not (uk_air_ref and site_ref):
+                continue
+            site_ref = site_ref.upper()
+            source_url = _first_clean(row, ("source_url", "Source URL"))
+            source_checked_at = _first_clean(
+                row,
+                ("source_checked_at", "Source Checked At"),
+            )
+            if validate:
+                source_url, source_checked_at = _validate_site_ref_mapping(
+                    uk_air_ref,
+                    site_ref,
+                    timeout,
+                    user_agent,
+                )
+            refs[uk_air_ref] = {
+                "site_ref": site_ref,
+                "source_url": source_url or _site_info_url(site_ref),
+                "source_checked_at": source_checked_at,
+            }
+    LOG.info("Loaded UK-AIR site_ref map rows: %s", len(refs))
+    return refs
+
+
 def _build_client() -> SupabaseSchemas:
     client = create_supabase_client()
     return SupabaseSchemas.from_client(client)
@@ -544,15 +657,26 @@ def _load_register(
     source_url: Optional[str],
     source_file: Optional[str],
     snapshot_at: Optional[str],
+    site_ref_map_csv: Optional[str],
+    validate_site_ref_map: bool,
+    timeout: int,
+    user_agent: str,
     batch_size: int,
     dry_run: bool,
 ) -> None:
     snapshot_value = snapshot_at or datetime.now(timezone.utc).isoformat()
     source_file_value = source_file or os.path.basename(csv_path)
+    site_ref_by_uk_air_ref = _load_site_ref_map(
+        site_ref_map_csv,
+        validate_site_ref_map,
+        timeout,
+        user_agent,
+    )
 
     rows: List[Dict[str, Any]] = []
     network_refs: Set[str] = set()
     skipped_missing_ref = 0
+    mapped_site_refs = 0
 
     for raw in _read_csv_rows(csv_path):
         uk_air_ref = _clean_str(raw.get("UK-AIR ID"))
@@ -562,8 +686,12 @@ def _load_register(
         networks = _parse_networks(raw.get("Networks"))
         for ref in networks:
             network_refs.add(ref)
+        site_ref_info = site_ref_by_uk_air_ref.get(uk_air_ref, {})
         payload = {
             "uk_air_ref": uk_air_ref,
+            "site_ref": site_ref_info.get("site_ref"),
+            "site_ref_source_url": site_ref_info.get("source_url"),
+            "site_ref_source_checked_at": site_ref_info.get("source_checked_at"),
             "eu_site_ref": _clean_str(raw.get("EU Site ID")),
             "emep_site_ref": _clean_str(raw.get("EMEP Site ID")),
             "site_name": _clean_str(raw.get("Site Name")),
@@ -584,9 +712,16 @@ def _load_register(
             "snapshot_at": snapshot_value,
             "raw_payload": json.loads(json.dumps(raw)),
         }
+        if payload["site_ref"]:
+            mapped_site_refs += 1
         rows.append(payload)
 
     LOG.info("Parsed rows: %s", len(rows))
+    LOG.info(
+        "Rows with DEFRA flat-file site_ref: %s; unmapped rows: %s",
+        mapped_site_refs,
+        max(len(rows) - mapped_site_refs, 0),
+    )
     if skipped_missing_ref:
         LOG.warning("Skipped rows missing UK-AIR ref: %s", skipped_missing_ref)
     LOG.info("Unique network labels: %s", len(network_refs))
@@ -689,6 +824,10 @@ def main() -> int:
             args.source_url or csv_url,
             args.source_file,
             args.snapshot_at,
+            args.site_ref_map_csv,
+            args.validate_site_ref_map,
+            args.timeout,
+            args.user_agent,
             args.batch_size,
             args.dry_run,
         )
