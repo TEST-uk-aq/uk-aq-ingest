@@ -1,4 +1,4 @@
-name: Deploy UK-AIR SOS Cloud Run Service
+name: Deploy SOS Cloud Run Service
 
 on:
   push:
