@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -504,6 +505,31 @@ def _flat_files_url(site_ref: str) -> str:
     return f"{UK_AIR_FLAT_FILES_URL}?site_id={site_ref}"
 
 
+def _get_with_retry(url: str, headers: Dict[str, str], timeout: int) -> requests.Response:
+    last_exc: Optional[BaseException] = None
+    delay_seconds = 1.0
+    for attempt in range(1, 4):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            if attempt >= 3:
+                raise
+            LOG.warning(
+                "Transient request failure (%s/3) for %s: %s",
+                attempt,
+                url,
+                exc,
+            )
+            time.sleep(delay_seconds)
+            delay_seconds *= 2
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"Request failed for {url}")
+
+
 def _aurn_in_networks(networks: Iterable[str]) -> bool:
     return any(
         network.strip() == "Automatic Urban and Rural Monitoring Network (AURN)"
@@ -519,8 +545,7 @@ def _validate_site_ref_mapping(
 ) -> Tuple[str, str]:
     headers = {"User-Agent": user_agent}
     site_info_url = _site_info_url(site_ref)
-    site_info_resp = requests.get(site_info_url, headers=headers, timeout=timeout)
-    site_info_resp.raise_for_status()
+    site_info_resp = _get_with_retry(site_info_url, headers, timeout)
     site_info_text = site_info_resp.text
     if uk_air_ref not in site_info_text:
         raise RuntimeError(
@@ -529,8 +554,7 @@ def _validate_site_ref_mapping(
         )
 
     flat_files_url = _flat_files_url(site_ref)
-    flat_files_resp = requests.get(flat_files_url, headers=headers, timeout=timeout)
-    flat_files_resp.raise_for_status()
+    flat_files_resp = _get_with_retry(flat_files_url, headers, timeout)
     flat_files_text = flat_files_resp.text
     expected_site_data = f"/site_data/{site_ref}_"
     if expected_site_data not in flat_files_text:
@@ -549,8 +573,15 @@ def _discover_site_ref_mapping(
 ) -> Optional[Dict[str, Optional[str]]]:
     headers = {"User-Agent": user_agent}
     site_info_url = f"{UK_AIR_SITE_INFO_URL}?uka_id={uk_air_ref}"
-    resp = requests.get(site_info_url, headers=headers, timeout=timeout)
-    resp.raise_for_status()
+    try:
+        resp = _get_with_retry(site_info_url, headers, timeout)
+    except requests.exceptions.RequestException as exc:
+        LOG.warning(
+            "Skipping site_ref discovery for uk_air_ref=%s after request failure: %s",
+            uk_air_ref,
+            exc,
+        )
+        return None
     text = resp.text
     if uk_air_ref not in text:
         LOG.warning(
@@ -612,12 +643,21 @@ def _load_site_ref_map(
                 ("source_checked_at", "Source Checked At"),
             )
             if validate:
-                source_url, source_checked_at = _validate_site_ref_mapping(
-                    uk_air_ref,
-                    site_ref,
-                    timeout,
-                    user_agent,
-                )
+                try:
+                    source_url, source_checked_at = _validate_site_ref_mapping(
+                        uk_air_ref,
+                        site_ref,
+                        timeout,
+                        user_agent,
+                    )
+                except requests.exceptions.RequestException as exc:
+                    LOG.warning(
+                        "Could not validate mapped site_ref=%s for uk_air_ref=%s after request failure; "
+                        "keeping the CSV mapping: %s",
+                        site_ref,
+                        uk_air_ref,
+                        exc,
+                    )
             refs[uk_air_ref] = {
                 "site_ref": site_ref,
                 "source_url": source_url or _site_info_url(site_ref),
@@ -923,8 +963,7 @@ def main() -> int:
         if not csv_url:
             if not args.search_url:
                 raise SystemExit("Provide --search-url or set SOS_SITE_SEARCH_URL.")
-            resp = requests.get(args.search_url, headers=headers, timeout=args.timeout)
-            resp.raise_for_status()
+            resp = _get_with_retry(args.search_url, headers, args.timeout)
             if args.save_html:
                 with open(args.save_html, "w", encoding="utf-8") as handle:
                     handle.write(resp.text)
@@ -934,8 +973,7 @@ def main() -> int:
                     "Could not find a CSV link; use --csv-url or --save-html to inspect HTML."
                 )
 
-        resp = requests.get(csv_url, headers=headers, timeout=args.timeout)
-        resp.raise_for_status()
+        resp = _get_with_retry(csv_url, headers, args.timeout)
         local_output = _timestamped_filename(args.output)
         with open(local_output, "wb") as handle:
             handle.write(resp.content)

@@ -1028,6 +1028,7 @@ Notes:
 - `--discover-site-refs` checks official `networks/site-info?uka_id=<uk_air_ref>` pages for flat-file links.
 - `--site-ref-map-csv` is optional; unresolved UK-AIR refs are loaded with `site_ref = null` rather than guessed.
 - `--validate-site-ref-map` checks mapped refs against official UK-AIR site-info and flat-file pages before loading.
+- Transient UK-AIR request failures are retried, and a failed discovery/validation request now skips only the affected row instead of aborting the full monthly load.
 
 ### `scripts/sos/sos_membership_report.py`
 Purpose:

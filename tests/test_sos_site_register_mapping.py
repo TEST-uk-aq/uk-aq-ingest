@@ -1,9 +1,11 @@
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 from scripts.sos.sos_site_register import (
     _load_register,
+    _get_with_retry,
     _refresh_station_uk_air_refs,
     _refresh_site_timeseries_refs,
 )
@@ -98,6 +100,30 @@ def test_refresh_station_uk_air_refs_calls_public_rpc(monkeypatch):
         "uk_aq_rpc_sos_station_uk_air_refs_refresh",
         {"p_source_snapshot_at": "2026-07-08T18:56:57+00:00"},
     )
+
+
+def test_get_with_retry_retries_transient_failures(monkeypatch):
+    calls = {"count": 0}
+
+    class DummyResponse:
+        text = "ok"
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, headers=None, timeout=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise requests.exceptions.ConnectionError("transient failure")
+        return DummyResponse()
+
+    monkeypatch.setattr("scripts.sos.sos_site_register.requests.get", fake_get)
+    monkeypatch.setattr("scripts.sos.sos_site_register.time.sleep", lambda _seconds: None)
+
+    resp = _get_with_retry("https://example.invalid", {"User-Agent": "pytest"}, 5)
+
+    assert resp.text == "ok"
+    assert calls["count"] == 2
 
 
 def test_load_register_refreshes_bridge_before_timeseries(monkeypatch, tmp_path):
