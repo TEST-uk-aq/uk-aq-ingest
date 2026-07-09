@@ -710,6 +710,35 @@ def _upsert_network_pollutants(
         )
 
 
+def _refresh_station_uk_air_refs(
+    schemas: SupabaseSchemas,
+    source_snapshot_at: str,
+) -> Dict[str, Any]:
+    public_schema = os.getenv("UK_AQ_PUBLIC_SCHEMA") or "uk_aq_public"
+    response = schemas.client.schema(public_schema).rpc(
+        "uk_aq_rpc_sos_station_uk_air_refs_refresh",
+        {"p_source_snapshot_at": source_snapshot_at},
+    ).execute()
+    result = response.data if hasattr(response, "data") else response.get("data")
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            "SOS station/UK-AIR bridge refresh returned an invalid response."
+        )
+    LOG.info(
+        "Refreshed SOS station bridge: rows=%s matched_station_refs=%s "
+        "name_distance_matches=%s distance_matches=%s ambiguous_register_rows=%s "
+        "ambiguous_station_rows=%s unmatched_register_rows=%s",
+        result.get("mapping_rows_upserted", 0),
+        result.get("matched_station_refs", 0),
+        result.get("name_distance_matches", 0),
+        result.get("distance_matches", 0),
+        result.get("ambiguous_register_rows", 0),
+        result.get("ambiguous_station_rows", 0),
+        result.get("unmatched_register_rows", 0),
+    )
+    return result
+
+
 def _refresh_site_timeseries_refs(
     schemas: SupabaseSchemas,
     source_snapshot_at: str,
@@ -873,6 +902,7 @@ def _load_register(
     )
     LOG.info("Upserted networks: %s", len(network_rows))
     LOG.info("Upserted register rows: %s", len(rows))
+    _refresh_station_uk_air_refs(schemas, snapshot_value)
     _refresh_site_timeseries_refs(schemas, snapshot_value)
 
 

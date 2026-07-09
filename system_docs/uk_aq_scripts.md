@@ -1002,7 +1002,7 @@ Purpose:
 - Use the CSV as the authoritative register for site refs, names, coordinates, and network membership.
 - Populate DEFRA flat-file `site_ref` values from official UK-AIR site-info pages when loading.
 - Use `network_info/sos/sos_site_refs.csv` as a seed/override map where needed.
-- After a successful register load, refresh `sos_station_timeseries_site_refs` through `uk_aq_rpc_sos_station_timeseries_site_refs_refresh`.
+- After a successful register load, refresh `sos_station_uk_air_refs` through `uk_aq_rpc_sos_station_uk_air_refs_refresh`, then refresh `sos_station_timeseries_site_refs` through `uk_aq_rpc_sos_station_timeseries_site_refs_refresh`.
 - Fail on multiple active timeseries for the same archive `site_ref` + pollutant or on invalid derived validity intervals; log the count of unmapped AURN sites.
 
 Common commands:

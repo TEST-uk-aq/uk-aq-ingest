@@ -3,6 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.sos.sos_site_register import (
+    _load_register,
+    _refresh_station_uk_air_refs,
     _refresh_site_timeseries_refs,
 )
 
@@ -69,3 +71,93 @@ def test_refresh_site_timeseries_refs_rejects_invalid_response():
             schemas,
             "2026-07-08T18:56:57+00:00",
         )
+
+
+def test_refresh_station_uk_air_refs_calls_public_rpc(monkeypatch):
+    monkeypatch.setenv("UK_AQ_PUBLIC_SCHEMA", "uk_aq_public")
+    response = {
+        "mapping_rows_upserted": 8,
+        "matched_station_refs": 8,
+        "deleted_station_refs": 2,
+        "name_distance_matches": 6,
+        "distance_matches": 2,
+        "ambiguous_register_rows": 1,
+        "unmatched_register_rows": 4,
+    }
+    client = FakeClient(response)
+    schemas = SimpleNamespace(client=client)
+
+    result = _refresh_station_uk_air_refs(
+        schemas,
+        "2026-07-08T18:56:57+00:00",
+    )
+
+    assert result == response
+    assert client.schema_name == "uk_aq_public"
+    assert client.schema_client.call == (
+        "uk_aq_rpc_sos_station_uk_air_refs_refresh",
+        {"p_source_snapshot_at": "2026-07-08T18:56:57+00:00"},
+    )
+
+
+def test_load_register_refreshes_bridge_before_timeseries(monkeypatch, tmp_path):
+    csv_path = tmp_path / "sos_site_register.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "UK-AIR ID,Site Name,Latitude,Longitude,Networks",
+                "UKA00591,Ealing Horn Lane,51.5123,-0.3045,Automatic Urban and Rural Monitoring Network (AURN)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class DummySchemas:
+        core = object()
+        raw = object()
+
+    calls = []
+
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._build_client",
+        lambda: DummySchemas(),
+    )
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._fetch_existing_networks",
+        lambda _core: {},
+    )
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._upsert_batches",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._upsert_network_pollutants",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._refresh_station_uk_air_refs",
+        lambda _schemas, snapshot: calls.append(("bridge", snapshot)),
+    )
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._refresh_site_timeseries_refs",
+        lambda _schemas, snapshot: calls.append(("timeseries", snapshot)),
+    )
+
+    _load_register(
+        csv_path=str(csv_path),
+        source_url=None,
+        source_file=None,
+        snapshot_at="2026-07-08T18:56:57+00:00",
+        site_ref_map_csv=None,
+        validate_site_ref_map=False,
+        discover_site_refs=False,
+        timeout=5,
+        user_agent="pytest",
+        batch_size=100,
+        dry_run=False,
+    )
+
+    assert calls == [
+        ("bridge", "2026-07-08T18:56:57+00:00"),
+        ("timeseries", "2026-07-08T18:56:57+00:00"),
+    ]

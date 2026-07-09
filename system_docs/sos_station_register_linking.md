@@ -141,7 +141,7 @@ Purpose:
 station_id -> uk_air_ref
 ```
 
-This is the missing bridge if `station_ref_rows = 0`.
+This bridge is populated by the monthly register load before archive mapping runs.
 
 It should be populated by matching monthly register rows to already-discovered SOS station rows.
 
@@ -186,7 +186,7 @@ This table is refreshed by:
 uk_aq_public.uk_aq_rpc_sos_station_timeseries_site_refs_refresh(...)
 ```
 
-The RPC expects `sos_station_uk_air_refs` to already contain `station_id -> uk_air_ref`.
+The archive mapping RPC expects `sos_station_uk_air_refs` to already contain `station_id -> uk_air_ref`.
 
 If `sos_station_uk_air_refs` is empty, the RPC has no route from the register to stations/timeseries and will insert zero rows.
 
@@ -200,7 +200,7 @@ sos_station_uk_air_refs rows = 0
 sos_station_timeseries_site_refs rows = 0
 ```
 
-then the site register load and `site_ref` discovery are working, but the station bridge step is missing.
+then the site register load and `site_ref` discovery are working, but the station bridge refresh is not producing rows.
 
 The route fails here:
 
@@ -255,7 +255,7 @@ order by reg.site_ref, s.station_name;
 
 ## Practical diagnosis
 
-If the RPC returns:
+If the monthly refresh returns:
 
 ```json
 {
@@ -273,16 +273,11 @@ aurn_rows_with_site_ref = 211
 rows_with_station_ref_bridge = 0
 ```
 
-then the missing step is not `site_ref` discovery.
+then `site_ref` discovery is working, but the bridge refresh is not producing rows.
 
-The missing step is:
+The monthly order is:
 
 ```text
 populate uk_aq_raw.sos_station_uk_air_refs
-```
-
-before running:
-
-```text
-uk_aq_public.uk_aq_rpc_sos_station_timeseries_site_refs_refresh(...)
+then run uk_aq_public.uk_aq_rpc_sos_station_timeseries_site_refs_refresh(...)
 ```
