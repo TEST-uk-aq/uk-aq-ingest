@@ -143,7 +143,8 @@ station_id -> uk_air_ref
 
 This bridge is populated by the monthly register load before archive mapping runs.
 
-It should be populated by matching monthly register rows to already-discovered SOS station rows.
+It should be populated by matching monthly register rows to already-discovered SOS station rows that actually carry target archive pollutants (`pm25`, `pm10`, `no2`).
+Multiple station rows can map to the same `uk_air_ref` when a site has pollutant-specific station rows.
 
 Suggested matching inputs:
 
@@ -166,6 +167,10 @@ created_at
 updated_at
 ```
 
+The monthly register load also stores structured pollutant evidence in
+`uk_aq_raw.sos_site_register.uk_air_pollutants` so the bridge can stay focused
+on the archive pollutants we care about.
+
 ### 2. Site ref to timeseries link
 
 Table:
@@ -187,6 +192,10 @@ uk_aq_public.uk_aq_rpc_sos_station_timeseries_site_refs_refresh(...)
 ```
 
 The archive mapping RPC expects `sos_station_uk_air_refs` to already contain `station_id -> uk_air_ref`.
+
+It only maps archive rows for `pm25`, `pm10`, and `no2`, using
+`uk_aq_core.observed_property_mappings` to reject non-target hydrocarbon/VOC
+labels.
 
 If `sos_station_uk_air_refs` is empty, the RPC has no route from the register to stations/timeseries and will insert zero rows.
 

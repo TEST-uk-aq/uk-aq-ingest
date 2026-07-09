@@ -4,6 +4,7 @@ import pytest
 import requests
 
 from scripts.sos.sos_site_register import (
+    _build_aurn_pollutant_evidence,
     _load_register,
     _get_with_retry,
     _refresh_station_uk_air_refs,
@@ -100,6 +101,118 @@ def test_refresh_station_uk_air_refs_calls_public_rpc(monkeypatch):
         "uk_aq_rpc_sos_station_uk_air_refs_refresh",
         {"p_source_snapshot_at": "2026-07-08T18:56:57+00:00"},
     )
+
+
+def test_build_aurn_pollutant_evidence_maps_archive_pollutants():
+    evidence = _build_aurn_pollutant_evidence(
+        "Particulate matter less than 2.5 micro m (aerosol); Volatile PM2.5; NO2"
+    )
+
+    assert evidence == [
+        {
+            "label": "Particulate matter less than 2.5 micro m (aerosol)",
+            "code": "pm25",
+            "confidence": "explicit",
+            "source_kind": "csv_column",
+        },
+        {
+            "label": "Volatile PM2.5",
+            "code": None,
+            "confidence": "review",
+            "source_kind": "csv_column",
+        },
+        {
+            "label": "NO2",
+            "code": "no2",
+            "confidence": "explicit",
+            "source_kind": "csv_column",
+        },
+    ]
+
+
+def test_load_register_includes_structured_aurn_pollutant_evidence(
+    monkeypatch, tmp_path
+):
+    csv_path = tmp_path / "sos_site_register.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "UK-AIR ID,Site Name,Latitude,Longitude,Networks,AURN Pollutants Measured",
+                "UKA00591,Ealing Horn Lane,51.5123,-0.3045,Automatic Urban and Rural Monitoring Network (AURN),Particulate matter less than 2.5 micro m (aerosol); NO2",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class DummySchemas:
+        core = object()
+        raw = object()
+
+    captured = {}
+
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._build_client",
+        lambda: DummySchemas(),
+    )
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._fetch_existing_networks",
+        lambda _core: {},
+    )
+
+    def fake_upsert_batches(_client, table, rows, batch_size, on_conflict):
+        captured[table] = rows
+
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._upsert_batches",
+        fake_upsert_batches,
+    )
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._upsert_network_pollutants",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._refresh_station_uk_air_refs",
+        lambda *args, **kwargs: {"mapping_rows_upserted": 0},
+    )
+    monkeypatch.setattr(
+        "scripts.sos.sos_site_register._refresh_site_timeseries_refs",
+        lambda *args, **kwargs: {"mapping_rows_upserted": 0},
+    )
+
+    _load_register(
+        csv_path=str(csv_path),
+        source_url="https://example.invalid/sos.csv",
+        source_file="sos_site_register.csv",
+        snapshot_at="2026-07-08T18:56:57+00:00",
+        site_ref_map_csv=None,
+        validate_site_ref_map=False,
+        discover_site_refs=False,
+        timeout=5,
+        user_agent="pytest",
+        batch_size=100,
+        dry_run=False,
+    )
+
+    rows = captured["sos_site_register"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["uk_air_ref"] == "UKA00591"
+    assert row["uk_air_pollutants"] == [
+        {
+            "label": "Particulate matter less than 2.5 micro m (aerosol)",
+            "code": "pm25",
+            "confidence": "explicit",
+            "source_kind": "csv_column",
+        },
+        {
+            "label": "NO2",
+            "code": "no2",
+            "confidence": "explicit",
+            "source_kind": "csv_column",
+        },
+    ]
+    assert row["uk_air_pollutants_source_url"] == "https://example.invalid/sos.csv"
+    assert row["uk_air_pollutants_source_checked_at"] == "2026-07-08T18:56:57+00:00"
 
 
 def test_get_with_retry_retries_transient_failures(monkeypatch):

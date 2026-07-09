@@ -11,6 +11,7 @@ import csv
 import io
 import json
 import logging
+from collections import Counter
 import os
 import re
 import sys
@@ -50,6 +51,29 @@ UK_AIR_SITE_PHOTO_SITE_REF_RE = re.compile(
     r"assets/site-photos/([A-Za-z0-9]+)_site\.(?:jpg|jpeg|png)",
     flags=re.IGNORECASE,
 )
+
+TARGET_ARCHIVE_POLLUTANTS = ("pm25", "pm10", "no2")
+AURN_POLLUTANT_TOKEN_RULES = {
+    "particulatematter25m": ("pm25", "explicit"),
+    "particulatematter25maerosol": ("pm25", "explicit"),
+    "particulatematterlessthan25micromaerosol": ("pm25", "explicit"),
+    "particulatematterunder25micromaerosol": ("pm25", "explicit"),
+    "pm25inaerosol": ("pm25", "explicit"),
+    "particulatematter10m": ("pm10", "explicit"),
+    "particulatematter10maerosol": ("pm10", "explicit"),
+    "particulatematterlessthan10micromaerosol": ("pm10", "explicit"),
+    "pm10inaerosol": ("pm10", "explicit"),
+    "nitrogendioxide": ("no2", "explicit"),
+    "nitrogendioxideair": ("no2", "explicit"),
+    "nitrogendioxideinair": ("no2", "explicit"),
+    "pm25": ("pm25", "explicit"),
+    "pm10": ("pm10", "explicit"),
+    "no2": ("no2", "explicit"),
+    "volatilepm25": (None, "review"),
+    "nonvolatilepm25": (None, "review"),
+    "volatilepm10": (None, "review"),
+    "nonvolatilepm10": (None, "review"),
+}
 
 # Default match_type for pollutant rules is "contains"; use (match_type, value) tuples if needed.
 NETWORK_POLLUTANT_RULES = {
@@ -485,6 +509,45 @@ def _parse_networks(value: Optional[str]) -> List[str]:
     return [item.strip() for item in cleaned.split(";") if item.strip()]
 
 
+def _split_aurn_pollutant_tokens(value: Optional[str]) -> List[str]:
+    cleaned = _clean_str(value)
+    if cleaned is None:
+        return []
+    return [token.strip() for token in re.split(r"[;,|]", cleaned) if token.strip()]
+
+
+def _compact_aurn_pollutant_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _build_aurn_pollutant_evidence(value: Optional[str]) -> List[Dict[str, Optional[str]]]:
+    evidence: List[Dict[str, Optional[str]]] = []
+    seen_tokens: Set[str] = set()
+    for token in _split_aurn_pollutant_tokens(value):
+        compact = _compact_aurn_pollutant_token(token)
+        if not compact or compact in seen_tokens:
+            continue
+        seen_tokens.add(compact)
+        code, confidence = AURN_POLLUTANT_TOKEN_RULES.get(compact, (None, "review"))
+        evidence.append(
+            {
+                "label": token,
+                "code": code,
+                "confidence": confidence,
+                "source_kind": "csv_column",
+            }
+        )
+    return evidence
+
+
+def _summarize_aurn_pollutant_codes(evidence: Iterable[Dict[str, Optional[str]]]) -> Set[str]:
+    return {
+        str(item["code"])
+        for item in evidence
+        if item.get("code")
+    }
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -766,12 +829,19 @@ def _refresh_station_uk_air_refs(
         )
     LOG.info(
         "Refreshed SOS station bridge: rows=%s matched_station_refs=%s "
-        "name_distance_matches=%s distance_matches=%s ambiguous_register_rows=%s "
-        "ambiguous_station_rows=%s unmatched_register_rows=%s",
+        "matched_register_rows=%s name_distance_matches=%s distance_matches=%s "
+        "pollutant_counts=%s target_pollutant_counts=%s "
+        "site_counts_by_target_pollutant=%s unexpected_pollutant_counts=%s "
+        "ambiguous_register_rows=%s ambiguous_station_rows=%s unmatched_register_rows=%s",
         result.get("mapping_rows_upserted", 0),
         result.get("matched_station_refs", 0),
+        result.get("matched_register_rows", 0),
         result.get("name_distance_matches", 0),
         result.get("distance_matches", 0),
+        json.dumps(result.get("pollutant_counts") or {}, sort_keys=True),
+        json.dumps(result.get("target_pollutant_counts") or {}, sort_keys=True),
+        json.dumps(result.get("site_counts_by_target_pollutant") or {}, sort_keys=True),
+        json.dumps(result.get("unexpected_pollutant_counts") or {}, sort_keys=True),
         result.get("ambiguous_register_rows", 0),
         result.get("ambiguous_station_rows", 0),
         result.get("unmatched_register_rows", 0),
@@ -795,11 +865,17 @@ def _refresh_site_timeseries_refs(
         )
     LOG.info(
         "Refreshed UK-AIR archive mappings: rows=%s mapped_site_refs=%s "
-        "unmapped_aurn_sites=%s mapped_sites_without_timeseries=%s",
+        "unmapped_aurn_sites=%s mapped_sites_without_timeseries=%s "
+        "pollutant_counts=%s target_pollutant_counts=%s "
+        "site_counts_by_target_pollutant=%s unexpected_pollutant_counts=%s",
         result.get("mapping_rows_upserted", 0),
         result.get("mapped_site_refs", 0),
         result.get("unmapped_aurn_sites", 0),
         result.get("mapped_sites_without_timeseries", 0),
+        json.dumps(result.get("pollutant_counts") or {}, sort_keys=True),
+        json.dumps(result.get("target_pollutant_counts") or {}, sort_keys=True),
+        json.dumps(result.get("site_counts_by_target_pollutant") or {}, sort_keys=True),
+        json.dumps(result.get("unexpected_pollutant_counts") or {}, sort_keys=True),
     )
     return result
 
@@ -826,6 +902,7 @@ def _load_register(
 ) -> None:
     snapshot_value = snapshot_at or datetime.now(timezone.utc).isoformat()
     source_file_value = source_file or os.path.basename(csv_path)
+    source_url_value = _clean_str(source_url)
     site_ref_by_uk_air_ref = _load_site_ref_map(
         site_ref_map_csv,
         validate_site_ref_map,
@@ -839,6 +916,10 @@ def _load_register(
     mapped_site_refs = 0
     discovered_site_refs = 0
     discovered_by_uk_air_ref: Dict[str, Dict[str, Optional[str]]] = {}
+    rows_with_aurn_pollutants = 0
+    rows_without_aurn_pollutants = 0
+    rows_with_review_only_aurn_pollutants = 0
+    aurn_pollutant_row_counts: Counter[str] = Counter()
 
     for raw in _read_csv_rows(csv_path):
         uk_air_ref = _clean_str(raw.get("UK-AIR ID"))
@@ -846,6 +927,16 @@ def _load_register(
             skipped_missing_ref += 1
             continue
         networks = _parse_networks(raw.get("Networks"))
+        pollutant_evidence = _build_aurn_pollutant_evidence(raw.get("AURN Pollutants Measured"))
+        pollutant_codes = _summarize_aurn_pollutant_codes(pollutant_evidence)
+        if pollutant_evidence:
+            rows_with_aurn_pollutants += 1
+        else:
+            rows_without_aurn_pollutants += 1
+        if any(item.get("confidence") == "review" for item in pollutant_evidence):
+            rows_with_review_only_aurn_pollutants += 1
+        for code in pollutant_codes:
+            aurn_pollutant_row_counts[code] += 1
         for ref in networks:
             network_refs.add(ref)
         site_ref_info = site_ref_by_uk_air_ref.get(uk_air_ref, {})
@@ -883,8 +974,11 @@ def _load_register(
             "altitude_m": _parse_float(raw.get("Altitude (m)")),
             "networks": networks,
             "aurn_pollutants_measured": _clean_str(raw.get("AURN Pollutants Measured")),
+            "uk_air_pollutants": pollutant_evidence,
+            "uk_air_pollutants_source_url": source_url_value,
+            "uk_air_pollutants_source_checked_at": snapshot_value,
             "site_description": _clean_str(raw.get("Site Description")),
-            "source_url": _clean_str(source_url),
+            "source_url": source_url_value,
             "source_file": _clean_str(source_file_value),
             "snapshot_at": snapshot_value,
             "raw_payload": json.loads(json.dumps(raw)),
@@ -904,6 +998,16 @@ def _load_register(
     if skipped_missing_ref:
         LOG.warning("Skipped rows missing UK-AIR ref: %s", skipped_missing_ref)
     LOG.info("Unique network labels: %s", len(network_refs))
+    LOG.info(
+        "AURN pollutant evidence rows: with_evidence=%s without_evidence=%s review_only=%s target_counts=%s",
+        rows_with_aurn_pollutants,
+        rows_without_aurn_pollutants,
+        rows_with_review_only_aurn_pollutants,
+        json.dumps(
+            {code: aurn_pollutant_row_counts.get(code, 0) for code in TARGET_ARCHIVE_POLLUTANTS},
+            sort_keys=True,
+        ),
+    )
 
     if dry_run:
         LOG.info("Dry run enabled; no data written to Supabase.")

@@ -48,6 +48,7 @@ Applied in `scripts/sos/sos_ingest.py`:
 - `station_metadata` is populated by the station listing script.
 - SOS stations use one canonical `stations.network_id` referencing `networks.id`.
 - `sos_station_uk_air_refs` stores the resolved UK-AIR site id for each SOS station to join against the site register.
+- The monthly bridge keeps only SOS stations that actually carry target archive pollutants (`pm25`, `pm10`, `no2`) and may map multiple station rows to the same `uk_air_ref` when a physical site has pollutant-specific station rows.
 - `stations.station_type` is backfilled with the primary network code (single network or AURN-priority).
 - Public network code and label values come from the canonical `networks` row.
 - Validate assignments with
@@ -62,8 +63,9 @@ Applied in `scripts/sos/sos_ingest.py`:
 - Use `--load-only` with `--csv-path` to load a local CSV without downloading.
 - The load step can discover DEFRA flat-file `site_ref` values from official UK-AIR `site-info` pages for archive backfill.
 - `network_info/sos/sos_site_refs.csv` is a seed/override map for refs that need explicit control.
-- The monthly register load refreshes `sos_station_uk_air_refs` first, then `sos_station_timeseries_site_refs` after the register snapshot is written. It maps through the authoritative `uk_air_ref` station link and exact canonical pollutant code.
-- Ambiguous active mappings fail the monthly workflow. Unmapped AURN sites remain unmapped and are reported in the workflow log.
+- The monthly register load now stores structured UK-AIR pollutant evidence in `sos_site_register.uk_air_pollutants`, then refreshes `sos_station_uk_air_refs` first, then `sos_station_timeseries_site_refs` after the register snapshot is written.
+- The archive mapping uses explicit `observed_property_mappings` rows for SOS PM2.5, PM10, and NO2 labels and ignores non-target hydrocarbon/VOC labels.
+- Multiple candidate station/site matches are reported in the monthly workflow, but the bridge only writes controlled matches. Unmapped AURN sites remain unmapped and are reported in the workflow log.
 - The monthly workflow validates mapped and discovered refs against official UK-AIR site-info and flat-file pages before loading.
 - The load step keeps existing `sos_networks.network_display_name` values and seeds `sos_network_pollutants`.
 
