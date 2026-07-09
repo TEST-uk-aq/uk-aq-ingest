@@ -983,6 +983,18 @@ async function insertErrorLog(
   return { errorId, createdAtIso, row: entry };
 }
 
+function buildWrapperFailureResponse(errorMessage: string): IngestResponse {
+  return {
+    ok: false,
+    status: 500,
+    body: {
+      error: "cloud_run_wrapper_failed",
+      message: errorMessage,
+    },
+    raw: errorMessage,
+  };
+}
+
 async function patchErrorLogDropboxPath(
   errorId: string,
   dropboxPath: string,
@@ -1155,95 +1167,63 @@ async function main(): Promise<void> {
     connectorId = await resolveConnectorId(null);
   }
 
-  const payloadPlan = await buildIngestPayload(connector, connectorId);
-
-  if (!payloadPlan.stationRows.length) {
-    await recordSkippedRun(connectorId, runStartedAtIso, "no_station_refs");
-    logSummary("skipped", {
-      reason: "no_station_refs",
-      connector_id: connectorId,
-      station_batch_limit: payloadPlan.stationBatchLimit,
-      stale_limit: payloadPlan.staleLimit,
-    });
-    return;
-  }
-
-  if (!payloadPlan.timeseriesIds.length) {
-    await recordSkippedRun(connectorId, runStartedAtIso, "no_timeseries_ids");
-    logSummary("skipped", {
-      reason: "no_timeseries_ids",
-      connector_id: connectorId,
-      stations_selected: payloadPlan.stationRows.length,
-      timeseries_limit: payloadPlan.timeseriesLimit,
-    });
-    return;
-  }
-
-  logSummary("dispatching", {
-    connector_id: connectorId,
-    window_hours: payloadPlan.windowHours,
-    station_batch_limit: payloadPlan.stationBatchLimit,
-    stale_limit: payloadPlan.staleLimit,
-    stations_selected: payloadPlan.stationRows.length,
-    timeseries_limit: payloadPlan.timeseriesLimit,
-    timeseries_selected: payloadPlan.timeseriesIds.length,
-  });
-
-  const server = new Deno.Command("deno", {
-    args: [
-      "run",
-      "--allow-env",
-      "--allow-net",
-      "--allow-read",
-      "--allow-write",
-      SOS_INGEST_SCRIPT_PATH,
-    ],
-    env: {
-      ...Deno.env.toObject(),
-      SOS_DROPBOX_UPLOAD_SOURCE: "cloud_run",
-    },
-    stdout: "inherit",
-    stderr: "inherit",
-  }).spawn();
-
+  let server: Deno.ChildProcess | null = null;
   let ingestResponse: IngestResponse | null = null;
 
   try {
-    try {
-      await waitForServer(`http://127.0.0.1:${PORT}/`);
-      ingestResponse = await runIngestOnce(payloadPlan.payload);
-    } catch (error) {
-      const errorMessage = shortError(error);
-      const runEndedAtIso = new Date().toISOString();
-      await updateConnectorRun(
-        connectorId,
-        runStartedAtIso,
-        runEndedAtIso,
-        "failed",
-        errorMessage,
-      );
-      try {
-        const inserted = await insertErrorLog(connectorId, {
-          ok: false,
-          status: 500,
-          body: {
-            error: "cloud_run_wrapper_failed",
-            message: errorMessage,
-          },
-          raw: errorMessage,
-        });
-        await uploadErrorLogRowToDropbox(
-          inserted.errorId,
-          inserted.createdAtIso,
-          inserted.row,
-        );
-      } catch (loggingError) {
-        logSummary("dropbox_error_upload_warning", {
-          error: shortError(loggingError),
-        });
-      }
-      throw error;
+    const payloadPlan = await buildIngestPayload(connector, connectorId);
+
+    if (!payloadPlan.stationRows.length) {
+      await recordSkippedRun(connectorId, runStartedAtIso, "no_station_refs");
+      logSummary("skipped", {
+        reason: "no_station_refs",
+        connector_id: connectorId,
+        station_batch_limit: payloadPlan.stationBatchLimit,
+        stale_limit: payloadPlan.staleLimit,
+      });
+      return;
     }
+
+    if (!payloadPlan.timeseriesIds.length) {
+      await recordSkippedRun(connectorId, runStartedAtIso, "no_timeseries_ids");
+      logSummary("skipped", {
+        reason: "no_timeseries_ids",
+        connector_id: connectorId,
+        stations_selected: payloadPlan.stationRows.length,
+        timeseries_limit: payloadPlan.timeseriesLimit,
+      });
+      return;
+    }
+
+    logSummary("dispatching", {
+      connector_id: connectorId,
+      window_hours: payloadPlan.windowHours,
+      station_batch_limit: payloadPlan.stationBatchLimit,
+      stale_limit: payloadPlan.staleLimit,
+      stations_selected: payloadPlan.stationRows.length,
+      timeseries_limit: payloadPlan.timeseriesLimit,
+      timeseries_selected: payloadPlan.timeseriesIds.length,
+    });
+
+    server = new Deno.Command("deno", {
+      args: [
+        "run",
+        "--allow-env",
+        "--allow-net",
+        "--allow-read",
+        "--allow-write",
+        SOS_INGEST_SCRIPT_PATH,
+      ],
+      env: {
+        ...Deno.env.toObject(),
+        SOS_DROPBOX_UPLOAD_SOURCE: "cloud_run",
+      },
+      stdout: "inherit",
+      stderr: "inherit",
+    }).spawn();
+
+    await waitForServer(`http://127.0.0.1:${PORT}/`);
+    ingestResponse = await runIngestOnce(payloadPlan.payload);
 
     const { runStatus, runMessage, payload } = deriveRunSummary(ingestResponse);
     const runEndedAtIso = new Date().toISOString();
@@ -1290,18 +1270,6 @@ async function main(): Promise<void> {
     );
 
     if (!ingestResponse.ok || runStatus === "failed" || runStatus === "error") {
-      const inserted = await insertErrorLog(connectorId, ingestResponse);
-      try {
-        await uploadErrorLogRowToDropbox(
-          inserted.errorId,
-          inserted.createdAtIso,
-          inserted.row,
-        );
-      } catch (error) {
-        logSummary("dropbox_error_upload_warning", {
-          error: shortError(error),
-        });
-      }
       throw new Error(
         `ingest_sos failed (${ingestResponse.status}): ${ingestResponse.raw}`,
       );
@@ -1317,16 +1285,50 @@ async function main(): Promise<void> {
       partial: payload?.partial === true,
       stopped_reason: toStringOrNull(payload?.stopped_reason),
     });
+  } catch (error) {
+    const errorMessage = shortError(error);
+    const runEndedAtIso = new Date().toISOString();
+    try {
+      await updateConnectorRun(
+        connectorId,
+        runStartedAtIso,
+        runEndedAtIso,
+        "failed",
+        errorMessage,
+      );
+    } catch (updateError) {
+      logSummary("connector_update_failed", {
+        error: shortError(updateError),
+      });
+    }
+
+    try {
+      const inserted = await insertErrorLog(
+        connectorId,
+        ingestResponse ?? buildWrapperFailureResponse(errorMessage),
+      );
+      await uploadErrorLogRowToDropbox(
+        inserted.errorId,
+        inserted.createdAtIso,
+        inserted.row,
+      );
+    } catch (loggingError) {
+      logSummary("dropbox_error_upload_warning", {
+        error: shortError(loggingError),
+      });
+    }
+
+    throw error;
   } finally {
     try {
-      server.kill("SIGTERM");
+      server?.kill("SIGTERM");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logSummary("server_kill_failed", { error: message });
     }
     try {
       await Promise.race([
-        server.status,
+        server?.status ?? Promise.resolve(undefined),
         new Promise((resolve) => setTimeout(resolve, 5000)),
       ]);
     } catch {
