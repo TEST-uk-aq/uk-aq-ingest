@@ -353,6 +353,7 @@ UK_AQ_EDGE_UPSTREAM_SECRET=...
 - Purpose: download the UK-AIR monitoring sites CSV via the search page.
 - Script: `python3 scripts/sos/sos_site_register.py --output sos_site_register.csv`.
 - Output: uploads a timestamped CSV to Dropbox at `network_info/sos`, loads it into Supabase, refreshes `sos_station_uk_air_refs`, then refreshes `sos_station_timeseries_site_refs`.
+- Defaults: the workflow falls back to the public UK-AIR advanced search URL and `Mozilla/5.0 (sos_site_register)` if the optional search secrets are missing or blank.
 - Secrets: `SOS_SITE_SEARCH_URL`, `SOS_SITE_SEARCH_USER_AGENT` (optional),
   `UK_AQ_DROPBOX_ROOT`, `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`,
   `SUPABASE_URL`, `SB_SECRET_KEY`.

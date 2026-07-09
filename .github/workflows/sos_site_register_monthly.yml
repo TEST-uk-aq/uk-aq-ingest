@@ -27,8 +27,8 @@ jobs:
 
       - name: Download UK-AIR SOS site register CSV
         env:
-          SOS_SITE_SEARCH_URL: ${{ secrets.SOS_SITE_SEARCH_URL }}
-          SOS_SITE_SEARCH_USER_AGENT: ${{ secrets.SOS_SITE_SEARCH_USER_AGENT }}
+          SOS_SITE_SEARCH_URL: ${{ secrets.SOS_SITE_SEARCH_URL || 'https://uk-air.defra.gov.uk/networks/find-sites?site_name=&pollutant=9999&group_id=9999&country_id=9999&region_id=9999&location_type=9999&search=Search+Network&view=advanced&action=results' }}
+          SOS_SITE_SEARCH_USER_AGENT: ${{ secrets.SOS_SITE_SEARCH_USER_AGENT || 'Mozilla/5.0 (sos_site_register)' }}
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
           UK_AQ_DROPBOX_ROOT: ${{ vars.UK_AQ_DROPBOX_ROOT }}
