@@ -1,4 +1,4 @@
-# uk_air_sos_station_checkpoints
+# sos_station_checkpoints
 
 Cloud Run station-level scheduling checkpoints for UK-AIR SOS polling.
 
@@ -11,6 +11,6 @@ Cloud Run station-level scheduling checkpoints for UK-AIR SOS polling.
 - `updated_at` (timestamptz): Last checkpoint update timestamp.
 
 ## Usage
-- `uk_aq_core.uk_air_sos_select_station_refs(batch_limit, stale_limit)` selects due station refs using this table plus current `timeseries.last_value_at` rollups.
-- `workers/uk_aq_uk_air_sos_cloud_run/run_job.ts` updates rows after each Cloud Run SOS run.
-- Edge SOS path remains unchanged and continues to use `uk_air_sos_timeseries_checkpoints`.
+- `uk_aq_core.sos_select_station_refs(batch_limit, stale_limit)` selects due station refs using this table plus current `timeseries.last_value_at` rollups.
+- `workers/uk_aq_sos_cloud_run/run_job.ts` updates rows after each Cloud Run SOS run.
+- Edge SOS path remains unchanged and continues to use `sos_timeseries_checkpoints`.

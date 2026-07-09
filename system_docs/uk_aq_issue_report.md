@@ -55,7 +55,7 @@ Each issue below includes **fix options with pros/cons**. If only one viable fix
 ---
 
 ## 4) No timeouts for Supabase/PostgREST or Dropbox fetches in edge ingestion (Medium)
-**File:** `supabase/functions/ingest_uk_air_sos/index.ts`【F:supabase/functions/ingest_uk_air_sos/index.ts†L97-L117】【F:supabase/functions/ingest_uk_air_sos/index.ts†L808-L839】
+**File:** `supabase/functions/ingest_sos/index.ts`【F:supabase/functions/ingest_sos/index.ts†L97-L117】【F:supabase/functions/ingest_sos/index.ts†L808-L839】
 
 **Issue:** `fetch()` calls to Supabase and Dropbox are made without timeouts. If either stalls, the edge function can hang until platform timeout.
 
@@ -103,6 +103,6 @@ Each issue below includes **fix options with pros/cons**. If only one viable fix
 1) Public edge endpoint uses service‑role key with open CORS — `supabase/functions/uk_aq_latest/index.ts` and `supabase/functions/uk_aq_bristol_latest/index.ts`【F:supabase/functions/uk_aq_latest/index.ts†L8-L19】【F:supabase/functions/uk_aq_latest/index.ts†L25-L31】【F:supabase/functions/uk_aq_latest/index.ts†L60-L68】
 2) Hard‑coded PurpleAir API key file path — `scripts/purpleair/purpleair_get_uk_sensors.py`【F:scripts/purpleair/purpleair_get_uk_sensors.py†L32-L78】
 3) Supabase client created without validating required env vars — `scripts/purpleair/purpleair_get_uk_sensors.py`【F:scripts/purpleair/purpleair_get_uk_sensors.py†L44-L49】
-4) No timeouts for Supabase/PostgREST or Dropbox fetches in edge ingestion — `supabase/functions/ingest_uk_air_sos/index.ts`【F:supabase/functions/ingest_uk_air_sos/index.ts†L97-L117】【F:supabase/functions/ingest_uk_air_sos/index.ts†L808-L839】
+4) No timeouts for Supabase/PostgREST or Dropbox fetches in edge ingestion — `supabase/functions/ingest_sos/index.ts`【F:supabase/functions/ingest_sos/index.ts†L97-L117】【F:supabase/functions/ingest_sos/index.ts†L808-L839】
 5) PurpleAir API calls have no timeout — `scripts/purpleair/purpleair_get_uk_sensors.py`【F:scripts/purpleair/purpleair_get_uk_sensors.py†L80-L87】
 6) Observation inserts are append‑only, leading to duplicates — `scripts/purpleair/purpleair_get_uk_sensors.py`【F:scripts/purpleair/purpleair_get_uk_sensors.py†L222-L260】

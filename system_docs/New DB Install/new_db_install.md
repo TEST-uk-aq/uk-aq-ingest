@@ -65,7 +65,7 @@ Connector rows are created/updated by station list scripts. Run the relevant scr
 1. `scripts/openaq/openaq_list_stations.py`
 2. `scripts/blondon_communities/blondon_communities_list_stations.py`
 3. `scripts/erg_laqn/erg_laqn_list_stations.py`
-4. `scripts/uk_air_sos/uk_air_sos_list_stations.py`
+4. `scripts/sos/sos_list_stations.py`
 5. `scripts/sensorcommunity/sensorcommunity_list_stations.py`
 
 During runtime, connector rows are also updated by dispatcher/ingest workers (`last_polled_at`, `last_run_start`, `last_run_end`, statuses).
@@ -139,7 +139,7 @@ Use dedicated service accounts (not default compute SAs) for deploy and runtime.
      - Secret Manager access to runtime secrets (`roles/secretmanager.secretAccessor`).
      - `roles/pubsub.publisher` on history topic (`GCP_OBSERVS_PUBSUB_TOPIC`) when `SCOMM_OBSERVS_WRITE_MODE=pubsub_only`.
 
-4. UK-AIR SOS runtime SA (`GCP_UK_AIR_SOS_JOB_SERVICE_ACCOUNT`, e.g. `uk-aq-sos-job@...`)
+4. UK-AIR SOS runtime SA (`GCP_SOS_JOB_SERVICE_ACCOUNT`, e.g. `uk-aq-sos-job@...`)
    - Required roles/bindings:
      - Secret Manager access to runtime secrets (`roles/secretmanager.secretAccessor`).
 

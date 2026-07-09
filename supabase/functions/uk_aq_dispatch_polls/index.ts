@@ -106,7 +106,7 @@ const REST_BASE_URL = SUPABASE_URL
   : "";
 
 const TARGET_CONNECTORS = [
-  "uk_air_sos",
+  "sos",
   "sensorcommunity",
   "blondon_communities",
   "erg_laqn",
@@ -115,14 +115,14 @@ const TARGET_CONNECTORS = [
 const SCHEDULER_BACKEND_SUPABASE_FUNCTION = "supabase_function";
 const SCHEDULER_BACKEND_GOOGLE_CLOUD_RUN = "google_cloud_run";
 const GOOGLE_CLOUD_RUN_CONNECTOR_ALLOWLIST = new Set([
-  "uk_air_sos",
+  "sos",
   "sensorcommunity",
   "blondon_communities",
   "openaq",
 ]);
 
 const DEFAULT_INTERVAL_MINUTES: Record<string, number> = {
-  uk_air_sos: 60,
+  sos: 60,
   sensorcommunity: 15,
   blondon_communities: 60,
   erg_laqn: 60,
@@ -130,7 +130,7 @@ const DEFAULT_INTERVAL_MINUTES: Record<string, number> = {
 };
 
 const DEFAULT_WINDOW_HOURS: Record<string, number> = {
-  uk_air_sos: 6,
+  sos: 6,
   blondon_communities: 6,
   erg_laqn: 24,
   openaq: 6,
@@ -313,7 +313,7 @@ function extractRunMetrics(
     "timeseries",
   ]);
   const seriesPolled = getPayloadNumber(data, ["series_polled"]);
-  if (connectorCode === "uk_air_sos") {
+  if (connectorCode === "sos") {
     return {
       stations_updated: null,
       observations_upserted: observations,
@@ -1287,16 +1287,16 @@ async function loadStationRefs(
   return data.map((ref) => String(ref).trim()).filter(Boolean);
 }
 
-async function loadUkAirSosTimeseriesIds(
+async function loadSosTimeseriesIds(
   limit: number,
 ): Promise<string[]> {
   const { data, error } = await postgrestRpcRequest<string[] | null>(
-    "uk_air_sos_select_timeseries_ids",
+    "sos_select_timeseries_ids",
     { batch_limit: limit },
   );
   if (error) {
     throw new Error(
-      `Failed to load uk_air_sos timeseries ids: ${error.message}`,
+      `Failed to load sos timeseries ids: ${error.message}`,
     );
   }
   if (!data || !Array.isArray(data)) {
@@ -1890,12 +1890,12 @@ serve(async (req) => {
     const runScope: RunScope = {};
 
     try {
-      if (connectorCode === "uk_air_sos") {
+      if (connectorCode === "sos") {
         const windowHours = getWindowHours(connector, connectorCode);
         const timeseriesLimit = getTimeseriesLimit(connector);
         let timeseriesIds: string[] = [];
         if (timeseriesLimit) {
-          timeseriesIds = await loadUkAirSosTimeseriesIds(timeseriesLimit);
+          timeseriesIds = await loadSosTimeseriesIds(timeseriesLimit);
         }
         runScope.timeseriesIds = timeseriesIds;
         const payload: Record<string, unknown> = {
@@ -1909,7 +1909,7 @@ serve(async (req) => {
           payload.timeseries_ids = timeseriesIds;
         }
         const resp = await callEdgeFunction(
-          "ingest_uk_air_sos",
+          "ingest_sos",
           payload,
           dispatchStartedAtMs,
         );
@@ -1919,7 +1919,7 @@ serve(async (req) => {
           runMessage = `HTTP ${resp.status}`;
           await logError({
             severity: "error",
-            message: "ingest_uk_air_sos dispatch failed",
+            message: "ingest_sos dispatch failed",
             connector_id: connector?.id ?? null,
             context: {
               connector_code: connectorCode,

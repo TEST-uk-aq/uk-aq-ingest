@@ -4,8 +4,8 @@ This document covers the Cloud Run path for UK-AIR SOS ingest.
 
 ## Scope
 
-- Connector: `uk_air_sos`
-- Worker: `workers/uk_aq_uk_air_sos_cloud_run`
+- Connector: `sos`
+- Worker: `workers/uk_aq_sos_cloud_run`
 - Scheduler: Google Cloud Scheduler -> Cloud Run Service
 - Default service name: `uk-aq-sos-ingest`
 
@@ -22,17 +22,17 @@ Use `connectors.scheduler_backend` in the dashboard:
 - Effective run cadence still comes from `connectors.poll_interval_minutes`.
 - The worker checks due-state and claim-state before dispatch.
 - Station batch size defaults to `connectors.poll_timeseries_batch_size` (dashboard `batch_size`);
-  fallback is `UK_AIR_SOS_STATION_BATCH_LIMIT` when connector batch size is unset.
+  fallback is `SOS_STATION_BATCH_LIMIT` when connector batch size is unset.
 - `batch_size` is a hard total cap across tier1, tier2, and stale station picks.
 
 ## Checkpoint model
 
 - Edge path (unchanged):
-  - selector: `uk_aq_core.uk_air_sos_select_timeseries_ids`
-  - checkpoint table: `uk_aq_raw.uk_air_sos_timeseries_checkpoints`
+  - selector: `uk_aq_core.sos_select_timeseries_ids`
+  - checkpoint table: `uk_aq_raw.sos_timeseries_checkpoints`
 - Cloud Run path:
-  - selector: `uk_aq_core.uk_air_sos_select_station_refs`
-  - checkpoint table: `uk_aq_raw.uk_air_sos_station_checkpoints`
+  - selector: `uk_aq_core.sos_select_station_refs`
+  - checkpoint table: `uk_aq_raw.sos_station_checkpoints`
 
 Cloud Run picks due stations first, then scopes timeseries to those stations.
 The station selector is constrained to stations that have at least one SOS timeseries row,
@@ -56,12 +56,12 @@ Per run, worker updates:
     `max(timeseries.last_value_at)` across selected timeseries ids.
 - `uk_aq_raw.error_logs` on ingest failure
   - When Dropbox error logging is enabled, the wrapper mirrors the inserted failure row into `/error_log/YYYY-MM-DD/` and patches `error_logs.dropbox_path`.
-- `uk_aq_raw.uk_air_sos_station_checkpoints` after successful/partial runs
+- `uk_aq_raw.sos_station_checkpoints` after successful/partial runs
 - History observations via shared history mode (`OBSERVS_WRITE_MODE`, default `pubsub_only`)
 - Dropbox artifacts use `uk_aq_*_cloud_run_*` filename prefixes
-  (`UK_AIR_SOS_DROPBOX_UPLOAD_SOURCE=cloud_run`).
+  (`SOS_DROPBOX_UPLOAD_SOURCE=cloud_run`).
 
 ## Deployment
 
-- Workflow: `.github/workflows/uk_aq_uk_air_sos_cloud_run_deploy.yml`
-- Worker README: `workers/uk_aq_uk_air_sos_cloud_run/README.md`
+- Workflow: `.github/workflows/uk_aq_sos_cloud_run_deploy.yml`
+- Worker README: `workers/uk_aq_sos_cloud_run/README.md`

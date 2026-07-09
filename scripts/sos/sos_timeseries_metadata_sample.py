@@ -3,9 +3,9 @@
 Sample UK-AIR SOS timeseries metadata and highlight matches for key terms.
 
 Examples:
-  python3 scripts/uk_air_sos/uk_air_sos_timeseries_metadata_sample.py
-  python3 scripts/uk_air_sos/uk_air_sos_timeseries_metadata_sample.py --station-limit 50
-  python3 scripts/uk_air_sos/uk_air_sos_timeseries_metadata_sample.py --match-terms "model,wind,temperature"
+  python3 scripts/sos/sos_timeseries_metadata_sample.py
+  python3 scripts/sos/sos_timeseries_metadata_sample.py --station-limit 50
+  python3 scripts/sos/sos_timeseries_metadata_sample.py --match-terms "model,wind,temperature"
 """
 
 import argparse
@@ -27,11 +27,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 load_dotenv()
 
-LOG = logging.getLogger("uk_air_sos_timeseries_sample")
+LOG = logging.getLogger("sos_timeseries_sample")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-UK_AIR_SOS_BASE_URL = (
-    os.getenv("UK_AIR_SOS_BASE_URL")
+SOS_BASE_URL = (
+    os.getenv("SOS_BASE_URL")
     or os.getenv("UK_AIR_BASE_URL")
     or os.getenv("UKAIR_BASE_URL")
     or "https://uk-air.defra.gov.uk/sos-ukair/api/v1"
@@ -162,14 +162,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        help="Output JSON file path (default: network_info/UK-Air-SOS/uk_air_sos_timeseries_metadata_sample_<timestamp>.json).",
+        help="Output JSON file path (default: network_info/UK-Air-SOS/sos_timeseries_metadata_sample_<timestamp>.json).",
     )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    client = UkAirClient(UK_AIR_SOS_BASE_URL)
+    client = UkAirClient(SOS_BASE_URL)
     stations = client.stations()
     station_ids: List[str] = []
     for station in stations:
@@ -223,13 +223,13 @@ def main() -> int:
     if not output_path:
         output_path = (
             Path("network_info/UK-Air-SOS")
-            / f"uk_air_sos_timeseries_metadata_sample_{stamp}.json"
+            / f"sos_timeseries_metadata_sample_{stamp}.json"
         )
     else:
         output_path = Path(output_path)
 
     payload = {
-        "source": UK_AIR_SOS_BASE_URL,
+        "source": SOS_BASE_URL,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "station_sample_count": len(station_ids),
         "timeseries_count": len(sample_rows),

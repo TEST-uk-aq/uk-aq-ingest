@@ -112,7 +112,7 @@ begin
 end;
 $$;
 
-create or replace function uk_aq_core.uk_air_sos_select_station_refs(
+create or replace function uk_aq_core.sos_select_station_refs(
   batch_limit integer default 100,
   stale_limit integer default 4
 )
@@ -126,7 +126,7 @@ declare
 begin
   select id into v_connector_id
   from connectors
-  where connector_code = 'uk_air_sos'
+  where connector_code = 'sos'
   limit 1;
 
   if v_connector_id is null then
@@ -165,7 +165,7 @@ begin
     from stations stn
     join station_with_timeseries swt
       on swt.station_id = stn.id
-    left join uk_air_sos_station_checkpoints sc
+    left join sos_station_checkpoints sc
       on sc.station_id = stn.id
     left join latest_obs lo
       on lo.station_id = stn.id

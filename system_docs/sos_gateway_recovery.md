@@ -2,7 +2,7 @@
 
 Operational playbook for recovering UK-AIR SOS ingest after an upstream gateway outage.
 
-See also: [uk_air_sos.md](uk_air_sos.md) (network description), [uk_air_sos_ingest_flow.md](uk_air_sos_ingest_flow.md) (normal-operation flow), [`workers/uk_aq_uk_air_sos_cloud_run/run_job.ts`](../workers/uk_aq_uk_air_sos_cloud_run/run_job.ts) (Cloud Run dispatcher), [`scripts/uk_air_sos/uk_air_sos_ingest.py`](../scripts/uk_air_sos/uk_air_sos_ingest.py) (catalog + ingest worker).
+See also: [sos.md](sos.md) (network description), [sos_ingest_flow.md](sos_ingest_flow.md) (normal-operation flow), [`workers/uk_aq_sos_cloud_run/run_job.ts`](../workers/uk_aq_sos_cloud_run/run_job.ts) (Cloud Run dispatcher), [`scripts/sos/sos_ingest.py`](../scripts/sos/sos_ingest.py) (catalog + ingest worker).
 
 ## When to use this doc
 
@@ -12,8 +12,8 @@ See also: [uk_air_sos.md](uk_air_sos.md) (network description), [uk_air_sos_inge
 
 ## What state the system is in after an outage
 
-- `uk_air_sos_station_checkpoints.last_polled_at` is stale or `NULL`
-- `uk_air_sos_station_checkpoints.next_due_at` may be far in the past or poisoned (rare — see below)
+- `sos_station_checkpoints.last_polled_at` is stale or `NULL`
+- `sos_station_checkpoints.next_due_at` may be far in the past or poisoned (rare — see below)
 - `timeseries.last_value_at` is stale for everything not polled during the outage
 - `timeseries.catalog_missing_runs` may be elevated if the catalog reconciler ran against a partial/empty gateway response
 - Some `timeseries.ended_at` may be set if the reconciler hit its threshold during the outage
@@ -52,7 +52,7 @@ begin;
 -- lag-sample history that's been poisoning the cadence, reseed last_observed_at
 -- from the per-station max(last_value_at) we already have.
 with sos as (
-  select id from uk_aq_core.connectors where connector_code = 'uk_air_sos'
+  select id from uk_aq_core.connectors where connector_code = 'sos'
 ),
 station_truth as (
   select ts.station_id, max(ts.last_value_at) as max_last_value_at
@@ -61,7 +61,7 @@ station_truth as (
   where ts.station_id is not null
   group by ts.station_id
 )
-update uk_aq_raw.uk_air_sos_station_checkpoints sc
+update uk_aq_raw.sos_station_checkpoints sc
 set next_due_at        = now(),
     last_polled_at     = null,
     ingest_lag_samples = '{}'::int[],
@@ -77,7 +77,7 @@ Verification:
 
 ```sql
 select count(*) as due_now
-from uk_aq_raw.uk_air_sos_station_checkpoints
+from uk_aq_raw.sos_station_checkpoints
 where next_due_at <= now();
 ```
 
@@ -87,7 +87,7 @@ Optional but recommended after a long outage — repairs cases where `last_value
 
 ```sql
 with sos as (
-  select id from uk_aq_core.connectors where connector_code = 'uk_air_sos'
+  select id from uk_aq_core.connectors where connector_code = 'sos'
 ),
 truth as (
   select o.timeseries_id, max(o.observed_at) as max_observed_at
@@ -108,13 +108,13 @@ where ts.id = truth.timeseries_id
 
 Re-enable the SOS cron (currently `*/15`) or restart the Cloud Run job.
 
-The catalog reconciler runs as part of full-catalog discovery in `uk_air_sos_ingest.py` (see `reconcile_timeseries_catalog` around line 1227). It sets `last_catalog_seen_at` on every timeseries the gateway acknowledges and increments `catalog_missing_runs` for those it doesn't.
+The catalog reconciler runs as part of full-catalog discovery in `sos_ingest.py` (see `reconcile_timeseries_catalog` around line 1227). It sets `last_catalog_seen_at` on every timeseries the gateway acknowledges and increments `catalog_missing_runs` for those it doesn't.
 
 If you want to force one immediately (instead of waiting for the next scheduled discovery):
 
 ```bash
 # From a host with the SOS ingest environment configured
-python3 scripts/uk_air_sos/uk_air_sos_ingest.py --discover-catalog-only --connector uk_air_sos
+python3 scripts/sos/sos_ingest.py --discover-catalog-only --connector sos
 ```
 
 (Exact flag depends on the script revision — check `--help` if unsure.)
@@ -124,7 +124,7 @@ python3 scripts/uk_air_sos/uk_air_sos_ingest.py --discover-catalog-only --connec
 ```sql
 -- Stations being polled in the last hour
 select count(*) as polled_recent
-from uk_aq_core.uk_air_sos_station_checkpoints
+from uk_aq_core.sos_station_checkpoints
 where last_polled_at > now() - interval '1 hour';
 
 -- Fresh-data signal per pollutant (target ~3-hour freshness)
@@ -135,7 +135,7 @@ select
 from uk_aq_core.timeseries ts
 join uk_aq_core.phenomena ph on ph.id = ts.phenomenon_id
 join uk_aq_core.connectors c on c.id = ts.connector_id
-where c.connector_code = 'uk_air_sos'
+where c.connector_code = 'sos'
   and ts.ended_at is null
 group by ph.pollutant_key
 order by fresh desc;
@@ -145,7 +145,7 @@ PM2.5/PM10/NO2/O3 should show non-zero `fresh` within ~30–60 min of restart. I
 
 ### 6. Clean up post-recovery orphans
 
-After 1 or 2 catalog cycles, anything you reactivated that the gateway no longer serves will be auto-end-dated by the reconciler when `catalog_missing_runs >= UK_AIR_TIMESERIES_END_MISSING_RUNS` (currently `2`, defined at [`uk_air_sos_ingest.py:87`](../scripts/uk_air_sos/uk_air_sos_ingest.py#L87)).
+After 1 or 2 catalog cycles, anything you reactivated that the gateway no longer serves will be auto-end-dated by the reconciler when `catalog_missing_runs >= UK_AIR_TIMESERIES_END_MISSING_RUNS` (currently `2`, defined at [`sos_ingest.py:87`](../scripts/sos/sos_ingest.py#L87)).
 
 If you don't want to wait, identify and end-date orphans directly:
 
@@ -159,7 +159,7 @@ select
 from uk_aq_core.timeseries ts
 join uk_aq_core.connectors c on c.id = ts.connector_id
 left join uk_aq_core.stations s on s.id = ts.station_id
-where c.connector_code = 'uk_air_sos'
+where c.connector_code = 'sos'
   and ts.ended_at is null
   and ts.last_value_at is null
   and ts.last_catalog_seen_at is null
@@ -173,13 +173,13 @@ If the list matches the 404 noise in `error_logs`, bulk-retire them:
 -- the catalog has never confirmed since the last recovery reset.
 update uk_aq_core.timeseries
 set ended_at = now(), updated_at = now()
-where connector_id = (select id from uk_aq_core.connectors where connector_code = 'uk_air_sos')
+where connector_id = (select id from uk_aq_core.connectors where connector_code = 'sos')
   and last_value_at is null
   and last_catalog_seen_at is null
   and ended_at is null;
 ```
 
-Safety net: if any of these *should* legitimately exist, the next catalog run will reactivate them via the "if seen → `ended_at = null`" branch in [`uk_air_sos_ingest.py:1313-1320`](../scripts/uk_air_sos/uk_air_sos_ingest.py#L1313-L1320). No data loss risk.
+Safety net: if any of these *should* legitimately exist, the next catalog run will reactivate them via the "if seen → `ended_at = null`" branch in [`sos_ingest.py:1313-1320`](../scripts/sos/sos_ingest.py#L1313-L1320). No data loss risk.
 
 ### 7. Backfill missed days (only if observations actually exist upstream)
 
@@ -197,7 +197,7 @@ Instead, **only reactivate rows where the catalog has confirmed they exist** (`l
 -- Surgical reactivation: only resurrect timeseries the catalog recently saw
 update uk_aq_core.timeseries
 set ended_at = null, catalog_missing_runs = 0, updated_at = now()
-where connector_id = (select id from uk_aq_core.connectors where connector_code = 'uk_air_sos')
+where connector_id = (select id from uk_aq_core.connectors where connector_code = 'sos')
   and ended_at is not null
   and last_catalog_seen_at > now() - interval '7 days';
 ```
@@ -219,7 +219,7 @@ select ph.pollutant_key, count(*) as ended
 from uk_aq_core.timeseries ts
 join uk_aq_core.phenomena ph on ph.id = ts.phenomenon_id
 join uk_aq_core.connectors c on c.id = ts.connector_id
-where c.connector_code = 'uk_air_sos' and ts.ended_at is not null
+where c.connector_code = 'sos' and ts.ended_at is not null
 group by ph.pollutant_key
 order by ended desc;
 ```

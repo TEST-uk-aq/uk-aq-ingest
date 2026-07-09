@@ -2,12 +2,12 @@ FROM denoland/deno:2.1.4
 
 WORKDIR /app
 
-COPY workers/uk_aq_uk_air_sos_cloud_run/run_job.ts /app/workers/uk_aq_uk_air_sos_cloud_run/run_job.ts
-COPY workers/uk_aq_uk_air_sos_cloud_run/run_service.ts /app/workers/uk_aq_uk_air_sos_cloud_run/run_service.ts
+COPY workers/uk_aq_sos_cloud_run/run_job.ts /app/workers/uk_aq_sos_cloud_run/run_job.ts
+COPY workers/uk_aq_sos_cloud_run/run_service.ts /app/workers/uk_aq_sos_cloud_run/run_service.ts
 COPY workers/shared/dropbox_error_log.ts /app/workers/shared/dropbox_error_log.ts
 
 # Reuse existing SOS ingest implementation + shared helpers.
-COPY supabase/functions/ingest_uk_air_sos/index.ts /app/runtime/ingest_uk_air_sos/index.ts
+COPY supabase/functions/ingest_sos/index.ts /app/runtime/ingest_sos/index.ts
 COPY supabase/functions/_shared/cache.ts /app/runtime/_shared/cache.ts
 COPY supabase/functions/_shared/fetch_egress_patch.ts /app/runtime/_shared/fetch_egress_patch.ts
 COPY supabase/functions/_shared/egress_metrics.ts /app/runtime/_shared/egress_metrics.ts
@@ -16,6 +16,6 @@ COPY supabase/functions/_shared/fetch_egress_patch.ts /app/supabase/functions/_s
 COPY supabase/functions/_shared/egress_metrics.ts /app/supabase/functions/_shared/egress_metrics.ts
 
 ENV PORT=8000
-ENV UK_AIR_SOS_LOCAL_PORT=8000
+ENV SOS_LOCAL_PORT=8000
 
-CMD ["deno", "run", "--allow-env", "--allow-net", "--allow-read", "--allow-write", "--allow-run", "/app/workers/uk_aq_uk_air_sos_cloud_run/run_service.ts"]
+CMD ["deno", "run", "--allow-env", "--allow-net", "--allow-read", "--allow-write", "--allow-run", "/app/workers/uk_aq_sos_cloud_run/run_service.ts"]

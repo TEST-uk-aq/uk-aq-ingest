@@ -3,7 +3,7 @@
 Download the UK-AIR monitoring sites CSV from the search results page.
 
 Requires:
-- UK_AIR_SOS_SITE_SEARCH_URL (if --search-url is not provided)
+- SOS_SITE_SEARCH_URL (if --search-url is not provided)
 """
 
 import argparse
@@ -33,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 
-LOG = logging.getLogger("uk_air_sos_site_register")
+LOG = logging.getLogger("sos_site_register")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token"
@@ -276,7 +276,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--search-url",
-        default=os.getenv("UK_AIR_SOS_SITE_SEARCH_URL") or os.getenv("GOV_UK_AURN_SITE_SEARCH_URL"),
+        default=os.getenv("SOS_SITE_SEARCH_URL") or os.getenv("GOV_UK_AURN_SITE_SEARCH_URL"),
         help="Full URL to the UK-AIR search results page (with filters applied).",
     )
     parser.add_argument(
@@ -285,7 +285,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        default="uk_air_sos_site_register.csv",
+        default="sos_site_register.csv",
         help="Output CSV path.",
     )
     parser.add_argument(
@@ -316,7 +316,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--site-ref-map-csv",
-        default="network_info/uk_air_sos/uk_air_sos_site_refs.csv",
+        default="network_info/sos/sos_site_refs.csv",
         help=(
             "Optional CSV mapping UK-AIR refs to DEFRA flat-file site refs. "
             "Expected columns: uk_air_ref,site_ref."
@@ -356,7 +356,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--dropbox-dir",
-        default="network_info/uk_air_sos",
+        default="network_info/sos",
         help="Dropbox folder relative to UK_AQ_DROPBOX_ROOT.",
     )
     parser.add_argument(
@@ -372,8 +372,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--user-agent",
         default=os.getenv(
-            "UK_AIR_SOS_SITE_SEARCH_USER_AGENT",
-            "Mozilla/5.0 (uk_air_sos_site_register)",
+            "SOS_SITE_SEARCH_USER_AGENT",
+            "Mozilla/5.0 (sos_site_register)",
         ),
         help="Custom User-Agent string.",
     )
@@ -633,7 +633,7 @@ def _build_client() -> SupabaseSchemas:
 
 
 def _fetch_existing_networks(client) -> Dict[str, Dict[str, Any]]:
-    resp = client.table("uk_air_sos_networks").select(
+    resp = client.table("sos_networks").select(
         "network_ref,network_code,network_display_name"
     ).execute()
     rows = resp.data if hasattr(resp, "data") else resp.get("data")
@@ -697,7 +697,7 @@ def _upsert_network_pollutants(
         return
     _upsert_batches(
         client,
-        "uk_air_sos_network_pollutants",
+        "sos_network_pollutants",
         rows,
         batch_size=batch_size,
         on_conflict="network_ref,match_type,match_value",
@@ -716,7 +716,7 @@ def _refresh_site_timeseries_refs(
 ) -> Dict[str, Any]:
     public_schema = os.getenv("UK_AQ_PUBLIC_SCHEMA") or "uk_aq_public"
     response = schemas.client.schema(public_schema).rpc(
-        "uk_aq_rpc_uk_air_sos_site_timeseries_refs_refresh",
+        "uk_aq_rpc_sos_station_timeseries_site_refs_refresh",
         {"p_source_snapshot_at": source_snapshot_at},
     ).execute()
     result = response.data if hasattr(response, "data") else response.get("data")
@@ -858,7 +858,7 @@ def _load_register(
 
     _upsert_batches(
         schemas.core,
-        "uk_air_sos_networks",
+        "sos_networks",
         network_rows,
         batch_size=batch_size,
         on_conflict="network_ref",
@@ -866,7 +866,7 @@ def _load_register(
     _upsert_network_pollutants(schemas.core, network_refs, batch_size=batch_size)
     _upsert_batches(
         schemas.raw,
-        "uk_air_sos_site_register",
+        "sos_site_register",
         rows,
         batch_size=batch_size,
         on_conflict="uk_air_ref,snapshot_at",
@@ -892,7 +892,7 @@ def main() -> int:
         csv_url = args.csv_url
         if not csv_url:
             if not args.search_url:
-                raise SystemExit("Provide --search-url or set UK_AIR_SOS_SITE_SEARCH_URL.")
+                raise SystemExit("Provide --search-url or set SOS_SITE_SEARCH_URL.")
             resp = requests.get(args.search_url, headers=headers, timeout=args.timeout)
             resp.raise_for_status()
             if args.save_html:

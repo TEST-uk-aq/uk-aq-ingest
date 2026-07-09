@@ -3,9 +3,9 @@
 Fetch UK-AIR SOS stations and filter to the UK bounding box.
 
 Examples:
-  python3 scripts/uk_air_sos/uk_air_sos_list_stations.py
-  python3 scripts/uk_air_sos/uk_air_sos_list_stations.py --format csv --output uk_stations.csv
-  python3 scripts/uk_air_sos/uk_air_sos_list_stations.py --no-filter
+  python3 scripts/sos/sos_list_stations.py
+  python3 scripts/sos/sos_list_stations.py --format csv --output uk_stations.csv
+  python3 scripts/sos/sos_list_stations.py --no-filter
 """
 
 import argparse
@@ -43,18 +43,18 @@ load_dotenv()
 LOG = logging.getLogger("uk_aq_stations")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-UK_AIR_SOS_BASE_URL = (
-    os.getenv("UK_AIR_SOS_BASE_URL")
+SOS_BASE_URL = (
+    os.getenv("SOS_BASE_URL")
     or os.getenv("UK_AIR_BASE_URL")
     or os.getenv("UKAIR_BASE_URL")
     or "https://uk-air.defra.gov.uk/sos-ukair/api/v1"
 ).rstrip("/")
-UK_AIR_SOS_SERVICE_LABEL = (
-    os.getenv("UK_AIR_SOS_SERVICE_LABEL")
+SOS_SERVICE_LABEL = (
+    os.getenv("SOS_SERVICE_LABEL")
     or os.getenv("UK_AIR_SERVICE_LABEL")
-    or "UK-AIR-SOS"
+    or "SOS"
 )
-UK_AIR_SOS_CONNECTOR_CODE = "uk_air_sos"
+SOS_CONNECTOR_CODE = "sos"
 PLACEHOLDER_STATION_REFS = {"9999999999"}
 
 UK_BBOX = {
@@ -236,7 +236,7 @@ def _select_station_row(
 
 
 class UkAirClient:
-    def __init__(self, base_url: str = UK_AIR_SOS_BASE_URL, timeout: int = 60, retries: int = 3):
+    def __init__(self, base_url: str = SOS_BASE_URL, timeout: int = 60, retries: int = 3):
         self.base_url = base_url
         self.timeout = timeout
         self.retries = retries
@@ -329,7 +329,7 @@ class SupabaseWriter:
         existing = (
             self.core.table("connectors")
             .select("id,poll_enabled")
-            .eq("connector_code", UK_AIR_SOS_CONNECTOR_CODE)
+            .eq("connector_code", SOS_CONNECTOR_CODE)
             .limit(1)
             .execute()
         )
@@ -344,12 +344,12 @@ class SupabaseWriter:
         poll_enabled = bool(existing_row.get("poll_enabled")) if isinstance(existing_row, dict) else False
         payload = [
             {
-                "connector_code": UK_AIR_SOS_CONNECTOR_CODE,
+                "connector_code": SOS_CONNECTOR_CODE,
                 "label": _normalize_service_label(primary.get("label") or primary.get("name")),
                 "display_name": _normalize_service_label(
                     primary.get("label") or primary.get("name")
                 ),
-                "service_url": primary.get("serviceUrl") or primary.get("url") or UK_AIR_SOS_BASE_URL,
+                "service_url": primary.get("serviceUrl") or primary.get("url") or SOS_BASE_URL,
                 "poll_enabled": poll_enabled,
             }
         ]
@@ -360,7 +360,7 @@ class SupabaseWriter:
         resp = (
             self.core.table("connectors")
             .select("id")
-            .eq("connector_code", UK_AIR_SOS_CONNECTOR_CODE)
+            .eq("connector_code", SOS_CONNECTOR_CODE)
             .limit(1)
             .execute()
         )
@@ -407,7 +407,7 @@ class SupabaseWriter:
             attributes_by_station[int(station_id)] = {
                 "is_placeholder": True,
                 "exclude_from_ui": True,
-                "placeholder_source": "uk_air_sos",
+                "placeholder_source": "sos",
             }
         return self.upsert_station_metadata(attributes_by_station)
 
@@ -475,7 +475,7 @@ class SupabaseWriter:
 
     def fetch_latest_site_register_snapshot(self) -> Optional[str]:
         resp = (
-            self.raw.table("uk_air_sos_site_register")
+            self.raw.table("sos_site_register")
             .select("snapshot_at")
             .order("snapshot_at", desc=True)
             .limit(1)
@@ -499,7 +499,7 @@ class SupabaseWriter:
         offset = 0
         while True:
             resp = (
-                self.raw.table("uk_air_sos_site_register")
+                self.raw.table("sos_site_register")
                 .select("uk_air_ref,site_name,latitude,longitude,networks,snapshot_at")
                 .eq("snapshot_at", snapshot_at)
                 .range(offset, offset + page_size - 1)
@@ -513,9 +513,9 @@ class SupabaseWriter:
             offset += page_size
         return rows
 
-    def fetch_uk_air_sos_networks(self) -> Dict[str, Dict[str, Any]]:
+    def fetch_sos_networks(self) -> Dict[str, Dict[str, Any]]:
         resp = (
-            self.core.table("uk_air_sos_networks")
+            self.core.table("sos_networks")
             .select("network_ref,network_code,network_display_name")
             .execute()
         )
@@ -529,7 +529,7 @@ class SupabaseWriter:
                 networks[str(ref)] = row
         return networks
 
-    def fetch_uk_air_sos_station_refs(
+    def fetch_sos_station_uk_air_refs(
         self, station_ids: Sequence[int]
     ) -> Dict[int, Dict[str, Any]]:
         if not station_ids:
@@ -537,7 +537,7 @@ class SupabaseWriter:
         refs: Dict[int, Dict[str, Any]] = {}
         for chunk in _chunked(list(station_ids), 200):
             resp = (
-                self.raw.table("uk_air_sos_station_refs")
+                self.raw.table("sos_station_uk_air_refs")
                 .select("station_id,uk_air_ref,match_method,match_distance_m,source_snapshot_at")
                 .in_("station_id", list(chunk))
                 .execute()
@@ -788,12 +788,12 @@ def _extract_list(payload: Any, keys: Sequence[str]) -> List[Dict[str, Any]]:
 
 def _normalize_service_label(label: Optional[str]) -> Optional[str]:
     if label is None:
-        return UK_AIR_SOS_SERVICE_LABEL
+        return SOS_SERVICE_LABEL
     trimmed = label.strip()
     if not trimmed:
-        return UK_AIR_SOS_SERVICE_LABEL
+        return SOS_SERVICE_LABEL
     if trimmed.lower().startswith("my timeseries service"):
-        return UK_AIR_SOS_SERVICE_LABEL
+        return SOS_SERVICE_LABEL
     return trimmed
 
 
@@ -1299,8 +1299,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fetch UK-AIR SOS stations for the UK.")
     parser.add_argument(
         "--output",
-        default="uk_air_sos_stations.json",
-        help="Output file path (default: uk_air_sos_stations.json).",
+        default="sos_stations.json",
+        help="Output file path (default: sos_stations.json).",
     )
     parser.add_argument(
         "--format",
@@ -1356,7 +1356,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--check-output",
-        default="uk_air_sos_timeseries_link_check.csv",
+        default="sos_timeseries_link_check.csv",
         help="CSV output path for --check-timeseries-links results.",
     )
     return parser.parse_args()
@@ -1563,7 +1563,7 @@ def main() -> None:
         raw_payload = None
         if args.raw_output:
             raw_payload = {
-                "source": UK_AIR_SOS_BASE_URL,
+                "source": SOS_BASE_URL,
                 "fetched_at": utcnow().isoformat(),
                 "bbox": None if args.no_filter else UK_BBOX,
                 "count": len(filtered),
@@ -1571,7 +1571,7 @@ def main() -> None:
             }
             _write_json(args.raw_output, raw_payload)
         payload = {
-            "source": UK_AIR_SOS_BASE_URL,
+            "source": SOS_BASE_URL,
             "fetched_at": utcnow().isoformat(),
             "bbox": None if args.no_filter else UK_BBOX,
             "count": len(filtered),

@@ -25,8 +25,8 @@ if PROJECT_ROOT.name == "scripts":
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.uk_air_sos.uk_air_sos_ingest import (
-    UK_AIR_SOS_BASE_URL,
+from scripts.sos.sos_ingest import (
+    SOS_BASE_URL,
     UK_BBOX,
     SupabaseWriter,
     UkAirClient,
@@ -399,7 +399,7 @@ def main() -> int:
 
     for (connector_id, service_ref), ts_refs in by_service.items():
         connector = connectors.get(connector_id) or {}
-        base_url = (connector.get("service_url") or UK_AIR_SOS_BASE_URL).rstrip("/")
+        base_url = (connector.get("service_url") or SOS_BASE_URL).rstrip("/")
 
         client = UkAirClient(base_url=base_url)
         print(

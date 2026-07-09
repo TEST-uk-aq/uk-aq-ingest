@@ -9,9 +9,9 @@ This document summarizes the UK-AQ helper scripts and their inputs/outputs.
 - `SB_SECRET_KEY`
 
 **UK-AIR SOS**
-- `UK_AIR_SOS_BASE_URL` (optional; defaults to `https://uk-air.defra.gov.uk/sos-ukair/api/v1`)
+- `SOS_BASE_URL` (optional; defaults to `https://uk-air.defra.gov.uk/sos-ukair/api/v1`)
   - The scripts also accept the legacy `UK_AIR_BASE_URL` or `UKAIR_BASE_URL` if set.
-- `UK_AIR_SOS_SERVICE_LABEL` (optional; defaults to `UK-AIR-SOS`)
+- `SOS_SERVICE_LABEL` (optional; defaults to `SOS`)
 
 **Sensor.Community**
 - `SCOMM_BASE_URL` (optional; defaults to `https://data.sensor.community`)
@@ -537,7 +537,7 @@ Environment:
 - Required: `SUPABASE_URL`, `SB_PUBLISHABLE_DEFAULT_KEY`, and either `UK_AQ_DEV_JWT` or `UK_AQ_DEV_REFRESH_TOKEN`
 - Optional overrides: `HOST`, `SCHEDULER_PORT`, `SNAPSHOT_PORT`
 
-### `scripts/uk_air_sos/uk_air_sos_ingest.py`
+### `scripts/sos/sos_ingest.py`
 Purpose:
 - Discover stations and timeseries with optional filters.
 - Backfill observations for a chosen year.
@@ -545,8 +545,8 @@ Purpose:
 
 Common commands:
 ```
-python3 scripts/uk_air_sos/uk_air_sos_ingest.py --discover --backfill-2025
-python3 scripts/uk_air_sos/uk_air_sos_ingest.py --refresh-recent --hours 6
+python3 scripts/sos/sos_ingest.py --discover --backfill-2025
+python3 scripts/sos/sos_ingest.py --refresh-recent --hours 6
 ```
 
 Writes to:
@@ -564,7 +564,7 @@ Key flags:
 - `--service-ref` (alias `--service-id`) or `--service-label` to target a specific SOS service
 - `--sample-timeseries 1` to log a short summary of the first N timeseries objects
 - `--raw-dropbox` to write raw payloads to Dropbox (testing only; guarded by `UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL`)
-- `--raw-dropbox-folder /connectors/uk_air_sos/raw_data` to override the Dropbox folder
+- `--raw-dropbox-folder /connectors/sos/raw_data` to override the Dropbox folder
 - `--log-level WARNING` to reduce logging output
     - Default output prints only station count, error count, and Dropbox upload info.
 Batching:
@@ -584,9 +584,9 @@ Raw payloads (testing only):
 - Raw payload uploads are disabled unless `SUPABASE_URL` matches `UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL`.
 - Dropbox credentials required: `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`.
 - The raw capture writes all SOS responses fetched during the run into a single gzipped JSONL file and uploads it to Dropbox.
-- Uploads are organized under `connectors/uk_air_sos/raw_data/YYYY-MM-DD` within the configured Dropbox folder (for scoped apps, do not include `/Apps/<app>` in the path).
-- Each run also uploads a log file to `/connectors/uk_air_sos/log/YYYY-MM-DD/` (Dropbox app root).
-- Logs older than 31 days are zipped into `/connectors/uk_air_sos/log/archive/YYYY-MM-DD.zip`; archive files older than 1 year are removed.
+- Uploads are organized under `connectors/sos/raw_data/YYYY-MM-DD` within the configured Dropbox folder (for scoped apps, do not include `/Apps/<app>` in the path).
+- Each run also uploads a log file to `/connectors/sos/log/YYYY-MM-DD/` (Dropbox app root).
+- Logs older than 31 days are zipped into `/connectors/sos/log/archive/YYYY-MM-DD.zip`; archive files older than 1 year are removed.
 - If `UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL` is unset in live environments, the upload never runs (even if `--raw-dropbox` is passed).
 
 ### `scripts/erg_laqn/erg_laqn_list_stations.py`
@@ -959,7 +959,7 @@ Purpose:
 Common commands:
 ```
 python3 scripts/uk_aq_backfill_timeseries_stations.py
-python3 scripts/uk_aq_backfill_timeseries_stations.py --connector-code uk_air_sos --service-ref 1
+python3 scripts/uk_aq_backfill_timeseries_stations.py --connector-code sos --service-ref 1
 ```
 
 Key flags:
@@ -973,7 +973,7 @@ Environment:
 - `SUPABASE_URL`
 - `SB_SECRET_KEY`
 
-### `scripts/uk_air_sos/uk_air_sos_network_assignment_report.py`
+### `scripts/sos/sos_network_assignment_report.py`
 Purpose:
 - Export and validate canonical UK-AIR SOS assignments using
   `stations.network_id -> networks.id`.
@@ -990,54 +990,54 @@ python3 scripts/uk_aq_backfill_station_memberships.py --source sos
 Environment:
 - `SUPABASE_URL`
 - `SB_SECRET_KEY`
-- `UK_AIR_SOS_BASE_URL` (optional override)
+- `SOS_BASE_URL` (optional override)
 Notes:
-- Uses the latest `uk_air_sos_site_register.snapshot_at` by default; use `--snapshot-at` to target a specific snapshot.
+- Uses the latest `sos_site_register.snapshot_at` by default; use `--snapshot-at` to target a specific snapshot.
 - Adjust match tolerances with `--match-distance-m` and `--match-distance-no-name-m` if needed.
-- Ensure `uk_air_sos_network_pollutants` is populated (via `scripts/uk_air_sos/uk_air_sos_site_register.py --load`).
+- Ensure `sos_network_pollutants` is populated (via `scripts/sos/sos_site_register.py --load`).
 
-### `scripts/uk_air_sos/uk_air_sos_site_register.py`
+### `scripts/sos/sos_site_register.py`
 Purpose:
 - Download the UK-AIR "Search for monitoring sites" CSV (all sites).
 - Use the CSV as the authoritative register for site refs, names, coordinates, and network membership.
 - Populate DEFRA flat-file `site_ref` values from official UK-AIR site-info pages when loading.
-- Use `network_info/uk_air_sos/uk_air_sos_site_refs.csv` as a seed/override map where needed.
-- After a successful register load, refresh `uk_air_sos_site_timeseries_refs` through `uk_aq_rpc_uk_air_sos_site_timeseries_refs_refresh`.
+- Use `network_info/sos/sos_site_refs.csv` as a seed/override map where needed.
+- After a successful register load, refresh `sos_station_timeseries_site_refs` through `uk_aq_rpc_sos_station_timeseries_site_refs_refresh`.
 - Fail on multiple active timeseries for the same archive `site_ref` + pollutant or on invalid derived validity intervals; log the count of unmapped AURN sites.
 
 Common commands:
 ```
-python3 scripts/uk_air_sos/uk_air_sos_site_register.py --search-url "<search url>" --output uk_air_sos_site_register.csv
-python3 scripts/uk_air_sos/uk_air_sos_site_register.py --csv-url "<direct csv url>" --output uk_air_sos_site_register.csv
-python3 scripts/uk_air_sos/uk_air_sos_site_register.py --search-url "<search url>" --dropbox-upload
-python3 scripts/uk_air_sos/uk_air_sos_site_register.py --search-url "<search url>" --dropbox-upload --load
-python3 scripts/uk_air_sos/uk_air_sos_site_register.py --load-only --csv-path /path/to/uk-air-search-results.csv
-python3 scripts/uk_air_sos/uk_air_sos_site_register.py --load-only --csv-path /path/to/uk-air-search-results.csv --site-ref-map-csv network_info/uk_air_sos/uk_air_sos_site_refs.csv
-python3 scripts/uk_air_sos/uk_air_sos_site_register.py --load-only --csv-path /path/to/uk-air-search-results.csv --discover-site-refs --validate-site-ref-map --dry-run
+python3 scripts/sos/sos_site_register.py --search-url "<search url>" --output sos_site_register.csv
+python3 scripts/sos/sos_site_register.py --csv-url "<direct csv url>" --output sos_site_register.csv
+python3 scripts/sos/sos_site_register.py --search-url "<search url>" --dropbox-upload
+python3 scripts/sos/sos_site_register.py --search-url "<search url>" --dropbox-upload --load
+python3 scripts/sos/sos_site_register.py --load-only --csv-path /path/to/uk-air-search-results.csv
+python3 scripts/sos/sos_site_register.py --load-only --csv-path /path/to/uk-air-search-results.csv --site-ref-map-csv network_info/sos/sos_site_refs.csv
+python3 scripts/sos/sos_site_register.py --load-only --csv-path /path/to/uk-air-search-results.csv --discover-site-refs --validate-site-ref-map --dry-run
 ```
 
 Environment:
-- `UK_AIR_SOS_SITE_SEARCH_URL` (optional; used when `--search-url` is omitted)
-- `UK_AIR_SOS_SITE_SEARCH_USER_AGENT` (optional)
+- `SOS_SITE_SEARCH_URL` (optional; used when `--search-url` is omitted)
+- `SOS_SITE_SEARCH_USER_AGENT` (optional)
 - `UK_AQ_DROPBOX_ROOT` (required for `--dropbox-upload`)
 - `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN` (required for `--dropbox-upload`)
 - `SUPABASE_URL`, `SB_SECRET_KEY` (required for `--load`/`--load-only`)
 Notes:
-- The script writes a timestamped filename locally and to Dropbox (e.g., `uk_air_sos_site_register_YYYYMMDDTHHMMSSZ.csv`).
-- When `--load` is used, it preserves existing `uk_air_sos_networks.network_display_name` values and upserts `uk_air_sos_network_pollutants`.
+- The script writes a timestamped filename locally and to Dropbox (e.g., `sos_site_register_YYYYMMDDTHHMMSSZ.csv`).
+- When `--load` is used, it preserves existing `sos_networks.network_display_name` values and upserts `sos_network_pollutants`.
 - `--discover-site-refs` checks official `networks/site-info?uka_id=<uk_air_ref>` pages for flat-file links.
 - `--site-ref-map-csv` is optional; unresolved UK-AIR refs are loaded with `site_ref = null` rather than guessed.
 - `--validate-site-ref-map` checks mapped refs against official UK-AIR site-info and flat-file pages before loading.
 
-### `scripts/uk_air_sos/uk_air_sos_membership_report.py`
+### `scripts/sos/sos_membership_report.py`
 Purpose:
 - Generate a detailed CSV report for SOS membership backfills (pollutant keys, register networks, allowed/filtered networks, memberships).
 
 Common commands:
 ```
-python3 scripts/uk_air_sos/uk_air_sos_membership_report.py
-python3 scripts/uk_air_sos/uk_air_sos_membership_report.py --snapshot-at "<timestamp>"
-python3 scripts/uk_air_sos/uk_air_sos_membership_report.py --output network_info/UK-Air-SOS/uk_air_sos_membership_report.csv
+python3 scripts/sos/sos_membership_report.py
+python3 scripts/sos/sos_membership_report.py --snapshot-at "<timestamp>"
+python3 scripts/sos/sos_membership_report.py --output network_info/UK-Air-SOS/sos_membership_report.csv
 ```
 
 Environment:
@@ -1045,11 +1045,11 @@ Environment:
 - `SB_SECRET_KEY`
 
 Notes:
-- Defaults to the latest `uk_air_sos_site_register.snapshot_at`.
+- Defaults to the latest `sos_site_register.snapshot_at`.
 - Writes to `network_info/UK-Air-SOS/` with a timestamped filename when `--output` is omitted.
 
 
-### `scripts/uk_air_sos/uk_air_sos_list_stations.py`
+### `scripts/sos/sos_list_stations.py`
 Purpose:
 - Fetch all current stations from UK-AIR SOS.
 - Filter to UK bounding box (keeps stations with missing coordinates; `geometry` will be null in Supabase).
@@ -1057,22 +1057,22 @@ Purpose:
 
 Common commands:
 ```
-python3 scripts/uk_air_sos/uk_air_sos_list_stations.py
-python3 scripts/uk_air_sos/uk_air_sos_list_stations.py --format csv --output uk_stations.csv
-python3 scripts/uk_air_sos/uk_air_sos_list_stations.py --to-supabase
-python3 scripts/uk_air_sos/uk_air_sos_list_stations.py --no-filter --output uk_aq_stations_all.json
-python3 scripts/uk_air_sos/uk_air_sos_list_stations.py --raw-output uk_aq_stations_raw.json
-python3 scripts/uk_air_sos/uk_air_sos_list_stations.py --service-id-from-timeseries
-python3 scripts/uk_air_sos/uk_air_sos_list_stations.py --check-timeseries-links --check-output uk_air_sos_timeseries_link_check.csv
+python3 scripts/sos/sos_list_stations.py
+python3 scripts/sos/sos_list_stations.py --format csv --output uk_stations.csv
+python3 scripts/sos/sos_list_stations.py --to-supabase
+python3 scripts/sos/sos_list_stations.py --no-filter --output uk_aq_stations_all.json
+python3 scripts/sos/sos_list_stations.py --raw-output uk_aq_stations_raw.json
+python3 scripts/sos/sos_list_stations.py --service-id-from-timeseries
+python3 scripts/sos/sos_list_stations.py --check-timeseries-links --check-output sos_timeseries_link_check.csv
 ```
 
 Notes:
 - Connector upserts preserve existing `poll_enabled`; new connectors default to `poll_enabled=false`.
-- If SOS returns no usable `/services` payload, the script reuses the existing `uk_air_sos` connector id instead of failing connector resolution.
+- If SOS returns no usable `/services` payload, the script reuses the existing `sos` connector id instead of failing connector resolution.
 - If SOS returns zero non-placeholder stations, Supabase station writes are skipped for that run (including `mark_removed`) to avoid false removals during upstream outages.
 
 Default outputs:
-- `uk_air_sos_stations.json`
+- `sos_stations.json`
 - `uk_aq_stations_all.json` (when using `--no-filter`)
 Optional raw output:
 - `--raw-output` writes raw station payloads to a separate JSON file.
@@ -1092,20 +1092,20 @@ Writes to (when `--to-supabase` is set):
 - `connectors`, `stations`, `station_metadata`
 - `phenomena`, `procedures`, `offerings` (unless `--skip-metadata` is used)
 
-### `scripts/uk_air_sos/uk_air_sos_timeseries_metadata_sample.py`
+### `scripts/sos/sos_timeseries_metadata_sample.py`
 Purpose:
 - Sample SOS timeseries metadata for a small set of stations and highlight matches for keywords (e.g., modelled wind/temp).
 
 Common commands:
 ```
-python3 scripts/uk_air_sos/uk_air_sos_timeseries_metadata_sample.py
-python3 scripts/uk_air_sos/uk_air_sos_timeseries_metadata_sample.py --station-limit 50
-python3 scripts/uk_air_sos/uk_air_sos_timeseries_metadata_sample.py --match-terms "model,wind,temperature"
-python3 scripts/uk_air_sos/uk_air_sos_timeseries_metadata_sample.py --output network_info/UK-Air-SOS/uk_air_sos_timeseries_metadata_sample.json
+python3 scripts/sos/sos_timeseries_metadata_sample.py
+python3 scripts/sos/sos_timeseries_metadata_sample.py --station-limit 50
+python3 scripts/sos/sos_timeseries_metadata_sample.py --match-terms "model,wind,temperature"
+python3 scripts/sos/sos_timeseries_metadata_sample.py --output network_info/UK-Air-SOS/sos_timeseries_metadata_sample.json
 ```
 
 Default output:
-- `network_info/UK-Air-SOS/uk_air_sos_timeseries_metadata_sample_<timestamp>.json`
+- `network_info/UK-Air-SOS/sos_timeseries_metadata_sample_<timestamp>.json`
   - `stations` lifecycle fields: `first_seen_at`, `last_seen_at`, `removed_at`
   - Stations not seen in the current run are marked with `removed_at`.
 
@@ -1195,7 +1195,7 @@ Notes:
   `SCOMM_ERROR_DROPBOX_FOLDER` (defaults to `/error_log`), with `UK_AIR_*` fallbacks.
 - Sets `stations.station_exposure` to `indoor`/`outdoor` when `location.indoor` is present.
 
-### `scripts/uk_air_sos/uk_air_sos_compare.py`
+### `scripts/sos/sos_compare.py`
 Purpose:
 - Fetch DEFRA last-hour readings for a station.
 - Compare DEFRA values to the latest Supabase observations for the same station.
@@ -1203,9 +1203,9 @@ Purpose:
 
 Common commands:
 ```
-python3 scripts/uk_air_sos/uk_air_sos_compare.py
-python3 scripts/uk_air_sos/uk_air_sos_compare.py --station-id BR11 --tolerance 1.5
-python3 scripts/uk_air_sos/uk_air_sos_compare.py --defra-url "https://uk-air.defra.gov.uk/data/site-data?f_site_id=BR11&view=last_hour"
+python3 scripts/sos/sos_compare.py
+python3 scripts/sos/sos_compare.py --station-id BR11 --tolerance 1.5
+python3 scripts/sos/sos_compare.py --defra-url "https://uk-air.defra.gov.uk/data/site-data?f_site_id=BR11&view=last_hour"
 ```
 
 Inputs:

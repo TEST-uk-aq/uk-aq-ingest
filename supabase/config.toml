@@ -28,7 +28,7 @@ verify_jwt = false
 [functions.uk_aq_dispatch_polls]
 verify_jwt = false
 
-[functions.ingest_uk_air_sos]
+[functions.ingest_sos]
 verify_jwt = false
 
 [functions.ingest_breathelondon]

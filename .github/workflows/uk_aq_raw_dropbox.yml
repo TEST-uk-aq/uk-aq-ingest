@@ -33,7 +33,7 @@ jobs:
           UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           UK_AIR_RAW_DROPBOX_FOLDER: /raw_data
         run: |
-          python3 scripts/uk_air_sos/uk_air_sos_ingest.py \
+          python3 scripts/sos/sos_ingest.py \
             --discover \
             --refresh-recent \
             --hours 6 \

@@ -12,9 +12,9 @@ Environment:
 - SB_SECRET_KEY
 
 Examples:
-  python3 scripts/uk_air_sos/uk_air_sos_compare.py
-  python3 scripts/uk_air_sos/uk_air_sos_compare.py --station-id BR11 --tolerance 1.5
-  python3 scripts/uk_air_sos/uk_air_sos_compare.py --defra-url "https://uk-air.defra.gov.uk/data/site-data?f_site_id=BR11&view=last_hour"
+  python3 scripts/sos/sos_compare.py
+  python3 scripts/sos/sos_compare.py --station-id BR11 --tolerance 1.5
+  python3 scripts/sos/sos_compare.py --defra-url "https://uk-air.defra.gov.uk/data/site-data?f_site_id=BR11&view=last_hour"
 """
 
 import argparse
@@ -267,7 +267,7 @@ def parse_defra_table(html_text: str) -> List[PollutantRow]:
 
 def fetch_defra_rows(url: str, timeout: int = 30) -> List[PollutantRow]:
     headers = {
-        "User-Agent": "Mozilla/5.0 (uk_air_sos_compare)"
+        "User-Agent": "Mozilla/5.0 (sos_compare)"
     }
     resp = requests.get(url, headers=headers, timeout=timeout)
     resp.raise_for_status()

@@ -7,7 +7,7 @@ __pycache__/
 /.venv
 /supabase/.temp
 CLI-output.txt
-uk_air_sos_site_register*.csv
+sos_site_register*.csv
 gov_uk_aurn_site_register*.csv
 network_info/UK-Air-SOS/
 *.numbers

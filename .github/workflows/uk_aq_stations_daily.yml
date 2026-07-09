@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      UK_AIR_SOS_CONNECTOR_CODE: uk_air_sos
+      SOS_CONNECTOR_CODE: sos
       SCOMM_CONNECTOR_CODE: sensorcommunity
       OPENAQ_POLL_WAS_ENABLED: "0"
-      UK_AIR_SOS_POLL_WAS_ENABLED: "0"
+      SOS_POLL_WAS_ENABLED: "0"
       RUN_SCOMM_STATIONS_EXPORT: "0"
       DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
       DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
@@ -149,10 +149,10 @@ jobs:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
         run: |
-          python3 scripts/uk_air_sos/uk_air_sos_list_stations.py --to-supabase
+          python3 scripts/sos/sos_list_stations.py --to-supabase
 
       - name: Pause UK-AIR SOS polling
-        id: pause_uk_air_sos_polling
+        id: pause_sos_polling
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
@@ -175,7 +175,7 @@ jobs:
           }
           check = requests.get(
               url,
-              params={"connector_code": "eq.uk_air_sos", "select": "id,poll_enabled"},
+              params={"connector_code": "eq.sos", "select": "id,poll_enabled"},
               headers=headers,
               timeout=30,
           )
@@ -193,24 +193,24 @@ jobs:
               poll_enabled = False
           resp = requests.patch(
               url,
-              params={"connector_code": "eq.uk_air_sos"},
+              params={"connector_code": "eq.sos"},
               headers=headers,
               json={"poll_enabled": False},
               timeout=30,
           ) if connector_found and poll_enabled else None
           if resp is not None:
               resp.raise_for_status()
-              print("Paused uk_air_sos polling.")
+              print("Paused sos polling.")
           else:
               print(
-                  "Skipped pause for uk_air_sos (connector_found="
+                  "Skipped pause for sos (connector_found="
                   f"{connector_found}, poll_enabled={poll_enabled})."
               )
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
               handle.write(f"connector_found={'1' if connector_found else '0'}\n")
               handle.write(f"poll_was_enabled={'1' if poll_enabled else '0'}\n")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
-              handle.write(f"UK_AIR_SOS_POLL_WAS_ENABLED={'1' if poll_enabled else '0'}\n")
+              handle.write(f"SOS_POLL_WAS_ENABLED={'1' if poll_enabled else '0'}\n")
           PY
 
       - name: Discover UK-AIR SOS timeseries
@@ -218,11 +218,11 @@ jobs:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
         run: |
-          python3 scripts/uk_air_sos/uk_air_sos_ingest.py --discover
+          python3 scripts/sos/sos_ingest.py --discover
 
       - name: Resume UK-AIR SOS polling
-        id: resume_uk_air_sos_polling
-        if: always() && steps.pause_uk_air_sos_polling.outputs.poll_was_enabled == '1'
+        id: resume_sos_polling
+        if: always() && steps.pause_sos_polling.outputs.poll_was_enabled == '1'
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
@@ -238,7 +238,7 @@ jobs:
           url = f"{supabase_url}/rest/v1/connectors"
           resp = requests.patch(
               url,
-              params={"connector_code": "eq.uk_air_sos"},
+              params={"connector_code": "eq.sos"},
               headers={
                   "apikey": supabase_key,
                   "Authorization": f"Bearer {supabase_key}",
@@ -250,11 +250,11 @@ jobs:
               timeout=30,
           )
           resp.raise_for_status()
-          print("Resumed uk_air_sos polling.")
+          print("Resumed sos polling.")
           PY
 
       - name: Keep UK-AIR SOS polling unchanged
-        if: always() && (steps.pause_uk_air_sos_polling.outputs.connector_found != '1' || steps.pause_uk_air_sos_polling.outputs.poll_was_enabled != '1')
+        if: always() && (steps.pause_sos_polling.outputs.connector_found != '1' || steps.pause_sos_polling.outputs.poll_was_enabled != '1')
         run: |
           echo "Leaving UK-AIR SOS polling unchanged (workflow did not pause it)."
 

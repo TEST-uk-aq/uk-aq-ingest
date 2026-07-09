@@ -10,15 +10,15 @@ This script:
 Environment:
 - SUPABASE_URL
 - SB_SECRET_KEY
-- UK_AIR_SOS_BASE_URL (optional; defaults to https://uk-air.defra.gov.uk/sos-ukair/api/v1)
-- UK_AIR_SOS_SERVICE_LABEL (optional; defaults to UK-AIR-SOS)
+- SOS_BASE_URL (optional; defaults to https://uk-air.defra.gov.uk/sos-ukair/api/v1)
+- SOS_SERVICE_LABEL (optional; defaults to SOS)
 - connectors.poll_timeseries_batch_size (optional; overrides default batch size)
 - connectors.stations_bbox_supported (optional; when false, skip bbox for station discovery)
 - connectors.timeseries_station_filter_supported (optional; when false, skip station filtering for timeseries)
 
 Examples:
-  python3 scripts/uk_air_sos/uk_air_sos_ingest.py --discover --backfill-2025
-  python3 scripts/uk_air_sos/uk_air_sos_ingest.py --refresh-recent --hours 6
+  python3 scripts/sos/sos_ingest.py --discover --backfill-2025
+  python3 scripts/sos/sos_ingest.py --refresh-recent --hours 6
 """
 
 import argparse
@@ -57,24 +57,24 @@ load_dotenv()
 DEFAULT_LOG_LEVEL = os.getenv("UK_AIR_LOG_LEVEL", "WARNING").upper()
 DEFAULT_FILE_LOG_LEVEL = os.getenv("UK_AIR_FILE_LOG_LEVEL", "INFO").upper()
 PROGRESS_DOT_EVERY = 50
-LOG = logging.getLogger("uk_air_sos")
+LOG = logging.getLogger("sos")
 logging.basicConfig(
     level=getattr(logging, DEFAULT_LOG_LEVEL, logging.WARNING),
     format="%(asctime)s %(levelname)s %(message)s",
 )
 
-UK_AIR_SOS_BASE_URL = (
-    os.getenv("UK_AIR_SOS_BASE_URL")
+SOS_BASE_URL = (
+    os.getenv("SOS_BASE_URL")
     or os.getenv("UK_AIR_BASE_URL")
     or os.getenv("UKAIR_BASE_URL")
     or "https://uk-air.defra.gov.uk/sos-ukair/api/v1"
 ).rstrip("/")
-UK_AIR_SOS_SERVICE_LABEL = (
-    os.getenv("UK_AIR_SOS_SERVICE_LABEL")
+SOS_SERVICE_LABEL = (
+    os.getenv("SOS_SERVICE_LABEL")
     or os.getenv("UK_AIR_SERVICE_LABEL")
-    or "UK-AIR-SOS"
+    or "SOS"
 )
-UK_AIR_SOS_CONNECTOR_CODE = "uk_air_sos"
+SOS_CONNECTOR_CODE = "sos"
 
 UK_BBOX = {
     "west": -11.0,
@@ -86,7 +86,7 @@ DEFAULT_POLLUTANTS = {"no2", "o3", "pm10", "pm2.5"}
 EIONET_POLLUTANT_RE = re.compile(r"https?://dd\.eionet\.europa\.eu/vocabulary/aq/pollutant/\d+")
 DEFAULT_TIMESERIES_STATION_BATCH_SIZE = 50
 UK_AIR_TIMESERIES_END_MISSING_RUNS = 2
-DEFAULT_RAW_DROPBOX_FOLDER = "/connectors/uk_air_sos/raw_data"
+DEFAULT_RAW_DROPBOX_FOLDER = "/connectors/sos/raw_data"
 DEFAULT_ERROR_DROPBOX_FOLDER = "/error_log"
 DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token"
 DROPBOX_UPLOAD_URL = "https://content.dropboxapi.com/2/files/upload"
@@ -554,7 +554,7 @@ def _slugify(value: str) -> str:
 
 def _build_raw_label(args: argparse.Namespace) -> str:
     stamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
-    parts = ["uk_aq_raw_uk_air_sos", stamp]
+    parts = ["uk_aq_raw_sos", stamp]
     if args.station_like:
         parts.append(_slugify(args.station_like))
     if args.region:
@@ -564,7 +564,7 @@ def _build_raw_label(args: argparse.Namespace) -> str:
 
 def _build_log_filename(args: argparse.Namespace) -> str:
     stamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
-    parts = ["uk_aq_log_uk_air_sos", stamp]
+    parts = ["uk_aq_log_sos", stamp]
     if args.station_like:
         parts.append(_slugify(args.station_like))
     if args.region:
@@ -577,7 +577,7 @@ def _build_error_filename(created_at: str, error_id: str) -> str:
         stamp = datetime.fromisoformat(created_at.replace("Z", "+00:00")).strftime("%Y%m%dT%H%M%SZ")
     except ValueError:
         stamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
-    return f"uk_aq_error_uk_air_sos_{stamp}_{error_id}.json"
+    return f"uk_aq_error_sos_{stamp}_{error_id}.json"
 
 
 def _load_dropbox_config(folder_override: Optional[str]) -> Optional[DropboxConfig]:
@@ -651,7 +651,7 @@ def _prepare_raw_dropbox_session(args: argparse.Namespace) -> Optional[RawDropbo
 class UkAirClient:
     def __init__(
         self,
-        base_url: str = UK_AIR_SOS_BASE_URL,
+        base_url: str = SOS_BASE_URL,
         timeout: int = 60,
         retries: int = 3,
         raw_recorder: Optional[RawPayloadRecorder] = None,
@@ -866,7 +866,7 @@ class SupabaseWriter:
         resp = (
             self.core.table("connectors")
             .select("id")
-            .eq("connector_code", UK_AIR_SOS_CONNECTOR_CODE)
+            .eq("connector_code", SOS_CONNECTOR_CODE)
             .limit(1)
             .execute()
         )
@@ -1603,13 +1603,13 @@ class UkAirIngestor:
         if connector_id is None:
             connector_id = self.writer.get_connector_id()
         if connector_id is None:
-            raise RuntimeError("Failed to resolve connector id for uk_air_sos.")
+            raise RuntimeError("Failed to resolve connector id for sos.")
         raw_service_ref = chosen.get("id")
         if raw_service_ref is None:
             raise RuntimeError("Selected SOS service is missing an id.")
         service_ref = str(raw_service_ref)
-        label = _normalize_service_label(chosen.get("label") or chosen.get("name")) or UK_AIR_SOS_SERVICE_LABEL
-        service_url = chosen.get("serviceUrl") or chosen.get("url") or UK_AIR_SOS_BASE_URL
+        label = _normalize_service_label(chosen.get("label") or chosen.get("name")) or SOS_SERVICE_LABEL
+        service_url = chosen.get("serviceUrl") or chosen.get("url") or SOS_BASE_URL
         return ConnectorContext(
             id=connector_id,
             service_ref=service_ref,
@@ -2085,12 +2085,12 @@ def _parse_datapoints(values: Any) -> List[Dict[str, Any]]:
 
 def _normalize_service_label(label: Optional[str]) -> Optional[str]:
     if label is None:
-        return UK_AIR_SOS_SERVICE_LABEL
+        return SOS_SERVICE_LABEL
     trimmed = label.strip()
     if not trimmed:
-        return UK_AIR_SOS_SERVICE_LABEL
+        return SOS_SERVICE_LABEL
     if trimmed.lower().startswith("my timeseries service"):
-        return UK_AIR_SOS_SERVICE_LABEL
+        return SOS_SERVICE_LABEL
     return trimmed
 
 

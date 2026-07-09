@@ -40,7 +40,7 @@ def main() -> None:
         from uk_aq_core.stations s
         join uk_aq_core.connectors c on c.id = s.connector_id
         left join uk_aq_core.networks n on n.id = s.network_id
-        where c.connector_code = 'uk_air_sos'
+        where c.connector_code = 'sos'
         order by s.id
     """
     output = Path(args.output)

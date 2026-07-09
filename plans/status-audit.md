@@ -5,7 +5,7 @@ Date: 2026-02-28
 Scope used for this audit
 - Active Cloud Run workers under `workers/`.
 - Runtime ingest scripts launched by those workers (`/app/runtime/ingest_*`), which are copied from `supabase/functions/ingest_*`:
-  - `workers/uk_aq_uk_air_sos_cloud_run/Dockerfile:9`
+  - `workers/uk_aq_sos_cloud_run/Dockerfile:9`
   - `workers/uk_aq_openaq_cloud_run/Dockerfile:10`
   - `workers/uk_aq_breathelondon_cloud_run/Dockerfile:10`
 
@@ -24,26 +24,26 @@ Cross-cutting finding on `status_id`
 ## 1) Gov.UK SOS AURN (UK-AIR SOS)
 
 API base URL(s) used
-- Default base: `https://uk-air.defra.gov.uk/sos-ukair/api/v1` (`supabase/functions/ingest_uk_air_sos/index.ts:48`)
-- Effective base can be connector override (`connector.service_url`) (`supabase/functions/ingest_uk_air_sos/index.ts:388`)
-- Observations endpoint path: `/timeseries/{timeseries_ref_or_id}/getData` with `format=tvp` (`supabase/functions/ingest_uk_air_sos/index.ts:497`)
+- Default base: `https://uk-air.defra.gov.uk/sos-ukair/api/v1` (`supabase/functions/ingest_sos/index.ts:48`)
+- Effective base can be connector override (`connector.service_url`) (`supabase/functions/ingest_sos/index.ts:388`)
+- Observations endpoint path: `/timeseries/{timeseries_ref_or_id}/getData` with `format=tvp` (`supabase/functions/ingest_sos/index.ts:497`)
 
 Raw payload status/quality fields
 - Explicit status field paths parsed:
-  - `values[*][2]` when row is array (`supabase/functions/ingest_uk_air_sos/index.ts:1683`)
-  - `values[*].status` (`supabase/functions/ingest_uk_air_sos/index.ts:1700`)
-  - `values[*].quality` (`supabase/functions/ingest_uk_air_sos/index.ts:1701`)
-  - `values[*].qc` (`supabase/functions/ingest_uk_air_sos/index.ts:1702`)
+  - `values[*][2]` when row is array (`supabase/functions/ingest_sos/index.ts:1683`)
+  - `values[*].status` (`supabase/functions/ingest_sos/index.ts:1700`)
+  - `values[*].quality` (`supabase/functions/ingest_sos/index.ts:1701`)
+  - `values[*].qc` (`supabase/functions/ingest_sos/index.ts:1702`)
 - Fixture evidence of array status slot:
   - `tests/fixtures/timeseries_getdata.json:2` (`["2025-01-01T00:00:00Z", 1.0, "ok"]`)
 
 Currently persisted?
 - Ingest DB: yes, written to `uk_aq_core.observations.status`:
-  - Build row with `status: point.status` (`supabase/functions/ingest_uk_air_sos/index.ts:527`)
-  - Upsert `observations` table (`supabase/functions/ingest_uk_air_sos/index.ts:531`)
+  - Build row with `status: point.status` (`supabase/functions/ingest_sos/index.ts:527`)
+  - Upsert `observations` table (`supabase/functions/ingest_sos/index.ts:531`)
   - Target column exists as `status text` (`/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-Test-UK-AQ-Schema/CIC-test-uk-aq-schema/schemas/main_db/uk_aq_core_schema.sql:640`)
 - History DB: not meaningfully persisted to `status_id`.
-  - History rows are built with `status` string (`supabase/functions/ingest_uk_air_sos/index.ts:547`)
+  - History rows are built with `status` string (`supabase/functions/ingest_sos/index.ts:547`)
   - History RPC input uses `status_id` only (`/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-Test-UK-AQ-Schema/CIC-test-uk-aq-schema/schemas/obs_aqi_db/uk_aq_obs_aqi_db_dualwrite_bootstrap.sql:165`)
   - Result: `uk_aq_history.observations.status_id` receives null from current UK-AIR writer path.
 - Conditional ingest raw outbox: if outbox path is used, status string is retained inside JSON payload (`supabase/functions/_shared/history_client.ts:530`) and inserted into `uk_aq_raw.history_observation_outbox.payload` (`/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-Test-UK-AQ-Schema/CIC-test-uk-aq-schema/schemas/main_db/main_db_dualwrite_bootstrap.sql:112`).

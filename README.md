@@ -18,9 +18,9 @@ Create a `.env` file in the repo root with:
 SUPABASE_URL=your_supabase_url
 SB_SECRET_KEY=your_service_role_key
 # Optional override (default shown)
-UK_AIR_SOS_BASE_URL=https://uk-air.defra.gov.uk/sos-ukair/api/v1
+SOS_BASE_URL=https://uk-air.defra.gov.uk/sos-ukair/api/v1
 # Optional override for the service label
-UK_AIR_SOS_SERVICE_LABEL=UK-AIR-SOS
+SOS_SERVICE_LABEL=SOS
 # Legacy support: UK_AIR_BASE_URL, UK_AIR_SERVICE_LABEL, and UKAIR_BASE_URL also work
 ```
 
@@ -30,9 +30,9 @@ Env quick reference (Supabase blocks secrets prefixed with `SUPABASE_`):
 
 | Context | Required | Optional |
 | --- | --- | --- |
-| Local scripts (.env) | `SUPABASE_URL`, `SB_SECRET_KEY` | `UK_AIR_SOS_BASE_URL`, `UK_AIR_SOS_SERVICE_LABEL` |
-| Edge function runtime (Supabase secrets) | `SB_SUPABASE_URL`, `SB_SECRET_KEY` | `UK_AIR_SOS_BASE_URL`, `UK_AIR_SOS_SERVICE_LABEL`, `OBS_AQIDB_SUPABASE_URL`, `OBS_AQIDB_SECRET_KEY`, `OBSERVS_UPSERT_RPC`, `OBSERVS_OUTBOX_FLUSH_LIMIT`, `OBSERVS_UPSERT_CHUNK_SIZE`, `UK_AQ_EGRESS_LOG_SAMPLE_RATE`, `UK_AQ_EGRESS_METRICS_DB_ENABLED`, `UK_AQ_EGRESS_METRICS_CLEANUP_SAMPLE_RATE`, `UK_AQ_EGRESS_METRICS_CLEANUP_MIN_INTERVAL_MS`, `UK_AQ_EGRESS_METRICS_AGG_RETENTION_DAYS`, `UK_AQ_EGRESS_METRICS_RAW_RETENTION_DAYS`, `DISPATCH_TIME_BUDGET_MS`, `DISPATCH_SHUTDOWN_BUFFER_MS`, `DISPATCH_EDGE_CALL_TIMEOUT_MS` |
-| GitHub Actions deploy | `SUPABASE_ACCESS_TOKEN`, `SUPABASE_URL`, `SB_SECRET_KEY`, `SUPABASE_PROJECT_REF` (Secrets) | `UK_AIR_SOS_BASE_URL`, `UK_AIR_SOS_SERVICE_LABEL` (Secrets) |
+| Local scripts (.env) | `SUPABASE_URL`, `SB_SECRET_KEY` | `SOS_BASE_URL`, `SOS_SERVICE_LABEL` |
+| Edge function runtime (Supabase secrets) | `SB_SUPABASE_URL`, `SB_SECRET_KEY` | `SOS_BASE_URL`, `SOS_SERVICE_LABEL`, `OBS_AQIDB_SUPABASE_URL`, `OBS_AQIDB_SECRET_KEY`, `OBSERVS_UPSERT_RPC`, `OBSERVS_OUTBOX_FLUSH_LIMIT`, `OBSERVS_UPSERT_CHUNK_SIZE`, `UK_AQ_EGRESS_LOG_SAMPLE_RATE`, `UK_AQ_EGRESS_METRICS_DB_ENABLED`, `UK_AQ_EGRESS_METRICS_CLEANUP_SAMPLE_RATE`, `UK_AQ_EGRESS_METRICS_CLEANUP_MIN_INTERVAL_MS`, `UK_AQ_EGRESS_METRICS_AGG_RETENTION_DAYS`, `UK_AQ_EGRESS_METRICS_RAW_RETENTION_DAYS`, `DISPATCH_TIME_BUDGET_MS`, `DISPATCH_SHUTDOWN_BUFFER_MS`, `DISPATCH_EDGE_CALL_TIMEOUT_MS` |
+| GitHub Actions deploy | `SUPABASE_ACCESS_TOKEN`, `SUPABASE_URL`, `SB_SECRET_KEY`, `SUPABASE_PROJECT_REF` (Secrets) | `SOS_BASE_URL`, `SOS_SERVICE_LABEL` (Secrets) |
 
 Install dependencies in a virtual environment:
 
@@ -52,35 +52,35 @@ pip install requests python-dotenv supabase
 Discover stations and timeseries, then backfill 2025:
 
 ```
-python3 scripts/uk_air_sos/uk_air_sos_ingest.py --discover --backfill-2025
+python3 scripts/sos/sos_ingest.py --discover --backfill-2025
 ```
 
 Refresh the last N hours (default 6h):
 
 ```
-python3 scripts/uk_air_sos/uk_air_sos_ingest.py --refresh-recent --hours 6
+python3 scripts/sos/sos_ingest.py --refresh-recent --hours 6
 ```
 
 Optional backfill chunk size (days):
 
 ```
-python3 scripts/uk_air_sos/uk_air_sos_ingest.py --backfill-2025 --chunk-days 14
+python3 scripts/sos/sos_ingest.py --backfill-2025 --chunk-days 14
 ```
 
 ## Notes
-- Filters are configurable in `scripts/uk_air_sos/uk_air_sos_ingest.py` (bbox, region, station type, pollutants).
+- Filters are configurable in `scripts/sos/sos_ingest.py` (bbox, region, station type, pollutants).
 - The script upserts into `connectors`, `stations`, `timeseries`, `observations`, and reference tables.
 
 ## Edge function polling (optional)
-For continuous updates, deploy the Edge Function in `supabase/functions/ingest_uk_air_sos`.
+For continuous updates, deploy the Edge Function in `supabase/functions/ingest_sos`.
 Deploying the Edge Function does not create a schedule; helper RPCs live in `supabase/uk_aq_polling_helpers.sql`.
 
 Supabase secrets required (Edge Function runtime):
 ```
 SB_SUPABASE_URL=your_supabase_url
 SB_SECRET_KEY=your_service_role_key
-UK_AIR_SOS_BASE_URL=https://uk-air.defra.gov.uk/sos-ukair/api/v1
-UK_AIR_SOS_SERVICE_LABEL=UK-AIR-SOS
+SOS_BASE_URL=https://uk-air.defra.gov.uk/sos-ukair/api/v1
+SOS_SERVICE_LABEL=SOS
 ```
 
 Helper RPC SQL for the poller lives in `supabase/uk_aq_polling_helpers.sql`.
@@ -210,5 +210,5 @@ Logs:
 ## Environment naming convention
 For new networks, use `NETWORK_BASE_URL` and `NETWORK_SERVICE_LABEL`.
 Examples:
-- `UK_AIR_SOS_BASE_URL`, `UK_AIR_SOS_SERVICE_LABEL`
+- `SOS_BASE_URL`, `SOS_SERVICE_LABEL`
 - `SCOMM_BASE_URL`, `SCOMM_SERVICE_LABEL` (Sensor.Community)

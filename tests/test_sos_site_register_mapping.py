@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.uk_air_sos.uk_air_sos_site_register import (
+from scripts.sos.sos_site_register import (
     _refresh_site_timeseries_refs,
 )
 
@@ -55,7 +55,7 @@ def test_refresh_site_timeseries_refs_calls_public_rpc(monkeypatch):
     assert result == response
     assert client.schema_name == "uk_aq_public"
     assert client.schema_client.call == (
-        "uk_aq_rpc_uk_air_sos_site_timeseries_refs_refresh",
+        "uk_aq_rpc_sos_station_timeseries_site_refs_refresh",
         {"p_source_snapshot_at": "2026-07-08T18:56:57+00:00"},
     )
 

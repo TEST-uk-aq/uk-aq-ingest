@@ -109,7 +109,7 @@ booted (time: 23ms),Boot,bbe777de-f045-46ad-9b35-cffb0d025675,d965f597-e214-4edd
 ",Log,bbe777de-f045-46ad-9b35-cffb0d025675,700bf901-0161-48f6-8b22-199e9bdcc44e,info,1769859185838000
 shutdown,Shutdown,bbe777de-f045-46ad-9b35-cffb0d025675,3f165c83-73c8-482f-9a4b-83ef4e9903d6,log,1769859161644000
 "dispatch_edge_function {
-  path: ""ingest_uk_air_sos"",
+  path: ""ingest_sos"",
   has_cron_secret: true,
   cron_secret_length: 20,
   auth_key_type: ""anon"",
@@ -231,7 +231,7 @@ shutdown,Shutdown,bbe777de-f045-46ad-9b35-cffb0d025675,63dedd44-9f80-4d3f-a663-e
 booted (time: 26ms),Boot,bbe777de-f045-46ad-9b35-cffb0d025675,b7a8cff5-90c8-4bba-92e1-5f9646b070dc,log,1769858546541000
 shutdown,Shutdown,bbe777de-f045-46ad-9b35-cffb0d025675,e381040c-0245-4293-89f8-d45d08de77bf,log,1769858502982000
 "dispatch_edge_function {
-  path: ""ingest_uk_air_sos"",
+  path: ""ingest_sos"",
   has_cron_secret: true,
   cron_secret_length: 20,
   auth_key_type: ""anon"",

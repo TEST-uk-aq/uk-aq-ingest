@@ -34,7 +34,7 @@ Source-specific (used by connectors / edge functions):
 - `OPENAQ_API_KEY`, `OPENAQ_BASE_URL`
 - `BLONDON_COMMUNITIES_API_KEY`, `BLONDON_COMMUNITIES_BASE_URL`
 - `LAQN_BASE_URL`
-- `UK_AIR_SOS_BASE_URL`, `UK_AIR_SOS_SERVICE_LABEL`
+- `SOS_BASE_URL`, `SOS_SERVICE_LABEL`
 - `SCOMM_BASE_URL`
 
 Dropbox/logging (used by multiple ingests):
@@ -45,17 +45,17 @@ Dropbox/logging (used by multiple ingests):
 
 ### Commands (from existing repo docs/config)
 - Python venv + deps: see `README.md`.
-- UK-AIR SOS ingest (example): `python3 scripts/uk_air_sos/uk_air_sos_ingest.py --discover --backfill-2025`
+- UK-AIR SOS ingest (example): `python3 scripts/sos/sos_ingest.py --discover --backfill-2025`
 - Node keepalive: `npm run keepalive` (from `package.json`).
 
 ## Where to start
-- **Main scripts**: `scripts/uk_air_sos/`, `scripts/openaq/`, `scripts/blondon_communities/`, `scripts/blondon_nodes/`, `scripts/erg_laqn/`.
+- **Main scripts**: `scripts/sos/`, `scripts/openaq/`, `scripts/blondon_communities/`, `scripts/blondon_nodes/`, `scripts/erg_laqn/`.
 - **Edge functions**: `supabase/functions/` (deploy from this repo).
 - **Gap logic docs**: `system_docs/openaq_gap_logic.md`.
 - **Supabase config**: `supabase/config.toml`.
 
 ## Conventions
-- Connector codes: `openaq`, `uk_air_sos`, `blondon_communities`, `erg_laqn`, `sensorcommunity`.
+- Connector codes: `openaq`, `sos`, `blondon_communities`, `erg_laqn`, `sensorcommunity`.
 - Breathe London public network code and shared service ref: `breathelondon`.
 - Database schema namespaces: `uk_aq_core`, `uk_aq_raw`, `uk_aq_public` (defined in schema repo).
 - Edge functions are named `ingest_*` for data ingestion and `uk_aq_*` for API endpoints.

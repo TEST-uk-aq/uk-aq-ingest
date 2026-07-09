@@ -69,7 +69,7 @@ functions and fixed strict typing/lint issues without changing runtime behavior.
 - Station batch helpers: `blondon_communities_select_station_refs`, `erg_laqn_select_station_refs` (defined in `supabase/uk_aq_polling_helpers.sql`)
 - Calls:
   - In `mode=run_queue` only:
-  - `ingest_uk_air_sos` (`window_hours`)
+  - `ingest_sos` (`window_hours`)
   - `ingest_sensorcommunity` (`country=GB`)
   - `ingest_openaq` (`window_hours`, `batch_size` from `connectors.poll_timeseries_batch_size`, default 56)
   - `ingest_breathelondon` (`station_refs`, `window_hours`, `initial_days=2`, `skip_stations=true`)
@@ -107,8 +107,8 @@ functions and fixed strict typing/lint issues without changing runtime behavior.
   - Worker sends `run_queue_claim_limit=1` with each `mode=run_queue` call to isolate each claim/call.
   - Worker fallback: if either queue-mode call fails, worker falls back to `mode=legacy` for that cron tick.
   - Disabled connectors are auto-resolved from queue in `mode=run_queue` (`queue_entry_disabled_connector`) so stale retries do not keep firing after `poll_enabled=false`.
-  - Connectors with `scheduler_backend='google_cloud_run'` are skipped in dispatcher selection and auto-resolved from queue in `mode=run_queue` (`queue_entry_external_scheduler`) for the Cloud Run allowlist connectors (`uk_air_sos`, `sensorcommunity`, `blondon_communities`, `openaq`).
-  - For `uk_air_sos` on the edge path (`scheduler_backend='supabase_function'`), dispatcher uses `poll_timeseries_batch_size` with `uk_air_sos_select_timeseries_ids` (`uk_air_sos_timeseries_checkpoints`) and passes `timeseries_ids`/`timeseries_limit`.
+  - Connectors with `scheduler_backend='google_cloud_run'` are skipped in dispatcher selection and auto-resolved from queue in `mode=run_queue` (`queue_entry_external_scheduler`) for the Cloud Run allowlist connectors (`sos`, `sensorcommunity`, `blondon_communities`, `openaq`).
+  - For `sos` on the edge path (`scheduler_backend='supabase_function'`), dispatcher uses `poll_timeseries_batch_size` with `sos_select_timeseries_ids` (`sos_timeseries_checkpoints`) and passes `timeseries_ids`/`timeseries_limit`.
   - Uses `uk_aq_public.uk_aq_rpc_dispatch_claim` to atomically claim a connector slot before dispatch.
   - Updates `connectors.last_run_start`, `last_run_end`, `last_run_status`, `last_run_message`, and `last_polled_at` for each attempted dispatch.
   - Inserts per-run summaries into `uk_aq_ingest_runs` (status, counts, last_observed_at, response payload) for dashboard feeds.
@@ -193,18 +193,18 @@ functions and fixed strict typing/lint issues without changing runtime behavior.
   - Supports query params `lookback_minutes`, `top_n`, `alert_mb`, `write_error_log`, `page_size`, `max_rows`, `runtime_budget_ms`, `request_timeout_ms`.
   - On failures, response body includes `message` for faster workflow-side diagnostics.
 
-### ingest_uk_air_sos
+### ingest_sos
 - Purpose: Poll UK-AIR SOS timeseries and write observations + last_value fields.
 - Triggered by:
   - `uk_aq_dispatch_polls` when `connectors.scheduler_backend='supabase_function'` (edge path).
-  - `workers/uk_aq_uk_air_sos_cloud_run` when `connectors.scheduler_backend='google_cloud_run'` (Cloud Run path).
-- Cloud Run setup reference: `system_docs/uk_aq_uk_air_sos_cloud_run.md`.
+  - `workers/uk_aq_sos_cloud_run` when `connectors.scheduler_backend='google_cloud_run'` (Cloud Run path).
+- Cloud Run setup reference: `system_docs/uk_aq_sos_cloud_run.md`.
 - Note: Deploying the Edge Function does not create a schedule; use the Cloudflare Worker cron for regular runs.
 - Notes:
   - Requires an existing connector row; the ingest does not create connectors.
-  - Edge path checkpointing is unchanged and uses `uk_air_sos_timeseries_checkpoints`.
+  - Edge path checkpointing is unchanged and uses `sos_timeseries_checkpoints`.
   - Polling reads only active SOS rows (`uk_aq_core.timeseries.ended_at is null`); ended rows are excluded from edge and Cloud Run polling scopes.
-  - Cloud Run path uses station-level selector/checkpoints (`uk_air_sos_select_station_refs`, `uk_air_sos_station_checkpoints`) before passing scoped `timeseries_ids` into the same ingest handler.
+  - Cloud Run path uses station-level selector/checkpoints (`sos_select_station_refs`, `sos_station_checkpoints`) before passing scoped `timeseries_ids` into the same ingest handler.
   - `timeseries_ids` scoping matches internal `uk_aq_core.timeseries.id` only (no `timeseries_ref` fallback).
   - Daily full-catalog UK-AIR discovery reconciles timeseries lifecycle: rows missing for 2 consecutive runs get `timeseries.ended_at`; reappearing rows are auto-reactivated.
   - Logs cron secret mismatch diagnostics (presence/length only) when authorization fails.
@@ -219,10 +219,10 @@ functions and fixed strict typing/lint issues without changing runtime behavior.
   - `observations` (upsert by connector_id + timeseries_id + observed_at)
   - `timeseries.last_value` and `timeseries.last_value_at` (update by id)
 - Logs:
-  - Writes a log file to Dropbox `/connectors/uk_air_sos/log/YYYY-MM-DD/`
-  - Writes raw payloads to Dropbox `/connectors/uk_air_sos/raw_data/YYYY-MM-DD/` as ZIP
+  - Writes a log file to Dropbox `/connectors/sos/log/YYYY-MM-DD/`
+  - Writes raw payloads to Dropbox `/connectors/sos/raw_data/YYYY-MM-DD/` as ZIP
   - Writes errors to `error_logs` and `/error_log/YYYY-MM-DD/`
-  - Filename prefixes are runtime-specific via `UK_AIR_SOS_DROPBOX_UPLOAD_SOURCE`:
+  - Filename prefixes are runtime-specific via `SOS_DROPBOX_UPLOAD_SOURCE`:
     - edge runtime: `uk_aq_*_edge_*`
     - Cloud Run runtime: `uk_aq_*_cloud_run_*`
   - Logs a "No datapoints parsed" warning with row count when the SOS payload has no rows.
@@ -701,13 +701,13 @@ Optional:
 - `LAQN_ERROR_DROPBOX_ALLOWED_SUPABASE_URL` (optional allowlist override for ERG LAQN error uploads)
 - `LAQN_ERROR_DROPBOX_FOLDER` (optional override for ERG LAQN error folder)
 - `LAQN_MAX_RUNTIME_SECONDS` (optional; defaults to 120)
-- `UK_AIR_SOS_MAX_RUNTIME_SECONDS` (optional; defaults to 120)
+- `SOS_MAX_RUNTIME_SECONDS` (optional; defaults to 120)
 - `SB_UK_AQ_CRON_SECRET` (when set, ingest functions require `X-Cron-Secret`)
 
 ## Notes
 
-- `ingest_uk_air_sos` does not discover stations/timeseries; discovery happens in
-  the Python ingest script (see `scripts/uk_air_sos/uk_air_sos_ingest.py`).
+- `ingest_sos` does not discover stations/timeseries; discovery happens in
+  the Python ingest script (see `scripts/sos/sos_ingest.py`).
 - `ingest_sensorcommunity` and `ingest_breathelondon` both upsert stations and
   timeseries as part of the poll.
 - When `SB_UK_AQ_CRON_SECRET` is set, ingest functions require an `X-Cron-Secret`

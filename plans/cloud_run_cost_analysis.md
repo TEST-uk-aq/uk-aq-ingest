@@ -20,7 +20,7 @@ Label status for attribution:
   - `.github/workflows/uk_aq_openaq_cloud_run_deploy.yml:474`
   - `.github/workflows/uk_aq_breathelondon_cloud_run_deploy.yml:322`
   - `.github/workflows/uk_aq_scomm_cloud_run_deploy.yml:320`
-  - `.github/workflows/uk_aq_uk_air_sos_cloud_run_deploy.yml:322`
+  - `.github/workflows/uk_aq_sos_cloud_run_deploy.yml:322`
   - `.github/workflows/uk_aq_observs_outbox_cloud_run_deploy.yml:288`
   - `.github/workflows/uk_aq_observs_pubsub_cloud_run_deploy.yml:333`
 - Workflows also verify label presence post-deploy (`gcloud run jobs describe ... metadata.labels`).
@@ -33,7 +33,7 @@ Repo scan (deploy/scheduler/labels) found Cloud Run job deployment in these work
 - `.github/workflows/uk_aq_openaq_cloud_run_deploy.yml:468` (`gcloud run jobs update`), `.github/workflows/uk_aq_openaq_cloud_run_deploy.yml:474` (`--update-labels`), `.github/workflows/uk_aq_openaq_cloud_run_deploy.yml:529` (scheduler update/create).
 - `.github/workflows/uk_aq_breathelondon_cloud_run_deploy.yml:316` (`gcloud run jobs update`), `.github/workflows/uk_aq_breathelondon_cloud_run_deploy.yml:322` (`--update-labels`), `.github/workflows/uk_aq_breathelondon_cloud_run_deploy.yml:378` (scheduler update/create).
 - `.github/workflows/uk_aq_scomm_cloud_run_deploy.yml:317` (`gcloud run jobs update`), `.github/workflows/uk_aq_scomm_cloud_run_deploy.yml:320` (`--update-labels`).
-- `.github/workflows/uk_aq_uk_air_sos_cloud_run_deploy.yml:316` (`gcloud run jobs update`), `.github/workflows/uk_aq_uk_air_sos_cloud_run_deploy.yml:322` (`--update-labels`), `.github/workflows/uk_aq_uk_air_sos_cloud_run_deploy.yml:377` (scheduler update/create).
+- `.github/workflows/uk_aq_sos_cloud_run_deploy.yml:316` (`gcloud run jobs update`), `.github/workflows/uk_aq_sos_cloud_run_deploy.yml:322` (`--update-labels`), `.github/workflows/uk_aq_sos_cloud_run_deploy.yml:377` (scheduler update/create).
 - `.github/workflows/uk_aq_observs_outbox_cloud_run_deploy.yml:282` (`gcloud run jobs update`), `.github/workflows/uk_aq_observs_outbox_cloud_run_deploy.yml:288` (`--update-labels`), `.github/workflows/uk_aq_observs_outbox_cloud_run_deploy.yml:334` (scheduler update/create).
 - `.github/workflows/uk_aq_observs_pubsub_cloud_run_deploy.yml:327` (`gcloud run jobs update`), `.github/workflows/uk_aq_observs_pubsub_cloud_run_deploy.yml:333` (`--update-labels`), `.github/workflows/uk_aq_observs_pubsub_cloud_run_deploy.yml:379` (scheduler update/create).
 
@@ -95,7 +95,7 @@ Assumptions:
 
 - `uk-aq_sensorcommunity_cloud_run` fetches full country feed each due run (`index.mjs:1651`), then processes/upserts.
 - `uk_aq_openaq_cloud_run` evaluates station checkpoints each run and can continue scheduling frequent follow-ups.
-- `uk_aq_uk_air_sos_cloud_run` can run frequently but skip due to `not_due` / `no_timeseries_ids` (`run_job.ts:1016`, `run_job.ts:1057`).
+- `uk_aq_sos_cloud_run` can run frequently but skip due to `not_due` / `no_timeseries_ids` (`run_job.ts:1016`, `run_job.ts:1057`).
 - `uk_aq_breathelondon_cloud_run` already avoids station refresh in ingest payload (`payload.skip_stations = true`, `run_job.ts:359`), which is good.
 
 ### 4.4 Likely CPU-bound vs I/O-bound

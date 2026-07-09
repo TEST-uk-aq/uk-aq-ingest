@@ -2,7 +2,7 @@
   "services": [
     {
       "id": "1",
-      "label": "UK-AIR-SOS",
+      "label": "SOS",
       "serviceUrl": "https://example.invalid/sos"
     }
   ]

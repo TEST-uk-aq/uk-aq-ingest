@@ -3,7 +3,7 @@ Below is the concrete “ingest → database → edge functions → website” f
 **Flow Summary**
 1. **Ingest scripts and edge functions pull external data sources and write into Supabase.**  
    The ingest repo is `CIC-test-uk-aq-ingest`. A Cloudflare cron calls `uk_aq_dispatch_polls`, which triggers ingest functions for each connector (UK-AIR SOS, OpenAQ, Sensor.Community, Breathe London, ERG LAQN). These write into core tables like `connectors`, `stations`, `phenomena`, `timeseries`, `observations`, and membership/reference tables.  
-   Files: `CIC-test-uk-aq-ingest/system_docs/uk_aq_edge_functions.md`, `CIC-test-uk-aq-ingest/system_docs/uk_air_sos_ingest_flow.md`
+   Files: `CIC-test-uk-aq-ingest/system_docs/uk_aq_edge_functions.md`, `CIC-test-uk-aq-ingest/system_docs/sos_ingest_flow.md`
 
 2. **Supabase schema and views define how raw data is structured and aggregated.**  
    The schema is defined in the schema repo; edge functions query the `uk_aq_core` schema and views such as `pcon_latest_pm25` and `la_latest_pm25`.  
@@ -35,7 +35,7 @@ Below is the concrete “ingest → database → edge functions → website” f
    `CIC UK-AQ Webpage/CIC-test-uk-aq/scripts/uk_aq_inject_project_ref.mjs`
 
 **Concrete Example: PM2.5 reading to hex map**
-1. `ingest_uk_air_sos` (or other connector) writes `observations` and updates `timeseries.last_value` in Supabase.  
+1. `ingest_sos` (or other connector) writes `observations` and updates `timeseries.last_value` in Supabase.  
    File: `CIC-test-uk-aq-ingest/system_docs/uk_aq_edge_functions.md`
 
 2. The `pcon_latest_pm25` view (in `uk_aq_core`) aggregates latest values by constituency.  

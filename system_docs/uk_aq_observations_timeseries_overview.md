@@ -85,4 +85,4 @@ The typical ingest sequence is:
 3) Backfill or poll `/timeseries/{id}/getData` from the SOS API.
 4) Upsert into `observations` keyed by `(connector_id, timeseries_id, observed_at)`.
 
-The Edge Function `ingest_uk_air_sos` also polls recent observations using existing `timeseries` rows.
+The Edge Function `ingest_sos` also polls recent observations using existing `timeseries` rows.

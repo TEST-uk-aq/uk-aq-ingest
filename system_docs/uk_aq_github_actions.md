@@ -21,7 +21,7 @@ Cloud Run deploy idempotency:
   stale bindings from prior revisions.
 - Ingest Cloud Run service deploy workflows (`uk_aq_openaq_cloud_run_deploy.yml`,
   `uk_aq_blondon_communities_cloud_run_deploy.yml`,
-  `uk_aq_uk_air_sos_cloud_run_deploy.yml`,
+  `uk_aq_sos_cloud_run_deploy.yml`,
   `uk_aq_scomm_cloud_run_deploy.yml`) now bind optional secrets only when
   their corresponding values are configured for that deploy (and only bind
   Dropbox secrets when the full `DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN` set is
@@ -41,7 +41,7 @@ Cloud Run deploy idempotency:
 ### `supabase_edge_deploy.yml`
 - Trigger: push to `main` affecting `supabase/functions/**` or `supabase/config.toml`, or manual dispatch.
 - Purpose: inject Supabase project ref into the web page, set Supabase secrets, deploy edge functions.
-- Deployed functions: `ingest_uk_air_sos`, `ingest_breathelondon`, `ingest_sensorcommunity`,
+- Deployed functions: `ingest_sos`, `ingest_breathelondon`, `ingest_sensorcommunity`,
   `uk_aq_dispatch_polls`, `uk_aq_latest`,
   `uk_aq_stations_chart`, `uk_aq_la_hex`, `uk_aq_pcon_hex`,
   `uk_aq_stations`, `uk_aq_timeseries`.
@@ -111,7 +111,7 @@ UK_AQ_EDGE_UPSTREAM_SECRET=...
 ### `uk_aq_raw_dropbox.yml`
 - Trigger: manual dispatch.
 - Purpose: run a Bristol-only ingest with raw Dropbox upload for debugging/testing.
-- Script: `python3 scripts/uk_air_sos/uk_air_sos_ingest.py --discover --refresh-recent ... --raw-dropbox`.
+- Script: `python3 scripts/sos/sos_ingest.py --discover --refresh-recent ... --raw-dropbox`.
 - Secrets: `SUPABASE_URL`, `SB_SECRET_KEY`, `DROPBOX_APP_KEY`,
   `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`.
 
@@ -125,7 +125,7 @@ UK_AQ_EDGE_UPSTREAM_SECRET=...
 ### `uk_aq_stations_daily.yml`
 - Schedule: daily at 03:00 UTC.
 - Purpose: sync stations to Supabase (UK-AIR SOS + Breathe London) and export a combined stations snapshot to Dropbox.
-- Script: `python3 scripts/uk_air_sos/uk_air_sos_list_stations.py --to-supabase`.
+- Script: `python3 scripts/sos/sos_list_stations.py --to-supabase`.
 - Script: `python3 scripts/blondon_communities/blondon_communities_list_stations.py --to-supabase` and `python3 scripts/blondon_nodes/blondon_nodes_list_stations.py --to-supabase`.
 - OpenAQ station discovery guard:
   - `Pause OpenAQ polling` captures `connector_found` + `poll_was_enabled`.
@@ -143,7 +143,7 @@ UK_AQ_EDGE_UPSTREAM_SECRET=...
   - Pre-write guard: destination schema must match source metadata (columns/defaults/nullability/order + PK), or workflow fails.
   - Retries transient REST/network failures per page with exponential backoff and a 90-minute job timeout backstop.
 - Optional: Sensor.Community discovery step (disabled by default).
-- Secrets: `SUPABASE_URL`, `SB_SECRET_KEY`, `UK_AIR_SOS_BASE_URL`,
+- Secrets: `SUPABASE_URL`, `SB_SECRET_KEY`, `SOS_BASE_URL`,
   `BLONDON_COMMUNITIES_API_KEY`, `BLONDON_COMMUNITIES_BASE_URL` (optional), `DROPBOX_APP_KEY`,
   `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`, `UK_AQ_DROPBOX_ROOT`, `UK_AQ_STATIONS_DROPBOX_DIR`,
   `UK_AQ_DOMAIN_CLOUDFLARE_API_TOKEN`, `OBS_AQIDB_SECRET_KEY`.
@@ -269,21 +269,21 @@ UK_AQ_EDGE_UPSTREAM_SECRET=...
   - `SB_UK_AQ_CRON_SECRET`
   - Dropbox secrets (`DROPBOX_*`) and raw-upload allowlist env (`BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL` or legacy `UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL`)
 
-### `uk_aq_uk_air_sos_cloud_run_deploy.yml`
-- Trigger: push to `main` affecting `workers/uk_aq_uk_air_sos_cloud_run/**` or SOS ingest runtime files, or manual dispatch.
+### `uk_aq_sos_cloud_run_deploy.yml`
+- Trigger: push to `main` affecting `workers/uk_aq_sos_cloud_run/**` or SOS ingest runtime files, or manual dispatch.
 - Purpose: deploy the UK-AIR SOS Cloud Run service + optional Cloud Scheduler trigger.
 - Default service name: `uk-aq-sos-ingest`.
-- Worker: `workers/uk_aq_uk_air_sos_cloud_run`.
+- Worker: `workers/uk_aq_sos_cloud_run`.
 - Scheduler:
   - Uses Google Cloud Scheduler -> Cloud Run Service URL with OIDC auth.
-  - Frequency is configurable (`GCP_UK_AIR_SOS_SCHEDULER_CRON`), while effective poll cadence still comes from connector interval checks in the worker.
+  - Frequency is configurable (`GCP_SOS_SCHEDULER_CRON`), while effective poll cadence still comes from connector interval checks in the worker.
 - Required secrets/vars:
   - `GCP_PROJECT_ID`, Google auth secrets (`GCP_WORKLOAD_IDENTITY_PROVIDER` + `GCP_SERVICE_ACCOUNT` or `GCP_SA_KEY`)
-  - `GCP_UK_AIR_SOS_SERVICE_ACCOUNT` (or legacy `GCP_UK_AIR_SOS_JOB_SERVICE_ACCOUNT`)
+  - `GCP_SOS_SERVICE_ACCOUNT` (or legacy `GCP_SOS_JOB_SERVICE_ACCOUNT`)
   - `SUPABASE_URL`, `SB_SECRET_KEY` (required by workflow)
 - Optional:
   - `OBS_AQIDB_SUPABASE_URL`, `OBS_AQIDB_SECRET_KEY` (required only for `OBSERVS_WRITE_MODE=direct`; not injected for `pubsub_only`/`outbox_only`)
-  - `UK_AIR_SOS_OBSERVS_WRITE_MODE` (workflow default `pubsub_only`)
+  - `SOS_OBSERVS_WRITE_MODE` (workflow default `pubsub_only`)
   - `GCP_OBSERVS_PUBSUB_TOPIC`, `OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE`
   - `SB_UK_AQ_CRON_SECRET`
   - Dropbox secrets (`DROPBOX_*`) and raw-upload allowlist env (`UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL`).
@@ -348,11 +348,11 @@ UK_AQ_EDGE_UPSTREAM_SECRET=...
 - Fails CI when a referenced key is missing from the mapping or mapped to the
   wrong target.
 
-### `uk_air_sos_site_register_monthly.yml`
+### `sos_site_register_monthly.yml`
 - Schedule: monthly on day 1 at 04:15 UTC.
 - Purpose: download the UK-AIR monitoring sites CSV via the search page.
-- Script: `python3 scripts/uk_air_sos/uk_air_sos_site_register.py --output uk_air_sos_site_register.csv`.
-- Output: uploads a timestamped CSV to Dropbox at `network_info/uk_air_sos` and loads it into Supabase.
-- Secrets: `UK_AIR_SOS_SITE_SEARCH_URL`, `UK_AIR_SOS_SITE_SEARCH_USER_AGENT` (optional),
+- Script: `python3 scripts/sos/sos_site_register.py --output sos_site_register.csv`.
+- Output: uploads a timestamped CSV to Dropbox at `network_info/sos` and loads it into Supabase.
+- Secrets: `SOS_SITE_SEARCH_URL`, `SOS_SITE_SEARCH_USER_AGENT` (optional),
   `UK_AQ_DROPBOX_ROOT`, `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`,
   `SUPABASE_URL`, `SB_SECRET_KEY`.

@@ -46,8 +46,8 @@ type ErrorLogEntry = {
 };
 
 const DEFAULT_BASE_URL = "https://uk-air.defra.gov.uk/sos-ukair/api/v1";
-const DEFAULT_SERVICE_LABEL = "UK-AIR-SOS";
-const DEFAULT_CONNECTOR_CODE = "uk_air_sos";
+const DEFAULT_SERVICE_LABEL = "SOS";
+const DEFAULT_CONNECTOR_CODE = "sos";
 const DEFAULT_WINDOW_HOURS = 6;
 const DEFAULT_MAX_RUNTIME_SECONDS = 120;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -71,19 +71,19 @@ const UK_AQ_CORE_SCHEMA = Deno.env.get("UK_AQ_CORE_SCHEMA")
 const UK_AQ_RAW_SCHEMA = Deno.env.get("UK_AQ_RAW_SCHEMA")
   ?? "uk_aq_raw";
 const SB_UK_AQ_CRON_SECRET = Deno.env.get("SB_UK_AQ_CRON_SECRET") ?? "";
-const UK_AIR_SOS_BASE_URL = (Deno.env.get("UK_AIR_SOS_BASE_URL")
+const SOS_BASE_URL = (Deno.env.get("SOS_BASE_URL")
   ?? Deno.env.get("UK_AIR_BASE_URL")
   ?? DEFAULT_BASE_URL).replace(/\/$/, "");
-const UK_AIR_SOS_SERVICE_LABEL = Deno.env.get("UK_AIR_SOS_SERVICE_LABEL")
+const SOS_SERVICE_LABEL = Deno.env.get("SOS_SERVICE_LABEL")
   ?? Deno.env.get("UK_AIR_SERVICE_LABEL")
   ?? DEFAULT_SERVICE_LABEL;
-const UK_AIR_SOS_CONNECTOR_CODE = Deno.env.get("UK_AIR_SOS_CONNECTOR_CODE")
+const SOS_CONNECTOR_CODE = Deno.env.get("SOS_CONNECTOR_CODE")
   ?? DEFAULT_CONNECTOR_CODE;
-const UK_AIR_SOS_MAX_RUNTIME_SECONDS = Number(
-  Deno.env.get("UK_AIR_SOS_MAX_RUNTIME_SECONDS") ?? DEFAULT_MAX_RUNTIME_SECONDS,
+const SOS_MAX_RUNTIME_SECONDS = Number(
+  Deno.env.get("SOS_MAX_RUNTIME_SECONDS") ?? DEFAULT_MAX_RUNTIME_SECONDS,
 );
-const UK_AIR_SOS_BOOTSTRAP_NULL_LAST_VALUE_BATCH = Number(
-  Deno.env.get("UK_AIR_SOS_BOOTSTRAP_NULL_LAST_VALUE_BATCH")
+const SOS_BOOTSTRAP_NULL_LAST_VALUE_BATCH = Number(
+  Deno.env.get("SOS_BOOTSTRAP_NULL_LAST_VALUE_BATCH")
     ?? DEFAULT_BOOTSTRAP_NULL_LAST_VALUE_BATCH,
 );
 const DROPBOX_APP_KEY = Deno.env.get("DROPBOX_APP_KEY") ?? "";
@@ -97,8 +97,8 @@ const DROPBOX_ROOT_FOLDER = (() => {
   return normalizeDropboxPath(raw);
 })();
 
-const DROPBOX_LOG_FOLDER = dropboxWithRoot("/connectors/uk_air_sos/log");
-const DROPBOX_RAW_FOLDER = dropboxWithRoot("/connectors/uk_air_sos/raw_data");
+const DROPBOX_LOG_FOLDER = dropboxWithRoot("/connectors/sos/log");
+const DROPBOX_RAW_FOLDER = dropboxWithRoot("/connectors/sos/raw_data");
 const DROPBOX_ERROR_FOLDER = dropboxWithRoot(
   Deno.env.get("UK_AIR_ERROR_DROPBOX_FOLDER") ?? "error_log",
 );
@@ -106,7 +106,7 @@ const DROPBOX_LOG_RETENTION_DAYS = 31;
 const DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token";
 const DROPBOX_UPLOAD_URL = "https://content.dropboxapi.com/2/files/upload";
 const DROPBOX_UPLOAD_SOURCE = (() => {
-  const value = (Deno.env.get("UK_AIR_SOS_DROPBOX_UPLOAD_SOURCE") ?? "edge")
+  const value = (Deno.env.get("SOS_DROPBOX_UPLOAD_SOURCE") ?? "edge")
     .trim()
     .toLowerCase();
   return value === "cloud_run" ? "cloud_run" : "edge";
@@ -123,7 +123,7 @@ function postgrestHeaders(prefer?: string, schema = UK_AQ_CORE_SCHEMA): Record<s
   const headers: Record<string, string> = {
     apikey: SUPABASE_PRIVILEGED_KEY,
     "Content-Type": "application/json",
-    "x-ukaq-egress-caller": "ingest_uk_air_sos",
+    "x-ukaq-egress-caller": "ingest_sos",
   };
   if (prefer) {
     headers.Prefer = prefer;
@@ -219,7 +219,7 @@ function logUnhandledError(
     message,
     stack: error.stack,
     context,
-    connector_code: UK_AIR_SOS_CONNECTOR_CODE,
+    connector_code: SOS_CONNECTOR_CODE,
   });
 }
 
@@ -274,15 +274,15 @@ serve(async (req) => {
   let responsePayload: Record<string, unknown> = {};
   let connector: ConnectorRow | null = null;
   let requestedConnectorId: string | undefined;
-  let requestedConnectorCode = UK_AIR_SOS_CONNECTOR_CODE;
-  let requestedConnectorLabel = UK_AIR_SOS_SERVICE_LABEL;
+  let requestedConnectorCode = SOS_CONNECTOR_CODE;
+  let requestedConnectorLabel = SOS_SERVICE_LABEL;
   let requestedWindowHours: number | undefined;
   let requestedPollutants: string[] | undefined;
   let requestedLimit: number | undefined;
   let requestedTimeseriesIds: number[] | undefined;
   const runStartedAt = Date.now();
-  const maxRuntimeSeconds = Number.isFinite(UK_AIR_SOS_MAX_RUNTIME_SECONDS)
-    ? Math.max(30, UK_AIR_SOS_MAX_RUNTIME_SECONDS)
+  const maxRuntimeSeconds = Number.isFinite(SOS_MAX_RUNTIME_SECONDS)
+    ? Math.max(30, SOS_MAX_RUNTIME_SECONDS)
     : DEFAULT_MAX_RUNTIME_SECONDS;
   const runtimeDeadline = runStartedAt + maxRuntimeSeconds * 1000;
   const shouldStop = () => Date.now() >= runtimeDeadline;
@@ -296,8 +296,8 @@ serve(async (req) => {
     } else {
       const payload = await readJson(req);
       requestedConnectorId = asString(payload?.connector_id);
-      requestedConnectorCode = asString(payload?.connector_code) || UK_AIR_SOS_CONNECTOR_CODE;
-      requestedConnectorLabel = asString(payload?.connector_label) || UK_AIR_SOS_SERVICE_LABEL;
+      requestedConnectorCode = asString(payload?.connector_code) || SOS_CONNECTOR_CODE;
+      requestedConnectorLabel = asString(payload?.connector_label) || SOS_SERVICE_LABEL;
       requestedWindowHours = asNumber(payload?.window_hours, undefined);
       requestedPollutants = parseList(payload?.pollutants);
       requestedLimit = asNumber(payload?.timeseries_limit, undefined);
@@ -392,7 +392,7 @@ serve(async (req) => {
                 error: message,
               },
               connector_code: connector?.connector_code ??
-                requestedConnectorCode ?? UK_AIR_SOS_CONNECTOR_CODE,
+                requestedConnectorCode ?? SOS_CONNECTOR_CODE,
               connector_id: connector?.id ?? requestedConnectorId ?? null,
             });
           }
@@ -401,7 +401,7 @@ serve(async (req) => {
         let shouldPoll = true;
         const pollWindow = requestedWindowHours ?? connector.poll_window_hours ?? DEFAULT_WINDOW_HOURS;
         const effectiveLimit = requestedLimit ?? connector.poll_timeseries_batch_size ?? undefined;
-        const baseUrl = (connector.service_url || UK_AIR_SOS_BASE_URL).replace(/\/$/, "");
+        const baseUrl = (connector.service_url || SOS_BASE_URL).replace(/\/$/, "");
         const now = new Date();
         const windowStart = new Date(now.getTime() - pollWindow * 60 * 60 * 1000);
 
@@ -426,7 +426,7 @@ serve(async (req) => {
         }
 
         if (shouldPoll) {
-          const probe = await probeUkAirSosUpstream(baseUrl, rawRecorder, runtimeDeadline);
+          const probe = await probeSosUpstream(baseUrl, rawRecorder, runtimeDeadline);
           if (!probe.ok) {
             shouldPoll = false;
             const upstreamStatus = probe.status;
@@ -447,7 +447,7 @@ serve(async (req) => {
                 upstream_status: upstreamStatus,
                 upstream_error: probe.error,
               },
-              connector_code: connector.connector_code ?? requestedConnectorCode ?? UK_AIR_SOS_CONNECTOR_CODE,
+              connector_code: connector.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
               connector_id: connector.id,
             });
             status = upstreamStatus ?? (retryableStatus ? 503 : 500);
@@ -498,7 +498,7 @@ serve(async (req) => {
 
           const nullLastValueCandidates = series.filter((row) => !row.last_value_at);
           const bootstrapBatchSize = clampPositiveInt(
-            UK_AIR_SOS_BOOTSTRAP_NULL_LAST_VALUE_BATCH,
+            SOS_BOOTSTRAP_NULL_LAST_VALUE_BATCH,
             DEFAULT_BOOTSTRAP_NULL_LAST_VALUE_BATCH,
           );
           let bootstrapTake = Math.min(
@@ -653,7 +653,7 @@ serve(async (req) => {
                 points,
                 errorLogger,
                 connector?.id ?? requestedConnectorId ?? null,
-                connector?.connector_code ?? requestedConnectorCode ?? UK_AIR_SOS_CONNECTOR_CODE,
+                connector?.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
               );
               polled += 1;
             } catch (err) {
@@ -673,7 +673,7 @@ serve(async (req) => {
                   timespan,
                   connector_id: connector?.id ?? requestedConnectorId ?? null,
                 },
-                connector_code: connector?.connector_code ?? requestedConnectorCode ?? UK_AIR_SOS_CONNECTOR_CODE,
+                connector_code: connector?.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
                 connector_id: connector?.id ?? requestedConnectorId ?? null,
                 timeseries_id: row.id,
               });
@@ -688,12 +688,12 @@ serve(async (req) => {
           await flushPendingObservsRows("run_complete", true);
 
           if (checkpointCandidates.length) {
-            await upsertUkAirSosTimeseriesCheckpoints(
+            await upsertSosTimeseriesCheckpoints(
               checkpointCandidates.map((row) => ({ id: row.id })),
               now.toISOString(),
               errorLogger,
               connector?.id ?? requestedConnectorId ?? null,
-              connector?.connector_code ?? requestedConnectorCode ?? UK_AIR_SOS_CONNECTOR_CODE,
+              connector?.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
             );
           }
 
@@ -714,7 +714,7 @@ serve(async (req) => {
                 connector_id: connector.id,
                 error: pollUpdateError.message,
               },
-              connector_code: connector.connector_code ?? requestedConnectorCode ?? UK_AIR_SOS_CONNECTOR_CODE,
+              connector_code: connector.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
               connector_id: connector.id,
             });
           }
@@ -757,7 +757,7 @@ serve(async (req) => {
         connector_code: requestedConnectorCode,
         connector_label: requestedConnectorLabel,
       },
-      connector_code: requestedConnectorCode ?? UK_AIR_SOS_CONNECTOR_CODE,
+      connector_code: requestedConnectorCode ?? SOS_CONNECTOR_CODE,
       connector_id: requestedConnectorId ?? null,
     });
   } finally {
@@ -773,7 +773,7 @@ serve(async (req) => {
     let accessToken: string | null = null;
     const resolvedConnectorCode = connector?.connector_code
       ?? requestedConnectorCode
-      ?? UK_AIR_SOS_CONNECTOR_CODE;
+      ?? SOS_CONNECTOR_CODE;
     const refreshDropbox = dropboxConfig
       ? () => dropboxRefreshAccessToken(dropboxConfig)
       : undefined;
@@ -1009,14 +1009,14 @@ function takeCircular<T>(rows: T[], start: number, count: number): T[] {
 
 function _normalizeServiceLabel(label: string | undefined): string {
   if (!label) {
-    return UK_AIR_SOS_SERVICE_LABEL;
+    return SOS_SERVICE_LABEL;
   }
   const trimmed = label.trim();
   if (!trimmed) {
-    return UK_AIR_SOS_SERVICE_LABEL;
+    return SOS_SERVICE_LABEL;
   }
   if (trimmed.toLowerCase().startsWith("my timeseries service")) {
-    return UK_AIR_SOS_SERVICE_LABEL;
+    return SOS_SERVICE_LABEL;
   }
   return trimmed;
 }
@@ -1245,7 +1245,7 @@ function createErrorLogger(config: DropboxConfig | null, enabled: boolean) {
         const dropboxPath = buildDropboxErrorPath(
           errorId,
           createdAt,
-          entry.connector_code ?? UK_AIR_SOS_CONNECTOR_CODE,
+          entry.connector_code ?? SOS_CONNECTOR_CODE,
         );
         const payload = {
           ...row,
@@ -1839,7 +1839,7 @@ async function fetchJson(
   throw new Error(`UK-AIR SOS fetch exhausted retries for ${path}.`);
 }
 
-async function probeUkAirSosUpstream(
+async function probeSosUpstream(
   baseUrl: string,
   recorder: RawRecorder | null | undefined,
   runtimeDeadline: number,
@@ -2033,14 +2033,14 @@ async function upsertLastValue(
         connector_id: connectorId,
         error: error.message,
       },
-      connector_code: connectorCode ?? UK_AIR_SOS_CONNECTOR_CODE,
+      connector_code: connectorCode ?? SOS_CONNECTOR_CODE,
       connector_id: connectorId ?? null,
       timeseries_id: seriesId,
     });
   }
 }
 
-async function upsertUkAirSosTimeseriesCheckpoints(
+async function upsertSosTimeseriesCheckpoints(
   series: Array<{ id: number }>,
   polledAt: string,
   errorLogger: { logError: (entry: ErrorLogEntry) => Promise<void> },
@@ -2059,23 +2059,23 @@ async function upsertUkAirSosTimeseriesCheckpoints(
     }));
     const { error } = await postgrestRequest(
       "POST",
-      "uk_air_sos_timeseries_checkpoints",
+      "sos_timeseries_checkpoints",
       { on_conflict: "timeseries_id" },
       rows,
       "resolution=merge-duplicates,return=minimal",
       UK_AQ_RAW_SCHEMA,
     );
     if (error) {
-      console.warn("uk_air_sos_timeseries_checkpoints upsert failed", error.message);
+      console.warn("sos_timeseries_checkpoints upsert failed", error.message);
       await errorLogger.logError({
         source: "edge",
         severity: "error",
-        message: "Failed to update uk_air_sos_timeseries_checkpoints.",
+        message: "Failed to update sos_timeseries_checkpoints.",
         context: {
           connector_id: connectorId,
           error: error.message,
         },
-        connector_code: connectorCode ?? UK_AIR_SOS_CONNECTOR_CODE,
+        connector_code: connectorCode ?? SOS_CONNECTOR_CODE,
         connector_id: connectorId,
       });
     }

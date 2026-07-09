@@ -17,7 +17,7 @@
         "db": "ingest",
         "table": "uk_aq_core.observations",
         "column": "status",
-        "code_ref": "supabase/functions/ingest_uk_air_sos/index.ts:527"
+        "code_ref": "supabase/functions/ingest_sos/index.ts:527"
       },
       {
         "db": "ingest",
@@ -33,7 +33,7 @@
       }
     ],
     "mapping_code_refs": [
-      "supabase/functions/ingest_uk_air_sos/index.ts:1700",
+      "supabase/functions/ingest_sos/index.ts:1700",
       "supabase/functions/_shared/history_client.ts:278",
       "supabase/functions/_shared/history_client.ts:454",
       "/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-Test-UK-AQ-Schema/CIC-test-uk-aq-schema/schemas/obs_aqi_db/uk_aq_obs_aqi_db_dualwrite_bootstrap.sql:159"

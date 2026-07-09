@@ -27,8 +27,8 @@ jobs:
 
       - name: Download UK-AIR SOS site register CSV
         env:
-          UK_AIR_SOS_SITE_SEARCH_URL: ${{ secrets.UK_AIR_SOS_SITE_SEARCH_URL }}
-          UK_AIR_SOS_SITE_SEARCH_USER_AGENT: ${{ secrets.UK_AIR_SOS_SITE_SEARCH_USER_AGENT }}
+          SOS_SITE_SEARCH_URL: ${{ secrets.SOS_SITE_SEARCH_URL }}
+          SOS_SITE_SEARCH_USER_AGENT: ${{ secrets.SOS_SITE_SEARCH_USER_AGENT }}
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
           UK_AQ_DROPBOX_ROOT: ${{ vars.UK_AQ_DROPBOX_ROOT }}
@@ -36,11 +36,11 @@ jobs:
           DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
           DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
         run: |
-          python3 scripts/uk_air_sos/uk_air_sos_site_register.py \
-            --output uk_air_sos_site_register.csv \
-            --site-ref-map-csv network_info/uk_air_sos/uk_air_sos_site_refs.csv \
+          python3 scripts/sos/sos_site_register.py \
+            --output sos_site_register.csv \
+            --site-ref-map-csv network_info/sos/sos_site_refs.csv \
             --validate-site-ref-map \
             --discover-site-refs \
             --dropbox-upload \
-            --dropbox-dir network_info/uk_air_sos \
+            --dropbox-dir network_info/sos \
             --load

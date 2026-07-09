@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const PORT = Number(Deno.env.get("PORT") || "8080");
-const RUN_JOB_SCRIPT = "/app/workers/uk_aq_uk_air_sos_cloud_run/run_job.ts";
+const RUN_JOB_SCRIPT = "/app/workers/uk_aq_sos_cloud_run/run_job.ts";
 const ALLOWED_TRIGGER_MODES = new Set(["safety", "task", "manual"]);
 
 let inFlight = false;
@@ -13,7 +13,7 @@ function resolveTriggerMode(req: Request, body: unknown): string {
     return queryMode;
   }
 
-  const headerMode = (req.headers.get("x-uk-air-sos-trigger-mode") || "").trim()
+  const headerMode = (req.headers.get("x-sos-trigger-mode") || "").trim()
     .toLowerCase();
   if (headerMode && ALLOWED_TRIGGER_MODES.has(headerMode)) {
     return headerMode;
@@ -38,10 +38,10 @@ async function runJob(
 ): Promise<Deno.CommandStatus> {
   const childEnv: Record<string, string> = {
     ...Deno.env.toObject(),
-    UK_AIR_SOS_TRIGGER_MODE: triggerMode,
+    SOS_TRIGGER_MODE: triggerMode,
   };
   if (currentTaskName) {
-    childEnv.UK_AIR_SOS_CURRENT_TASK_NAME = currentTaskName;
+    childEnv.SOS_CURRENT_TASK_NAME = currentTaskName;
   }
   const child = new Deno.Command("deno", {
     args: [
@@ -65,7 +65,7 @@ serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         ok: true,
-        service: "uk_aq_uk_air_sos_cloud_run",
+        service: "uk_aq_sos_cloud_run",
       }),
       {
         status: 200,

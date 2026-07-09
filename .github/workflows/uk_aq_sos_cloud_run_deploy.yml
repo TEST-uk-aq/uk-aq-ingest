@@ -5,18 +5,18 @@ on:
     branches:
       - main
     paths:
-      - "workers/uk_aq_uk_air_sos_cloud_run/**"
-      - "supabase/functions/ingest_uk_air_sos/**"
+      - "workers/uk_aq_sos_cloud_run/**"
+      - "supabase/functions/ingest_sos/**"
       - "supabase/functions/_shared/cache.ts"
       - "supabase/functions/_shared/fetch_egress_patch.ts"
       - "supabase/functions/_shared/egress_metrics.ts"
       - "supabase/functions/_shared/observs_client.ts"
       - "scripts/gcp/**"
-      - ".github/workflows/uk_aq_uk_air_sos_cloud_run_deploy.yml"
+      - ".github/workflows/uk_aq_sos_cloud_run_deploy.yml"
   workflow_dispatch:
 
 jobs:
-  deploy-uk-air-sos-service:
+  deploy-sos-service:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,43 +25,43 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
       REPO: ${{ vars.GCP_ARTIFACT_REPO || 'uk-aq' }}
-      SERVICE_NAME: ${{ vars.GCP_UK_AIR_SOS_SERVICE_NAME || vars.GCP_UK_AIR_SOS_JOB_NAME || 'uk-aq-sos-ingest' }}
-      SOS_SERVICE_ACCOUNT: ${{ vars.GCP_UK_AIR_SOS_SERVICE_ACCOUNT || vars.GCP_UK_AIR_SOS_JOB_SERVICE_ACCOUNT || '' }}
+      SERVICE_NAME: ${{ vars.GCP_SOS_SERVICE_NAME || vars.GCP_SOS_JOB_NAME || 'uk-aq-sos-ingest' }}
+      SOS_SERVICE_ACCOUNT: ${{ vars.GCP_SOS_SERVICE_ACCOUNT || vars.GCP_SOS_JOB_SERVICE_ACCOUNT || '' }}
       RESOURCE_LABEL: uk-aq-sos-ingest-service
-      SERVICE_TIMEOUT_SECONDS: ${{ vars.GCP_UK_AIR_SOS_SERVICE_TIMEOUT_SECONDS || vars.GCP_UK_AIR_SOS_JOB_TIMEOUT_SECONDS || '900' }}
-      SERVICE_CPU: ${{ vars.GCP_UK_AIR_SOS_SERVICE_CPU || '0.25' }}
-      SERVICE_MEMORY: ${{ vars.GCP_UK_AIR_SOS_SERVICE_MEMORY || '256Mi' }}
-      SERVICE_CONCURRENCY: ${{ vars.GCP_UK_AIR_SOS_SERVICE_CONCURRENCY || '1' }}
-      SERVICE_MAX_INSTANCES: ${{ vars.GCP_UK_AIR_SOS_SERVICE_MAX_INSTANCES || '1' }}
-      SERVICE_MIN_INSTANCES: ${{ vars.GCP_UK_AIR_SOS_SERVICE_MIN_INSTANCES || '0' }}
-      SCHEDULER_ENABLED: ${{ vars.GCP_UK_AIR_SOS_SCHEDULER_ENABLED || 'true' }}
-      SCHEDULER_JOB_NAME: ${{ vars.GCP_UK_AIR_SOS_SCHEDULER_JOB_NAME || 'uk-aq-sos-trigger' }}
-      SCHEDULER_CRON: ${{ vars.GCP_UK_AIR_SOS_SCHEDULER_CRON || '*/15 * * * *' }}
-      SCHEDULER_TIMEZONE: ${{ vars.GCP_UK_AIR_SOS_SCHEDULER_TIMEZONE || 'Etc/UTC' }}
-      SCHEDULER_MAX_RETRY_ATTEMPTS: ${{ vars.GCP_UK_AIR_SOS_SCHEDULER_MAX_RETRY_ATTEMPTS || '0' }}
-      SCHEDULER_SERVICE_ACCOUNT: ${{ vars.GCP_UK_AIR_SOS_SCHEDULER_SERVICE_ACCOUNT || '' }}
+      SERVICE_TIMEOUT_SECONDS: ${{ vars.GCP_SOS_SERVICE_TIMEOUT_SECONDS || vars.GCP_SOS_JOB_TIMEOUT_SECONDS || '900' }}
+      SERVICE_CPU: ${{ vars.GCP_SOS_SERVICE_CPU || '0.25' }}
+      SERVICE_MEMORY: ${{ vars.GCP_SOS_SERVICE_MEMORY || '256Mi' }}
+      SERVICE_CONCURRENCY: ${{ vars.GCP_SOS_SERVICE_CONCURRENCY || '1' }}
+      SERVICE_MAX_INSTANCES: ${{ vars.GCP_SOS_SERVICE_MAX_INSTANCES || '1' }}
+      SERVICE_MIN_INSTANCES: ${{ vars.GCP_SOS_SERVICE_MIN_INSTANCES || '0' }}
+      SCHEDULER_ENABLED: ${{ vars.GCP_SOS_SCHEDULER_ENABLED || 'true' }}
+      SCHEDULER_JOB_NAME: ${{ vars.GCP_SOS_SCHEDULER_JOB_NAME || 'uk-aq-sos-trigger' }}
+      SCHEDULER_CRON: ${{ vars.GCP_SOS_SCHEDULER_CRON || '*/15 * * * *' }}
+      SCHEDULER_TIMEZONE: ${{ vars.GCP_SOS_SCHEDULER_TIMEZONE || 'Etc/UTC' }}
+      SCHEDULER_MAX_RETRY_ATTEMPTS: ${{ vars.GCP_SOS_SCHEDULER_MAX_RETRY_ATTEMPTS || '0' }}
+      SCHEDULER_SERVICE_ACCOUNT: ${{ vars.GCP_SOS_SCHEDULER_SERVICE_ACCOUNT || '' }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
       UK_AQ_RAW_SCHEMA: ${{ vars.UK_AQ_RAW_SCHEMA || 'uk_aq_raw' }}
       OBS_AQIDB_RPC_SCHEMA: ${{ vars.OBS_AQIDB_RPC_SCHEMA || 'uk_aq_public' }}
-      OBSERVS_WRITE_MODE: ${{ vars.UK_AIR_SOS_OBSERVS_WRITE_MODE || vars.OBSERVS_WRITE_MODE || 'pubsub_only' }}
+      OBSERVS_WRITE_MODE: ${{ vars.SOS_OBSERVS_WRITE_MODE || vars.OBSERVS_WRITE_MODE || 'pubsub_only' }}
       GCP_OBSERVS_PUBSUB_TOPIC: ${{ vars.GCP_OBSERVS_PUBSUB_TOPIC || 'uk-aq-observs-observations' }}
       OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE: ${{ vars.OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE || '500' }}
-      UK_AIR_SOS_BASE_URL: ${{ vars.UK_AIR_SOS_BASE_URL || 'https://uk-air.defra.gov.uk/sos-ukair/api/v1' }}
-      UK_AIR_SOS_SERVICE_LABEL: ${{ vars.UK_AIR_SOS_SERVICE_LABEL || 'UK-AIR-SOS' }}
-      UK_AIR_SOS_CONNECTOR_CODE: ${{ vars.UK_AIR_SOS_CONNECTOR_CODE || 'uk_air_sos' }}
-      UK_AIR_SOS_DEFAULT_INTERVAL_MINUTES: ${{ vars.UK_AIR_SOS_DEFAULT_INTERVAL_MINUTES || '60' }}
-      UK_AIR_SOS_IN_FLIGHT_TIMEOUT_MINUTES: ${{ vars.UK_AIR_SOS_IN_FLIGHT_TIMEOUT_MINUTES || '30' }}
-      UK_AIR_SOS_CLAIM_TIMEOUT_MINUTES: ${{ vars.UK_AIR_SOS_CLAIM_TIMEOUT_MINUTES || '30' }}
-      UK_AIR_SOS_DEFAULT_WINDOW_HOURS: ${{ vars.UK_AIR_SOS_DEFAULT_WINDOW_HOURS || '6' }}
-      UK_AIR_SOS_DEFAULT_TIMESERIES_LIMIT: ${{ vars.UK_AIR_SOS_DEFAULT_TIMESERIES_LIMIT || '100' }}
-      UK_AIR_SOS_STATION_BATCH_LIMIT: ${{ vars.UK_AIR_SOS_STATION_BATCH_LIMIT || '100' }}
-      UK_AIR_SOS_STALE_LIMIT: ${{ vars.UK_AIR_SOS_STALE_LIMIT || '4' }}
-      UK_AIR_SOS_MAX_RUNTIME_SECONDS: ${{ vars.UK_AIR_SOS_MAX_RUNTIME_SECONDS || '120' }}
+      SOS_BASE_URL: ${{ vars.SOS_BASE_URL || 'https://uk-air.defra.gov.uk/sos-ukair/api/v1' }}
+      SOS_SERVICE_LABEL: ${{ vars.SOS_SERVICE_LABEL || 'SOS' }}
+      SOS_CONNECTOR_CODE: ${{ vars.SOS_CONNECTOR_CODE || 'sos' }}
+      SOS_DEFAULT_INTERVAL_MINUTES: ${{ vars.SOS_DEFAULT_INTERVAL_MINUTES || '60' }}
+      SOS_IN_FLIGHT_TIMEOUT_MINUTES: ${{ vars.SOS_IN_FLIGHT_TIMEOUT_MINUTES || '30' }}
+      SOS_CLAIM_TIMEOUT_MINUTES: ${{ vars.SOS_CLAIM_TIMEOUT_MINUTES || '30' }}
+      SOS_DEFAULT_WINDOW_HOURS: ${{ vars.SOS_DEFAULT_WINDOW_HOURS || '6' }}
+      SOS_DEFAULT_TIMESERIES_LIMIT: ${{ vars.SOS_DEFAULT_TIMESERIES_LIMIT || '100' }}
+      SOS_STATION_BATCH_LIMIT: ${{ vars.SOS_STATION_BATCH_LIMIT || '100' }}
+      SOS_STALE_LIMIT: ${{ vars.SOS_STALE_LIMIT || '4' }}
+      SOS_MAX_RUNTIME_SECONDS: ${{ vars.SOS_MAX_RUNTIME_SECONDS || '120' }}
       UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
       UK_AQ_DROPBOX_ROOT: ${{ vars.UK_AQ_DROPBOX_ROOT }}
-      UK_AIR_RAW_DROPBOX_FOLDER: ${{ vars.UK_AIR_RAW_DROPBOX_FOLDER || '/connectors/uk_air_sos/raw_data' }}
+      UK_AIR_RAW_DROPBOX_FOLDER: ${{ vars.UK_AIR_RAW_DROPBOX_FOLDER || '/connectors/sos/raw_data' }}
       SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
       OBS_AQIDB_SECRET_KEY: ${{ secrets.OBS_AQIDB_SECRET_KEY }}
       SB_UK_AQ_CRON_SECRET: ${{ secrets.SB_UK_AQ_CRON_SECRET }}
@@ -89,7 +89,7 @@ jobs:
           fi
           if [ -z "${SOS_SERVICE_ACCOUNT:-}" ]; then
             echo "Missing required service account setting."
-            echo "Set repo variable: GCP_UK_AIR_SOS_SERVICE_ACCOUNT (or legacy GCP_UK_AIR_SOS_JOB_SERVICE_ACCOUNT)"
+            echo "Set repo variable: GCP_SOS_SERVICE_ACCOUNT (or legacy GCP_SOS_JOB_SERVICE_ACCOUNT)"
             exit 1
           fi
           if [[ "${SOS_SERVICE_ACCOUNT}" == *"-compute@developer.gserviceaccount.com" ]]; then
@@ -167,7 +167,7 @@ jobs:
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/uk-aq-sos:${GITHUB_SHA::12}"
           echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"
-          docker build -f workers/uk_aq_uk_air_sos_cloud_run/Dockerfile -t "${IMAGE}" .
+          docker build -f workers/uk_aq_sos_cloud_run/Dockerfile -t "${IMAGE}" .
           docker push "${IMAGE}"
 
       - name: Ensure observs Pub/Sub topic + publisher IAM binding
@@ -287,21 +287,21 @@ jobs:
           add_env OBSERVS_WRITE_MODE
           add_env GCP_OBSERVS_PUBSUB_TOPIC
           add_env OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE
-          add_env UK_AIR_SOS_BASE_URL
-          add_env UK_AIR_SOS_SERVICE_LABEL
-          add_env UK_AIR_SOS_CONNECTOR_CODE
-          add_env UK_AIR_SOS_DEFAULT_INTERVAL_MINUTES
-          add_env UK_AIR_SOS_IN_FLIGHT_TIMEOUT_MINUTES
-          add_env UK_AIR_SOS_CLAIM_TIMEOUT_MINUTES
-          add_env UK_AIR_SOS_DEFAULT_WINDOW_HOURS
-          add_env UK_AIR_SOS_DEFAULT_TIMESERIES_LIMIT
-          add_env UK_AIR_SOS_STATION_BATCH_LIMIT
-          add_env UK_AIR_SOS_STALE_LIMIT
-          add_env UK_AIR_SOS_MAX_RUNTIME_SECONDS
+          add_env SOS_BASE_URL
+          add_env SOS_SERVICE_LABEL
+          add_env SOS_CONNECTOR_CODE
+          add_env SOS_DEFAULT_INTERVAL_MINUTES
+          add_env SOS_IN_FLIGHT_TIMEOUT_MINUTES
+          add_env SOS_CLAIM_TIMEOUT_MINUTES
+          add_env SOS_DEFAULT_WINDOW_HOURS
+          add_env SOS_DEFAULT_TIMESERIES_LIMIT
+          add_env SOS_STATION_BATCH_LIMIT
+          add_env SOS_STALE_LIMIT
+          add_env SOS_MAX_RUNTIME_SECONDS
           add_env UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL
           add_env UK_AQ_DROPBOX_ROOT
           add_env UK_AIR_RAW_DROPBOX_FOLDER
-          env_updates+=("UK_AIR_SOS_LOCAL_PORT=8000")
+          env_updates+=("SOS_LOCAL_PORT=8000")
           env_updates+=("GCP_PROJECT_ID=${PROJECT_ID}")
           if [ -n "${OBS_AQIDB_SUPABASE_URL:-}" ]; then
             add_env OBS_AQIDB_SUPABASE_URL

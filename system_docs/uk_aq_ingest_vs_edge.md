@@ -4,7 +4,7 @@ This project uses **two different ingestion paths** that serve different purpose
 
 Dispatcher/queue runtime flow is documented in `system_docs/uk_aq_dispatcher_ingest_flow.md`.
 
-## Ingest script (`scripts/uk_air_sos/uk_air_sos_ingest.py`)
+## Ingest script (`scripts/sos/sos_ingest.py`)
 
 **Purpose:** full discovery + data refresh.
 
@@ -16,7 +16,7 @@ Dispatcher/queue runtime flow is documented in `system_docs/uk_aq_dispatcher_ing
 - Can upload raw payloads + logs to Dropbox (optional).
 - Runs locally or via GitHub Actions.
 
-## Edge function (`supabase/functions/ingest_uk_air_sos/index.ts`)
+## Edge function (`supabase/functions/ingest_sos/index.ts`)
 
 **Purpose:** lightweight polling of existing timeseries rows.
 

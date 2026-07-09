@@ -56,7 +56,7 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - Use project terminology: "timeseries" (not "sensors") in code, docs, and discussion.
 - For SOS-derived UK networks, use `gov_uk_<network>_` prefixes (e.g., `gov_uk_aurn_`) and place them under `scripts/gov_uk_<network>/`.
 - For non-SOS networks, use the network prefix (e.g., `sensorcommunity_`) and place them under a matching `scripts/<network>/` directory.
-- Connectors represent data sources; SOS networks live in `uk_air_sos_networks` (use `network_display_name` for UI) and must not be added to `connectors`. Non-SOS connectors are 1:1 with their network.
+- Connectors represent data sources; SOS networks live in `sos_networks` (use `network_display_name` for UI) and must not be added to `connectors`. Non-SOS connectors are 1:1 with their network.
 - Terminology: `*_ref` = source identifier; `*_code` = internal unique code; `label` = raw source label string; `display_name` = UI-friendly name we curate.
 - LAQN is sourced from ERG (London Air), not GOV.UK; use connector code `erg_laqn` with connector-facing prefixes `erg_laqn_` under `scripts/erg_laqn/`.
 - For LAQN connectors, use `label` = `ERG London Air` and `display_name` = `London Air LAQN`.
@@ -94,14 +94,14 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 
 ## Documentation
 - Add a script note to `system_docs/uk_aq_scripts.md` when new scripts are added.
-- Add a per-network doc in `system_docs/` (e.g., `uk_air_sos.md`) when a new network is introduced.
+- Add a per-network doc in `system_docs/` (e.g., `sos.md`) when a new network is introduced.
 - When `supabase/uk_air_quality_schema.sql` changes, update `system_docs/schema-overview.md` to match.
 - When new tables are added, add a matching doc in `system_docs/table_info/`.
 - When new edge functions are added under `supabase/functions/`, update `.github/workflows/supabase_edge_deploy.yml` to deploy them.
 - When edge functions are modified, update `system_docs/uk_aq_edge_functions.md`.
 - When functions or logic change, update the relevant `system_docs/` pages accordingly.
 - `system_docs/` is markdown-only; store data files under `network_info/` in the relevant network directory.
-- Naming for any file/function: single-network uses the network name prefix; all SOS networks use `uk_air_sos_`; all networks use `uk_aq_`.
+- Naming for any file/function: single-network uses the network name prefix; all SOS networks use `sos_`; all networks use `uk_aq_`.
 - DB schemas live outside this repo at `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema/schemas`.
 
 ## Station Name Enrichment

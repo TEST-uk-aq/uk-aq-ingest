@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from scripts.uk_air_sos.uk_air_sos_ingest import UkAirClient, _parse_datapoints
+from scripts.sos.sos_ingest import UkAirClient, _parse_datapoints
 
 LIVE_ENV = os.getenv("UKAIR_LIVE")
 

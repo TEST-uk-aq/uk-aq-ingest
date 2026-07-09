@@ -5,49 +5,49 @@ import {
 } from "../shared/dropbox_error_log.ts";
 
 const CONNECTOR_CODE =
-  (Deno.env.get("UK_AIR_SOS_CONNECTOR_CODE") || "uk_air_sos").trim();
+  (Deno.env.get("SOS_CONNECTOR_CODE") || "sos").trim();
 const SCHEDULER_BACKEND_SUPABASE_FUNCTION = "supabase_function";
 const SCHEDULER_BACKEND_GOOGLE_CLOUD_RUN = "google_cloud_run";
 
 const DEFAULT_INTERVAL_MINUTES = parsePositiveInt(
-  Deno.env.get("UK_AIR_SOS_DEFAULT_INTERVAL_MINUTES"),
+  Deno.env.get("SOS_DEFAULT_INTERVAL_MINUTES"),
   60,
 );
 const IN_FLIGHT_TIMEOUT_MINUTES = parsePositiveInt(
-  Deno.env.get("UK_AIR_SOS_IN_FLIGHT_TIMEOUT_MINUTES"),
+  Deno.env.get("SOS_IN_FLIGHT_TIMEOUT_MINUTES"),
   30,
 );
 const CLAIM_TIMEOUT_MINUTES = parsePositiveInt(
-  Deno.env.get("UK_AIR_SOS_CLAIM_TIMEOUT_MINUTES"),
+  Deno.env.get("SOS_CLAIM_TIMEOUT_MINUTES"),
   30,
 );
 const DEFAULT_WINDOW_HOURS = parsePositiveInt(
-  Deno.env.get("UK_AIR_SOS_DEFAULT_WINDOW_HOURS"),
+  Deno.env.get("SOS_DEFAULT_WINDOW_HOURS"),
   6,
 );
 const DEFAULT_TIMESERIES_LIMIT = parsePositiveInt(
-  Deno.env.get("UK_AIR_SOS_DEFAULT_TIMESERIES_LIMIT"),
+  Deno.env.get("SOS_DEFAULT_TIMESERIES_LIMIT"),
   100,
 );
 const DEFAULT_STATION_BATCH_LIMIT = parsePositiveInt(
-  Deno.env.get("UK_AIR_SOS_STATION_BATCH_LIMIT"),
+  Deno.env.get("SOS_STATION_BATCH_LIMIT"),
   100,
 );
 const DEFAULT_STALE_LIMIT = parsePositiveInt(
-  Deno.env.get("UK_AIR_SOS_STALE_LIMIT"),
+  Deno.env.get("SOS_STALE_LIMIT"),
   4,
 );
 const PORT = parsePositiveInt(
-  Deno.env.get("UK_AIR_SOS_LOCAL_PORT") || Deno.env.get("PORT"),
+  Deno.env.get("SOS_LOCAL_PORT") || Deno.env.get("PORT"),
   8000,
 );
-const REQUEST_PAYLOAD_RAW = (Deno.env.get("UK_AIR_SOS_REQUEST_PAYLOAD") ||
+const REQUEST_PAYLOAD_RAW = (Deno.env.get("SOS_REQUEST_PAYLOAD") ||
   "{}").trim();
 const REQUEST_PAYLOAD_OVERRIDES = parseRequestPayload(REQUEST_PAYLOAD_RAW);
 const CRON_SECRET = (Deno.env.get("SB_UK_AQ_CRON_SECRET") || "").trim();
-const UK_AIR_SOS_INGEST_SCRIPT_PATH =
-  (Deno.env.get("UK_AIR_SOS_INGEST_SCRIPT_PATH") ||
-    "/app/runtime/ingest_uk_air_sos/index.ts").trim();
+const SOS_INGEST_SCRIPT_PATH =
+  (Deno.env.get("SOS_INGEST_SCRIPT_PATH") ||
+    "/app/runtime/ingest_sos/index.ts").trim();
 
 const SUPABASE_URL = requiredEnv("SUPABASE_URL");
 const SUPABASE_PRIVILEGED_KEY = requiredEnvAny(["SB_SECRET_KEY"]);
@@ -64,14 +64,14 @@ const DROPBOX_APP_SECRET = (Deno.env.get("DROPBOX_APP_SECRET") || "").trim();
 const DROPBOX_REFRESH_TOKEN = (Deno.env.get("DROPBOX_REFRESH_TOKEN") || "")
   .trim();
 const DROPBOX_ERROR_ALLOWED_SUPABASE_URL = (
-  Deno.env.get("UK_AIR_SOS_ERROR_DROPBOX_ALLOWED_SUPABASE_URL") ??
+  Deno.env.get("SOS_ERROR_DROPBOX_ALLOWED_SUPABASE_URL") ??
   Deno.env.get("UK_AIR_ERROR_DROPBOX_ALLOWED_SUPABASE_URL") ??
-  Deno.env.get("UK_AIR_SOS_RAW_DROPBOX_ALLOWED_SUPABASE_URL") ??
+  Deno.env.get("SOS_RAW_DROPBOX_ALLOWED_SUPABASE_URL") ??
   Deno.env.get("UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL") ??
   ""
 ).trim();
 const DROPBOX_ERROR_FOLDER = (
-  Deno.env.get("UK_AIR_SOS_ERROR_DROPBOX_FOLDER") ??
+  Deno.env.get("SOS_ERROR_DROPBOX_FOLDER") ??
   Deno.env.get("UK_AIR_ERROR_DROPBOX_FOLDER") ??
   "/error_log"
 ).trim();
@@ -157,11 +157,11 @@ function parseRequestPayload(raw: string): Record<string, unknown> {
   try {
     parsed = JSON.parse(raw);
   } catch (_error) {
-    throw new Error("UK_AIR_SOS_REQUEST_PAYLOAD must be valid JSON.");
+    throw new Error("SOS_REQUEST_PAYLOAD must be valid JSON.");
   }
   const payload = toObject(parsed);
   if (!payload) {
-    throw new Error("UK_AIR_SOS_REQUEST_PAYLOAD must be a JSON object.");
+    throw new Error("SOS_REQUEST_PAYLOAD must be a JSON object.");
   }
   return payload;
 }
@@ -389,7 +389,7 @@ async function loadStationRefs(params: {
   }
   const response = await postgrestRequest(
     "POST",
-    "rpc/uk_air_sos_select_station_refs",
+    "rpc/sos_select_station_refs",
     {
       body,
       schema: UK_AQ_CORE_SCHEMA,
@@ -559,7 +559,7 @@ async function loadStationCheckpointRows(
   while (true) {
     const response = await postgrestRequest(
       "GET",
-      "uk_air_sos_station_checkpoints",
+      "sos_station_checkpoints",
       {
         schema: UK_AQ_RAW_SCHEMA,
         query: {
@@ -704,7 +704,7 @@ async function upsertStationCheckpoints(
   }
   const response = await postgrestRequest(
     "POST",
-    "uk_air_sos_station_checkpoints",
+    "sos_station_checkpoints",
     {
       schema: UK_AQ_RAW_SCHEMA,
       query: { on_conflict: "station_id" },
@@ -791,10 +791,10 @@ function deriveRunSummary(ingestResponse: IngestResponse): {
   }
   if (!runMessage) {
     if (ingestResponse.ok) {
-      runMessage = "ingest_uk_air_sos completed via google_cloud_run";
+      runMessage = "ingest_sos completed via google_cloud_run";
     } else {
       runMessage =
-        `ingest_uk_air_sos failed with status ${ingestResponse.status}`;
+        `ingest_sos failed with status ${ingestResponse.status}`;
     }
   }
 
@@ -957,7 +957,7 @@ async function insertErrorLog(
     created_at: createdAtIso,
     source: "cloud_run",
     severity: "error",
-    message: "ingest_uk_air_sos dispatch failed",
+    message: "ingest_sos dispatch failed",
     stack: null,
     context: {
       connector_code: CONNECTOR_CODE,
@@ -1196,11 +1196,11 @@ async function main(): Promise<void> {
       "--allow-net",
       "--allow-read",
       "--allow-write",
-      UK_AIR_SOS_INGEST_SCRIPT_PATH,
+      SOS_INGEST_SCRIPT_PATH,
     ],
     env: {
       ...Deno.env.toObject(),
-      UK_AIR_SOS_DROPBOX_UPLOAD_SOURCE: "cloud_run",
+      SOS_DROPBOX_UPLOAD_SOURCE: "cloud_run",
     },
     stdout: "inherit",
     stderr: "inherit",
@@ -1303,7 +1303,7 @@ async function main(): Promise<void> {
         });
       }
       throw new Error(
-        `ingest_uk_air_sos failed (${ingestResponse.status}): ${ingestResponse.raw}`,
+        `ingest_sos failed (${ingestResponse.status}): ${ingestResponse.raw}`,
       );
     }
 

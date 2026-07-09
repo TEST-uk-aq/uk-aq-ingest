@@ -79,7 +79,7 @@ jobs:
             done
           }
 
-          deploy_function ingest_uk_air_sos
+          deploy_function ingest_sos
           deploy_function ingest_breathelondon
           deploy_function uk_aq_latest --no-verify-jwt
           deploy_function uk_aq_stations_chart --no-verify-jwt
