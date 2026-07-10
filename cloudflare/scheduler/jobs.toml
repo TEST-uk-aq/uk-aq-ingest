@@ -38,11 +38,11 @@ trigger_mode = "safety"
 
 [jobs.uk_aq_scomm]
 enabled = true
-cron_expr = "*/15 * * * *"
+cron_expr = "*/5 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
-dry_run = true
+dry_run = false
 notes = "Sensor.Community safety ingest trigger"
 
 [jobs.uk_aq_scomm.cloud_run_body]
