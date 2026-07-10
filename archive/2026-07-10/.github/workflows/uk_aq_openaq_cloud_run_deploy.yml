@@ -1,0 +1,559 @@
+name: Deploy OpenAQ Cloud Run Service
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "workers/uk_aq_openaq_cloud_run/**"
+      - "supabase/functions/ingest_openaq/**"
+      - "supabase/functions/_shared/cache.ts"
+      - "supabase/functions/_shared/fetch_egress_patch.ts"
+      - "supabase/functions/_shared/egress_metrics.ts"
+      - "supabase/functions/_shared/observs_client.ts"
+      - "scripts/gcp/**"
+      - ".github/workflows/uk_aq_openaq_cloud_run_deploy.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy-openaq-service:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
+      REPO: ${{ vars.GCP_ARTIFACT_REPO || 'uk-aq' }}
+      SERVICE_NAME: ${{ vars.GCP_OPENAQ_SERVICE_NAME || 'uk-aq-openaq-ingest' }}
+      JOB_SERVICE_ACCOUNT: ${{ vars.GCP_OPENAQ_JOB_SERVICE_ACCOUNT || '' }}
+      SERVICE_TIMEOUT_SECONDS: ${{ vars.GCP_OPENAQ_SERVICE_TIMEOUT_SECONDS || '300' }}
+      SERVICE_CPU: ${{ vars.GCP_OPENAQ_SERVICE_CPU || '0.25' }}
+      SERVICE_MEMORY: ${{ vars.GCP_OPENAQ_SERVICE_MEMORY || '256Mi' }}
+      SERVICE_CONCURRENCY: ${{ vars.GCP_OPENAQ_SERVICE_CONCURRENCY || '1' }}
+      SERVICE_MAX_INSTANCES: ${{ vars.GCP_OPENAQ_SERVICE_MAX_INSTANCES || '1' }}
+      SERVICE_MIN_INSTANCES: ${{ vars.GCP_OPENAQ_SERVICE_MIN_INSTANCES || '0' }}
+      RESOURCE_LABEL: uk-aq-openaq-ingest-service
+      TASKS_ENABLED: ${{ vars.GCP_OPENAQ_TASKS_ENABLED || 'true' }}
+      TASK_QUEUE_ID: ${{ vars.GCP_OPENAQ_TASK_QUEUE_ID || 'uk-aq-openaq-trigger-queue' }}
+      TASK_INVOKER_SERVICE_ACCOUNT: ${{ vars.GCP_OPENAQ_TASK_INVOKER_SERVICE_ACCOUNT || '' }}
+      SCHEDULER_ENABLED: ${{ vars.GCP_OPENAQ_SCHEDULER_ENABLED || 'true' }}
+      SCHEDULER_JOB_NAME: ${{ vars.GCP_OPENAQ_SCHEDULER_JOB_NAME || 'uk-aq-openaq-safety-trigger' }}
+      SCHEDULER_CRON: ${{ vars.GCP_OPENAQ_SCHEDULER_CRON || '*/30 * * * *' }}
+      SCHEDULER_TIMEZONE: ${{ vars.GCP_OPENAQ_SCHEDULER_TIMEZONE || 'Etc/UTC' }}
+      SCHEDULER_MAX_RETRY_ATTEMPTS: ${{ vars.GCP_OPENAQ_SCHEDULER_MAX_RETRY_ATTEMPTS || '0' }}
+      SCHEDULER_SERVICE_ACCOUNT: ${{ vars.GCP_OPENAQ_SCHEDULER_SERVICE_ACCOUNT || '' }}
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
+      UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
+      UK_AQ_RAW_SCHEMA: ${{ vars.UK_AQ_RAW_SCHEMA || 'uk_aq_raw' }}
+      OBS_AQIDB_RPC_SCHEMA: ${{ vars.OBS_AQIDB_RPC_SCHEMA || 'uk_aq_public' }}
+      OBSERVS_WRITE_MODE: ${{ vars.OPENAQ_OBSERVS_WRITE_MODE || 'pubsub_only' }}
+      GCP_OBSERVS_PUBSUB_TOPIC: ${{ vars.GCP_OBSERVS_PUBSUB_TOPIC || 'uk-aq-observs-observations' }}
+      OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE: ${{ vars.OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE || '500' }}
+      OPENAQ_BASE_URL: ${{ vars.OPENAQ_BASE_URL || 'https://api.openaq.org/v3' }}
+      OPENAQ_CONNECTOR_CODE: ${{ vars.OPENAQ_CONNECTOR_CODE || 'openaq' }}
+      OPENAQ_SERVICE_REF: ${{ vars.OPENAQ_SERVICE_REF || 'openaq' }}
+      OPENAQ_USER_AGENT: ${{ vars.OPENAQ_USER_AGENT || 'uk-air-quality-networks' }}
+      OPENAQ_BBOX: ${{ vars.OPENAQ_BBOX || '-8.623555,49.863222,1.763337,60.871222' }}
+      OPENAQ_PAGE_LIMIT: ${{ vars.OPENAQ_PAGE_LIMIT || '1000' }}
+      OPENAQ_MAX_PAGES: ${{ vars.OPENAQ_MAX_PAGES || '50' }}
+      OPENAQ_CONCURRENCY: ${{ vars.OPENAQ_CONCURRENCY || '6' }}
+      OPENAQ_MAX_RUNTIME_SECONDS: ${{ vars.OPENAQ_MAX_RUNTIME_SECONDS || '300' }}
+      OPENAQ_RATE_LIMIT_RETRIES: ${{ vars.OPENAQ_RATE_LIMIT_RETRIES || '3' }}
+      OPENAQ_RATE_LIMIT_STOP_THRESHOLD: ${{ vars.OPENAQ_RATE_LIMIT_STOP_THRESHOLD || '5' }}
+      OPENAQ_GAP_REQUESTS_REMAINING_MIN: ${{ vars.OPENAQ_GAP_REQUESTS_REMAINING_MIN || '10' }}
+      OPENAQ_MIN_GAP_STATIONS: ${{ vars.OPENAQ_MIN_GAP_STATIONS || '1' }}
+      OPENAQ_MIN_NON_GAP_STATIONS: ${{ vars.OPENAQ_MIN_NON_GAP_STATIONS || '10' }}
+      OPENAQ_INGEST_STATION_FETCH: ${{ vars.OPENAQ_INGEST_STATION_FETCH || 'false' }}
+      OPENAQ_DEFAULT_WINDOW_HOURS: ${{ vars.OPENAQ_DEFAULT_WINDOW_HOURS || '6' }}
+      OPENAQ_DEFAULT_BATCH_LIMIT: ${{ vars.OPENAQ_DEFAULT_BATCH_LIMIT || '56' }}
+      OPENAQ_MAX_REQUESTS_PER_HOUR: ${{ vars.OPENAQ_MAX_REQUESTS_PER_HOUR || '1900' }}
+      OPENAQ_SHARED_BUDGET_ENFORCE: ${{ vars.OPENAQ_SHARED_BUDGET_ENFORCE || 'true' }}
+      OPENAQ_SHARED_BUDGET_KEY: ${{ vars.OPENAQ_SHARED_BUDGET_KEY || 'openaq' }}
+      OPENAQ_SHARED_BUDGET_CALLER: ${{ vars.OPENAQ_SHARED_BUDGET_CALLER || 'ingest_openaq' }}
+      OPENAQ_SHARED_BUDGET_MINUTE_LIMIT: ${{ vars.OPENAQ_SHARED_BUDGET_MINUTE_LIMIT || '40' }}
+      OPENAQ_SHARED_BUDGET_HOUR_LIMIT: ${{ vars.OPENAQ_SHARED_BUDGET_HOUR_LIMIT || '1500' }}
+      OPENAQ_STALE_LIMIT: ${{ vars.OPENAQ_STALE_LIMIT || '4' }}
+      OPENAQ_TIER1_RETRY_SECONDS: ${{ vars.OPENAQ_TIER1_RETRY_SECONDS || '300' }}
+      OPENAQ_IN_FLIGHT_TIMEOUT_MINUTES: ${{ vars.OPENAQ_IN_FLIGHT_TIMEOUT_MINUTES || '30' }}
+      OPENAQ_CLAIM_TIMEOUT_MINUTES: ${{ vars.OPENAQ_CLAIM_TIMEOUT_MINUTES || '30' }}
+      OPENAQ_TASKS_ENABLED: ${{ vars.GCP_OPENAQ_TASKS_ENABLED || 'true' }}
+      OPENAQ_NEXT_CHECK_MIN_SECONDS: ${{ vars.OPENAQ_NEXT_CHECK_MIN_SECONDS || '60' }}
+      OPENAQ_NEXT_CHECK_PARTIAL_MIN_SECONDS: ${{ vars.OPENAQ_NEXT_CHECK_PARTIAL_MIN_SECONDS || '60' }}
+      OPENAQ_NEXT_CHECK_SKIPPED_MIN_SECONDS: ${{ vars.OPENAQ_NEXT_CHECK_SKIPPED_MIN_SECONDS || '60' }}
+      OPENAQ_RATE_LIMIT_FALLBACK_SECONDS: ${{ vars.OPENAQ_RATE_LIMIT_FALLBACK_SECONDS || '300' }}
+      OPENAQ_FAILURE_RETRY_SECONDS: ${{ vars.OPENAQ_FAILURE_RETRY_SECONDS || '120' }}
+      OPENAQ_AUTH_SAFETY_DISABLE_POLLING: ${{ vars.OPENAQ_AUTH_SAFETY_DISABLE_POLLING || 'true' }}
+      OPENAQ_LAG_STAT: ${{ vars.OPENAQ_LAG_STAT || 'min' }}
+      OPENAQ_TASK_NAME_PREFIX: ${{ vars.OPENAQ_TASK_NAME_PREFIX || 'uk-aq-openaq-next' }}
+      OPENAQ_DROPBOX_UPLOAD_SOURCE: ${{ vars.OPENAQ_DROPBOX_UPLOAD_SOURCE || 'cloud_run' }}
+      OPENAQ_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.OPENAQ_RAW_DROPBOX_ALLOWED_SUPABASE_URL || vars.UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
+      UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
+      UK_AQ_DROPBOX_ROOT: ${{ vars.UK_AQ_DROPBOX_ROOT }}
+      SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+      OBS_AQIDB_SECRET_KEY: ${{ secrets.OBS_AQIDB_SECRET_KEY }}
+      OPENAQ_API_KEY: ${{ secrets.OPENAQ_API_KEY }}
+      SB_UK_AQ_CRON_SECRET: ${{ secrets.SB_UK_AQ_CRON_SECRET }}
+      DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+      DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+      DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+      SB_SECRET_KEY_SECRET_NAME: ${{ vars.SB_SECRET_KEY_SECRET_NAME || 'SB_SECRET_KEY' }}
+      OBS_AQIDB_SECRET_KEY_SECRET_NAME: ${{ vars.OBS_AQIDB_SECRET_KEY_SECRET_NAME || 'OBS_AQIDB_SECRET_KEY' }}
+      OPENAQ_API_KEY_SECRET_NAME: ${{ vars.OPENAQ_API_KEY_SECRET_NAME || 'OPENAQ_API_KEY' }}
+      SB_UK_AQ_CRON_SECRET_SECRET_NAME: ${{ vars.SB_UK_AQ_CRON_SECRET_SECRET_NAME || 'SB_UK_AQ_CRON_SECRET' }}
+      DROPBOX_APP_KEY_SECRET_NAME: ${{ vars.DROPBOX_APP_KEY_SECRET_NAME || 'DROPBOX_APP_KEY' }}
+      DROPBOX_APP_SECRET_SECRET_NAME: ${{ vars.DROPBOX_APP_SECRET_SECRET_NAME || 'DROPBOX_APP_SECRET' }}
+      DROPBOX_REFRESH_TOKEN_SECRET_NAME: ${{ vars.DROPBOX_REFRESH_TOKEN_SECRET_NAME || 'DROPBOX_REFRESH_TOKEN' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required project config
+        run: |
+          if [ -z "${PROJECT_ID:-}" ]; then
+            echo "Missing required secret: GCP_PROJECT_ID"
+            exit 1
+          fi
+          if [ -z "${JOB_SERVICE_ACCOUNT:-}" ]; then
+            echo "Missing required service account setting."
+            echo "Set repo variable: GCP_OPENAQ_JOB_SERVICE_ACCOUNT"
+            exit 1
+          fi
+          if [[ "${JOB_SERVICE_ACCOUNT}" == *"-compute@developer.gserviceaccount.com" ]]; then
+            echo "Invalid GCP_OPENAQ_JOB_SERVICE_ACCOUNT: default compute service account is not allowed."
+            exit 1
+          fi
+          if [ -z "${OPENAQ_API_KEY:-}" ]; then
+            echo "Missing required secret: OPENAQ_API_KEY"
+            exit 1
+          fi
+          observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
+          if [ "${observs_mode}" = "pubsub_only" ]; then
+            if [ -z "${GCP_OBSERVS_PUBSUB_TOPIC:-}" ]; then
+              echo "OBSERVS_WRITE_MODE=pubsub_only requires GCP_OBSERVS_PUBSUB_TOPIC."
+              exit 1
+            fi
+          elif [ "${observs_mode}" = "direct" ]; then
+            if [ -z "${OBS_AQIDB_SUPABASE_URL:-}" ]; then
+              echo "OBSERVS_WRITE_MODE=direct requires OBS_AQIDB_SUPABASE_URL."
+              exit 1
+            fi
+            if [ -z "${OBS_AQIDB_SECRET_KEY:-}" ]; then
+              echo "OBSERVS_WRITE_MODE=direct requires OBS_AQIDB_SECRET_KEY."
+              exit 1
+            fi
+          fi
+
+      - name: Validate Google auth config
+        run: |
+          if [ -n "${GCP_WORKLOAD_IDENTITY_PROVIDER:-}" ] && [ -n "${GCP_SERVICE_ACCOUNT:-}" ]; then
+            echo "Using Workload Identity Federation auth."
+          elif [ -n "${GCP_SA_KEY:-}" ]; then
+            echo "Using Service Account key auth."
+          else
+            echo "Missing Google auth config."
+            echo "Set either:"
+            echo "1) GCP_WORKLOAD_IDENTITY_PROVIDER + GCP_SERVICE_ACCOUNT"
+            echo "or"
+            echo "2) GCP_SA_KEY"
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud (WIF)
+        if: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && env.GCP_SERVICE_ACCOUNT != '' }}
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to Google Cloud (Service Account Key fallback)
+        if: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER == '' || env.GCP_SERVICE_ACCOUNT == '' }}
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed
+        with:
+          credentials_json: ${{ env.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+
+      - name: Configure gcloud project
+        run: |
+          gcloud config set project "${PROJECT_ID}"
+          gcloud config set run/region "${REGION}"
+
+      - name: Verify Artifact Registry repository exists
+        run: |
+          gcloud artifacts repositories describe "${REPO}" \
+            --location "${REGION}" \
+            --project "${PROJECT_ID}" >/dev/null
+
+      - name: Configure Docker auth for Artifact Registry
+        run: |
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push OpenAQ image
+        id: build
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/uk-aq-openaq:${GITHUB_SHA::12}"
+          echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"
+          docker build -f workers/uk_aq_openaq_cloud_run/Dockerfile -t "${IMAGE}" .
+          docker push "${IMAGE}"
+
+      - name: Ensure Cloud Tasks queue + IAM bindings
+        id: tasks_setup
+        run: |
+          set -euo pipefail
+
+          enabled="$(printf '%s' "${TASKS_ENABLED}" | tr '[:upper:]' '[:lower:]')"
+          if [ "${enabled}" != "true" ] && [ "${enabled}" != "1" ] && [ "${enabled}" != "yes" ]; then
+            echo "Cloud Tasks setup skipped (TASKS_ENABLED=${TASKS_ENABLED})."
+            echo "task_invoker_sa=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          task_invoker_sa="${TASK_INVOKER_SERVICE_ACCOUNT:-${SCHEDULER_SERVICE_ACCOUNT:-${JOB_SERVICE_ACCOUNT}}}"
+          if [ -z "${task_invoker_sa}" ]; then
+            echo "Missing task invoker service account."
+            exit 1
+          fi
+          echo "task_invoker_sa=${task_invoker_sa}" >> "${GITHUB_OUTPUT}"
+          echo "OPENAQ_TASK_INVOKER_SERVICE_ACCOUNT=${task_invoker_sa}" >> "${GITHUB_ENV}"
+
+          if gcloud tasks queues describe "${TASK_QUEUE_ID}" --location "${REGION}" >/dev/null 2>&1; then
+            echo "Cloud Tasks queue exists: ${TASK_QUEUE_ID}"
+          else
+            gcloud tasks queues create "${TASK_QUEUE_ID}" \
+              --location "${REGION}" \
+              --max-dispatches-per-second "1" \
+              --max-concurrent-dispatches "1"
+            echo "Created Cloud Tasks queue: ${TASK_QUEUE_ID}"
+          fi
+
+          gcloud tasks queues add-iam-policy-binding "${TASK_QUEUE_ID}" \
+            --location "${REGION}" \
+            --member "serviceAccount:${JOB_SERVICE_ACCOUNT}" \
+            --role "roles/cloudtasks.enqueuer" >/dev/null
+
+          project_number="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+          cloud_tasks_sa="service-${project_number}@gcp-sa-cloudtasks.iam.gserviceaccount.com"
+          gcloud iam service-accounts add-iam-policy-binding "${task_invoker_sa}" \
+            --member "serviceAccount:${cloud_tasks_sa}" \
+            --role "roles/iam.serviceAccountTokenCreator" >/dev/null
+
+      - name: Ensure observs Pub/Sub topic + publisher IAM binding
+        run: |
+          set -euo pipefail
+          observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
+          if [ "${observs_mode}" != "pubsub_only" ]; then
+            echo "Skipping Pub/Sub publisher setup (OBSERVS_WRITE_MODE=${OBSERVS_WRITE_MODE})."
+            exit 0
+          fi
+
+          if gcloud pubsub topics describe "${GCP_OBSERVS_PUBSUB_TOPIC}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "Pub/Sub topic exists: ${GCP_OBSERVS_PUBSUB_TOPIC}"
+          else
+            gcloud pubsub topics create "${GCP_OBSERVS_PUBSUB_TOPIC}" --project "${PROJECT_ID}"
+            echo "Created Pub/Sub topic: ${GCP_OBSERVS_PUBSUB_TOPIC}"
+          fi
+
+          gcloud pubsub topics add-iam-policy-binding "${GCP_OBSERVS_PUBSUB_TOPIC}" \
+            --project "${PROJECT_ID}" \
+            --member "serviceAccount:${JOB_SERVICE_ACCOUNT}" \
+            --role "roles/pubsub.publisher" >/dev/null
+
+      - name: Sync GitHub secrets to GCP Secret Manager
+        run: |
+          set -euo pipefail
+          UPSERT_SCRIPT="scripts/gcp/uk_aq_secret_upsert_if_changed.sh"
+
+          upsert_secret() {
+            local secret_name="$1"
+            local secret_value="$2"
+            local required="${3:-0}"
+
+            if [ -z "${secret_name}" ]; then
+              if [ "${required}" = "1" ]; then
+                echo "Missing required secret name."
+                exit 1
+              fi
+              return 0
+            fi
+
+            if [ -z "${secret_value}" ] && [ "${required}" = "0" ]; then
+              echo "Skipping optional secret ${secret_name} (no GitHub secret/variable value)."
+              return 0
+            fi
+
+            printf '%s' "${secret_value}" | "${UPSERT_SCRIPT}" \
+              --project "${PROJECT_ID}" \
+              --region "${REGION}" \
+              --secret "${secret_name}" \
+              --required "${required}" \
+              --apply
+          }
+
+          upsert_secret "${SB_SECRET_KEY_SECRET_NAME}" "${SB_SECRET_KEY}" 1
+          upsert_secret "${OPENAQ_API_KEY_SECRET_NAME}" "${OPENAQ_API_KEY}" 1
+          upsert_secret "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" "${SB_UK_AQ_CRON_SECRET}" 0
+          observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
+          if [ "${observs_mode}" = "direct" ]; then
+            upsert_secret "${OBS_AQIDB_SECRET_KEY_SECRET_NAME}" "${OBS_AQIDB_SECRET_KEY}" 1
+          else
+            echo "Skipping OBS_AQIDB_SECRET_KEY secret sync (OBSERVS_WRITE_MODE=${OBSERVS_WRITE_MODE})."
+          fi
+          upsert_secret "${DROPBOX_APP_KEY_SECRET_NAME}" "${DROPBOX_APP_KEY}" 0
+          upsert_secret "${DROPBOX_APP_SECRET_SECRET_NAME}" "${DROPBOX_APP_SECRET}" 0
+          upsert_secret "${DROPBOX_REFRESH_TOKEN_SECRET_NAME}" "${DROPBOX_REFRESH_TOKEN}" 0
+
+      - name: Build Cloud Run env and secret args
+        id: cloudrun_args
+        run: |
+          set -euo pipefail
+
+          require_env() {
+            local key="$1"
+            local value="${!key:-}"
+            if [ -z "${value}" ]; then
+              echo "Missing required value for ${key}"
+              exit 1
+            fi
+          }
+
+          add_env() {
+            local key="$1"
+            local value="${!key:-}"
+            if [ -n "${value}" ]; then
+              env_updates+=("${key}=${value}")
+            fi
+          }
+
+          add_secret_binding() {
+            local env_key="$1"
+            local secret_name="$2"
+            local required="${3:-0}"
+            if [ -z "${secret_name}" ]; then
+              if [ "${required}" = "1" ]; then
+                echo "Missing secret name for required binding ${env_key}"
+                exit 1
+              fi
+              return 0
+            fi
+            if gcloud secrets describe "${secret_name}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+              secret_updates+=("${env_key}=${secret_name}:latest")
+              return 0
+            fi
+            if [ "${required}" = "1" ]; then
+              echo "Required Secret Manager secret not found: ${secret_name}"
+              exit 1
+            fi
+            echo "Optional Secret Manager secret not found, skipping: ${secret_name}"
+          }
+
+          require_env SUPABASE_URL
+
+          env_updates=()
+          add_env SUPABASE_URL
+          add_env UK_AQ_CORE_SCHEMA
+          add_env UK_AQ_RAW_SCHEMA
+          add_env OBSERVS_WRITE_MODE
+          add_env GCP_OBSERVS_PUBSUB_TOPIC
+          add_env OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE
+          add_env OPENAQ_BASE_URL
+          add_env OPENAQ_CONNECTOR_CODE
+          add_env OPENAQ_SERVICE_REF
+          add_env OPENAQ_USER_AGENT
+          add_env OPENAQ_BBOX
+          add_env OPENAQ_PAGE_LIMIT
+          add_env OPENAQ_MAX_PAGES
+          add_env OPENAQ_CONCURRENCY
+          add_env OPENAQ_MAX_RUNTIME_SECONDS
+          add_env OPENAQ_RATE_LIMIT_RETRIES
+          add_env OPENAQ_RATE_LIMIT_STOP_THRESHOLD
+          add_env OPENAQ_GAP_REQUESTS_REMAINING_MIN
+          add_env OPENAQ_MIN_GAP_STATIONS
+          add_env OPENAQ_MIN_NON_GAP_STATIONS
+          add_env OPENAQ_INGEST_STATION_FETCH
+          add_env OPENAQ_DEFAULT_WINDOW_HOURS
+          add_env OPENAQ_DEFAULT_BATCH_LIMIT
+          add_env OPENAQ_MAX_REQUESTS_PER_HOUR
+          add_env OPENAQ_SHARED_BUDGET_ENFORCE
+          add_env OPENAQ_SHARED_BUDGET_KEY
+          add_env OPENAQ_SHARED_BUDGET_CALLER
+          add_env OPENAQ_SHARED_BUDGET_MINUTE_LIMIT
+          add_env OPENAQ_SHARED_BUDGET_HOUR_LIMIT
+          add_env OPENAQ_STALE_LIMIT
+          add_env OPENAQ_TIER1_RETRY_SECONDS
+          add_env OPENAQ_IN_FLIGHT_TIMEOUT_MINUTES
+          add_env OPENAQ_CLAIM_TIMEOUT_MINUTES
+          add_env OPENAQ_TASKS_ENABLED
+          add_env OPENAQ_NEXT_CHECK_MIN_SECONDS
+          add_env OPENAQ_NEXT_CHECK_PARTIAL_MIN_SECONDS
+          add_env OPENAQ_NEXT_CHECK_SKIPPED_MIN_SECONDS
+          add_env OPENAQ_RATE_LIMIT_FALLBACK_SECONDS
+          add_env OPENAQ_FAILURE_RETRY_SECONDS
+          add_env OPENAQ_AUTH_SAFETY_DISABLE_POLLING
+          add_env OPENAQ_LAG_STAT
+          add_env OPENAQ_TASK_NAME_PREFIX
+          add_env OPENAQ_DROPBOX_UPLOAD_SOURCE
+          add_env OPENAQ_RAW_DROPBOX_ALLOWED_SUPABASE_URL
+          add_env UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL
+          add_env UK_AQ_DROPBOX_ROOT
+          add_env OPENAQ_TASK_INVOKER_SERVICE_ACCOUNT
+          env_updates+=("OPENAQ_CLOUD_RUN_TARGET=service")
+          env_updates+=("OPENAQ_CLOUD_RUN_SERVICE_NAME=${SERVICE_NAME}")
+          env_updates+=("OPENAQ_LOCAL_PORT=8000")
+          env_updates+=("GCP_PROJECT_ID=${PROJECT_ID}")
+          env_updates+=("OPENAQ_GCP_PROJECT_ID=${PROJECT_ID}")
+          env_updates+=("OPENAQ_GCP_REGION=${REGION}")
+          env_updates+=("OPENAQ_TASK_QUEUE_ID=${TASK_QUEUE_ID}")
+          if [ -n "${OBS_AQIDB_SUPABASE_URL:-}" ]; then
+            add_env OBS_AQIDB_SUPABASE_URL
+            add_env OBS_AQIDB_RPC_SCHEMA
+          fi
+
+          observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
+          secret_updates=()
+          add_secret_binding "SB_SECRET_KEY" "${SB_SECRET_KEY_SECRET_NAME}" 1
+          add_secret_binding "OPENAQ_API_KEY" "${OPENAQ_API_KEY_SECRET_NAME}" 1
+          if [ -n "${SB_UK_AQ_CRON_SECRET:-}" ]; then
+            add_secret_binding "SB_UK_AQ_CRON_SECRET" "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" 0
+          fi
+          if [ "${observs_mode}" = "direct" ]; then
+            add_secret_binding "OBS_AQIDB_SECRET_KEY" "${OBS_AQIDB_SECRET_KEY_SECRET_NAME}" 1
+          else
+            echo "Skipping OBS_AQIDB_SECRET_KEY secret binding (OBSERVS_WRITE_MODE=${OBSERVS_WRITE_MODE})."
+          fi
+          if [ -n "${DROPBOX_APP_KEY:-}" ] && [ -n "${DROPBOX_APP_SECRET:-}" ] && [ -n "${DROPBOX_REFRESH_TOKEN:-}" ]; then
+            add_secret_binding "DROPBOX_APP_KEY" "${DROPBOX_APP_KEY_SECRET_NAME}" 0
+            add_secret_binding "DROPBOX_APP_SECRET" "${DROPBOX_APP_SECRET_SECRET_NAME}" 0
+            add_secret_binding "DROPBOX_REFRESH_TOKEN" "${DROPBOX_REFRESH_TOKEN_SECRET_NAME}" 0
+          fi
+
+          env_file="${RUNNER_TEMP}/uk-aq-openaq-env.yaml"
+          : > "${env_file}"
+          for kv in "${env_updates[@]}"; do
+            key="${kv%%=*}"
+            value="${kv#*=}"
+            python3 -c 'import json,sys; f=open(sys.argv[1], "a", encoding="utf-8"); print(f"{sys.argv[2]}: {json.dumps(sys.argv[3])}", file=f); f.close()' \
+              "${env_file}" "${key}" "${value}"
+          done
+
+          secret_csv="$(IFS=,; echo "${secret_updates[*]}")"
+          echo "env_file=${env_file}" >> "${GITHUB_OUTPUT}"
+          echo "secret_csv=${secret_csv}" >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy Cloud Run service
+        run: |
+          set -euo pipefail
+          ENV_FILE='${{ steps.cloudrun_args.outputs.env_file }}'
+          SECRET_CSV='${{ steps.cloudrun_args.outputs.secret_csv }}'
+
+          CMD=(
+            gcloud run deploy "${SERVICE_NAME}"
+            --region "${REGION}"
+            --image "${{ steps.build.outputs.image }}"
+            --service-account "${JOB_SERVICE_ACCOUNT}"
+            --timeout "${SERVICE_TIMEOUT_SECONDS}"
+            --cpu "${SERVICE_CPU}"
+            --memory "${SERVICE_MEMORY}"
+            --concurrency "${SERVICE_CONCURRENCY}"
+            --max-instances "${SERVICE_MAX_INSTANCES}"
+            --min-instances "${SERVICE_MIN_INSTANCES}"
+            --no-cpu-boost
+            --cpu-throttling
+            --labels "job_name=${RESOURCE_LABEL}"
+            --no-allow-unauthenticated
+          )
+          if [ -n "${ENV_FILE}" ]; then
+            CMD+=(--env-vars-file "${ENV_FILE}")
+          fi
+          if [ -n "${SECRET_CSV}" ]; then
+            CMD+=(--set-secrets "${SECRET_CSV}")
+          fi
+          "${CMD[@]}"
+
+      - name: Ensure task invoker can call service
+        if: ${{ steps.tasks_setup.outputs.task_invoker_sa != '' }}
+        run: |
+          gcloud run services add-iam-policy-binding "${SERVICE_NAME}" \
+            --region "${REGION}" \
+            --member "serviceAccount:${{ steps.tasks_setup.outputs.task_invoker_sa }}" \
+            --role "roles/run.invoker" >/dev/null
+
+      - name: Verify service labels
+        run: |
+          set -euo pipefail
+          labels_json="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format="json(metadata.labels)")"
+          job_name_label="$(
+            python3 -c 'import json,sys; print(((json.loads(sys.stdin.read()) or {}).get("metadata", {}) or {}).get("labels", {}).get("job_name", ""))' <<<"${labels_json}"
+          )"
+          if [ "${job_name_label}" != "${RESOURCE_LABEL}" ]; then
+            echo "job_name label mismatch: expected ${RESOURCE_LABEL}, got ${job_name_label:-<missing>}"
+            exit 1
+          fi
+          echo "Verified label job_name=${job_name_label}"
+
+      - name: Ensure Cloud Scheduler safety trigger exists
+        run: |
+          set -euo pipefail
+
+          enabled="$(printf '%s' "${SCHEDULER_ENABLED}" | tr '[:upper:]' '[:lower:]')"
+          if [ "${enabled}" != "true" ] && [ "${enabled}" != "1" ] && [ "${enabled}" != "yes" ]; then
+            echo "Skipping scheduler trigger management (SCHEDULER_ENABLED=${SCHEDULER_ENABLED})."
+            exit 0
+          fi
+
+          if [ -z "${SCHEDULER_JOB_NAME:-}" ]; then
+            echo "Missing scheduler job name."
+            exit 1
+          fi
+          if [ -z "${SCHEDULER_CRON:-}" ]; then
+            echo "Missing scheduler cron."
+            exit 1
+          fi
+
+          scheduler_sa="${SCHEDULER_SERVICE_ACCOUNT:-${JOB_SERVICE_ACCOUNT}}"
+          service_uri="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format='value(status.url)')"
+          safety_run_body='{"trigger_mode":"safety"}'
+
+          gcloud run services add-iam-policy-binding "${SERVICE_NAME}" \
+            --region "${REGION}" \
+            --member "serviceAccount:${scheduler_sa}" \
+            --role "roles/run.invoker" >/dev/null
+
+          if gcloud scheduler jobs describe "${SCHEDULER_JOB_NAME}" --location "${REGION}" >/dev/null 2>&1; then
+            gcloud scheduler jobs update http "${SCHEDULER_JOB_NAME}" \
+              --location "${REGION}" \
+              --schedule "${SCHEDULER_CRON}" \
+              --time-zone "${SCHEDULER_TIMEZONE}" \
+              --uri "${service_uri}" \
+              --http-method POST \
+              --update-headers "Content-Type=application/json" \
+              --message-body "${safety_run_body}" \
+              --oidc-service-account-email "${scheduler_sa}" \
+              --oidc-token-audience "${service_uri}" \
+              --max-retry-attempts "${SCHEDULER_MAX_RETRY_ATTEMPTS}"
+            echo "Updated Cloud Scheduler job: ${SCHEDULER_JOB_NAME}"
+          else
+            gcloud scheduler jobs create http "${SCHEDULER_JOB_NAME}" \
+              --location "${REGION}" \
+              --schedule "${SCHEDULER_CRON}" \
+              --time-zone "${SCHEDULER_TIMEZONE}" \
+              --uri "${service_uri}" \
+              --http-method POST \
+              --headers "Content-Type=application/json" \
+              --message-body "${safety_run_body}" \
+              --oidc-service-account-email "${scheduler_sa}" \
+              --oidc-token-audience "${service_uri}" \
+              --max-retry-attempts "${SCHEDULER_MAX_RETRY_ATTEMPTS}"
+            echo "Created Cloud Scheduler job: ${SCHEDULER_JOB_NAME}"
+          fi
+
+      - name: Show deployed service
+        run: |
+          gcloud run services describe "${SERVICE_NAME}" \
+            --region "${REGION}" \
+            --format="yaml(metadata.name,metadata.labels,spec.template.spec.serviceAccountName,spec.template.spec.containerConcurrency,spec.template.spec.containers[0].image,spec.template.spec.containers[0].resources,status.url)"

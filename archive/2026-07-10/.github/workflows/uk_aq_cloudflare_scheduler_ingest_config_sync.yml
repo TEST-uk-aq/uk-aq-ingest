@@ -1,0 +1,74 @@
+name: Sync UK AQ Ingest Cloudflare Scheduler Jobs
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "cloudflare/scheduler/jobs.toml"
+      - "cloudflare/scheduler/scripts/sync_jobs.py"
+      - "cloudflare/scheduler/worker.mjs"
+      - ".github/workflows/uk_aq_cloudflare_scheduler_ingest_config_sync.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "cloudflare/scheduler/jobs.toml"
+      - "cloudflare/scheduler/scripts/sync_jobs.py"
+      - "cloudflare/scheduler/worker.mjs"
+      - ".github/workflows/uk_aq_cloudflare_scheduler_ingest_config_sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uk-aq-cloudflare-scheduler-ingest-config-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate scheduler config and generate normalized manifest
+        run: |
+          set -euo pipefail
+          python3 cloudflare/scheduler/scripts/sync_jobs.py \
+            --jobs-file cloudflare/scheduler/jobs.toml \
+            --json-file /tmp/ingest_scheduler_jobs.json
+
+      - name: Compare normalized manifest to worker job table
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          import { INGEST_JOBS } from "./cloudflare/scheduler/worker.mjs";
+
+          const expected = JSON.parse(readFileSync("/tmp/ingest_scheduler_jobs.json", "utf8"));
+          const workerJobs = INGEST_JOBS.map((job) => ({
+            job_key: job.job_key,
+            enabled: job.enabled !== false,
+            label: job.label,
+            target_label: job.target_label,
+            state_source: job.state_source,
+            connector_code: job.connector_code,
+            cron: job.cron,
+            interval_minutes: job.interval_minutes,
+            min_gap_minutes: job.min_gap_minutes,
+            stale_after_minutes: job.stale_after_minutes,
+            dry_run: job.dry_run !== false,
+            safety_only: Boolean(job.safety_only),
+            notes: job.notes ?? null,
+          }));
+
+          assert.deepEqual(workerJobs, expected.jobs);
+          NODE

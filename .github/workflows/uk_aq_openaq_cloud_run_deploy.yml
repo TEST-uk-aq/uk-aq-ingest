@@ -12,8 +12,13 @@ on:
       - "supabase/functions/_shared/egress_metrics.ts"
       - "supabase/functions/_shared/observs_client.ts"
       - "scripts/gcp/**"
+      - "scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"
       - ".github/workflows/uk_aq_openaq_cloud_run_deploy.yml"
   workflow_dispatch:
+
+concurrency:
+  group: uk-aq-ingest-cloud-run-shared-secret-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy-openaq-service:
@@ -108,6 +113,10 @@ jobs:
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
       GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      UK_AQ_EDGE_UPSTREAM_SECRET: ${{ secrets.UK_AQ_EDGE_UPSTREAM_SECRET }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      SCHEDULER_D1_JOB_KEY: uk_aq_openaq_safety
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -296,6 +305,7 @@ jobs:
           }
 
           upsert_secret "${SB_SECRET_KEY_SECRET_NAME}" "${SB_SECRET_KEY}" 1
+          upsert_secret "UK_AQ_EDGE_UPSTREAM_SECRET" "${UK_AQ_EDGE_UPSTREAM_SECRET}" 1
           upsert_secret "${OPENAQ_API_KEY_SECRET_NAME}" "${OPENAQ_API_KEY}" 1
           upsert_secret "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" "${SB_UK_AQ_CRON_SECRET}" 0
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
@@ -416,6 +426,7 @@ jobs:
 
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           secret_updates=()
+          add_secret_binding "UK_AQ_EDGE_UPSTREAM_SECRET" "UK_AQ_EDGE_UPSTREAM_SECRET" 1
           add_secret_binding "SB_SECRET_KEY" "${SB_SECRET_KEY_SECRET_NAME}" 1
           add_secret_binding "OPENAQ_API_KEY" "${OPENAQ_API_KEY_SECRET_NAME}" 1
           if [ -n "${SB_UK_AQ_CRON_SECRET:-}" ]; then
@@ -465,7 +476,7 @@ jobs:
             --no-cpu-boost
             --cpu-throttling
             --labels "job_name=${RESOURCE_LABEL}"
-            --no-allow-unauthenticated
+            --allow-unauthenticated
           )
           if [ -n "${ENV_FILE}" ]; then
             CMD+=(--env-vars-file "${ENV_FILE}")
@@ -531,7 +542,7 @@ jobs:
               --time-zone "${SCHEDULER_TIMEZONE}" \
               --uri "${service_uri}" \
               --http-method POST \
-              --update-headers "Content-Type=application/json" \
+              --update-headers "Content-Type=application/json,X-UK-AQ-Upstream-Auth=${UK_AQ_EDGE_UPSTREAM_SECRET}" \
               --message-body "${safety_run_body}" \
               --oidc-service-account-email "${scheduler_sa}" \
               --oidc-token-audience "${service_uri}" \
@@ -544,13 +555,18 @@ jobs:
               --time-zone "${SCHEDULER_TIMEZONE}" \
               --uri "${service_uri}" \
               --http-method POST \
-              --headers "Content-Type=application/json" \
+              --headers "Content-Type=application/json,X-UK-AQ-Upstream-Auth=${UK_AQ_EDGE_UPSTREAM_SECRET}" \
               --message-body "${safety_run_body}" \
               --oidc-service-account-email "${scheduler_sa}" \
               --oidc-token-audience "${service_uri}" \
               --max-retry-attempts "${SCHEDULER_MAX_RETRY_ATTEMPTS}"
             echo "Created Cloud Scheduler job: ${SCHEDULER_JOB_NAME}"
           fi
+
+      - name: Reconcile Cloud Run URL in ingest scheduler D1
+        run: |
+          service_uri="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format='value(status.url)')"
+          scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh "${SCHEDULER_D1_JOB_KEY}" "${service_uri}"
 
       - name: Show deployed service
         run: |

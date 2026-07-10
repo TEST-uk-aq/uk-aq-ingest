@@ -1,0 +1,71 @@
+name: Deploy UK AQ Ingest Cloudflare Scheduler
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "cloudflare/scheduler/ingest/**"
+      - ".github/workflows/uk_aq_cloudflare_scheduler_ingest_deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-ingest-scheduler:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || '' }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || '' }}
+      SUPABASE_URL: ${{ vars.SUPABASE_URL || '' }}
+      SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Cloudflare credentials and Supabase config
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "Missing secret CLOUDFLARE_ACCOUNT_ID."
+            exit 1
+          fi
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "Missing secret CLOUDFLARE_API_TOKEN."
+            exit 1
+          fi
+          if [ -z "${SUPABASE_URL}" ]; then
+            echo "Missing repo variable SUPABASE_URL."
+            exit 1
+          fi
+          if [ -z "${SB_SECRET_KEY}" ]; then
+            echo "Missing secret SB_SECRET_KEY."
+            exit 1
+          fi
+
+      - name: Deploy worker
+        uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
+        with:
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare/scheduler/ingest
+          command: deploy
+
+      - name: Set worker secrets
+        working-directory: cloudflare/scheduler/ingest
+        run: |
+          set -euo pipefail
+          secrets_json="$(jq -n \
+            --arg SUPABASE_URL "${SUPABASE_URL}" \
+            --arg SB_SECRET_KEY "${SB_SECRET_KEY}" \
+            '{SUPABASE_URL: $SUPABASE_URL, SB_SECRET_KEY: $SB_SECRET_KEY}')"
+          printf '%s' "$secrets_json" | npx --yes wrangler@4 secret bulk --name uk-aq-scheduler-ingest
+
+      - name: Redeploy worker
+        uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
+        with:
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare/scheduler/ingest
+          command: deploy

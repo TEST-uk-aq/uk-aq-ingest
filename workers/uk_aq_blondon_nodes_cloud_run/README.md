@@ -55,6 +55,11 @@ The HTTP wrapper accepts only `start_time`, `end_time`, `site_code`, `species`,
 `max_stations`, `max_api_calls`, `dry_run`, and the optional `trigger_mode`;
 invalid values return HTTP 400 without starting the job.
 
+The service allows unauthenticated transport access for Cloudflare, but POST
+execution requires `x-uk-aq-dispatch-secret` or `x-uk-aq-upstream-auth` matching
+`UK_AQ_EDGE_UPSTREAM_SECRET`. GET remains a health check. The shared secret is
+required in addition to `BLONDON_NODES_API_KEY`.
+
 Manual local dry run:
 
 ```bash

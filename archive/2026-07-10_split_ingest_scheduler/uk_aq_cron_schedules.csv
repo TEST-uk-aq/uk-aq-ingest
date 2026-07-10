@@ -1,0 +1,28 @@
+Repo,Platform,Service/Workflow,ScheduleSource,CronUTC,Frequency,Purpose,EnabledByDefault,FixedTimeUTC
+CIC-test-uk-aq-ingest,GitHub Actions,uk_aq_egress_monitor.yml,workflow schedule,*/5 * * * *,Every 5 minutes,Egress monitor for core DB,yes,N/A (every 5 min)
+CIC-test-uk-aq-ingest,GitHub Actions,uk_aq_observs_egress_monitor.yml,workflow schedule,*/5 * * * *,Every 5 minutes,Egress monitor for obs_aqidb,yes,N/A (every 5 min)
+CIC-test-uk-aq-ingest,GitHub Actions,supabase-keepalive.yml,workflow schedule,0 6 * * *,Daily @ 06:00 UTC,Supabase keepalive ping,yes,06:00 UTC
+CIC-test-uk-aq-ingest,GitHub Actions,sos_site_register_monthly.yml,workflow schedule,15 4 1 * *,Monthly 1st @ 04:15 UTC,SOS site register download,yes,04:15 UTC
+CIC-test-uk-aq-ingest,GitHub Actions,uk_aq_monthly_index_maintenance.yml,workflow schedule,35 5 1 * *,Monthly 1st @ 05:35 UTC,Index maintenance,yes,05:35 UTC
+CIC-test-uk-aq-ingest,GitHub Actions,uk_aq_stations_daily.yml,CF workflow-scheduler (ops),0 3 * * *,Daily @ 03:00 UTC,Stations daily sync,yes,03:00 UTC
+CIC-test-uk-aq-ingest,Cloudflare Worker,uk_aq_dispatcher,wrangler.toml,disabled (crons=[]),N/A,Poll dispatcher (currently disabled),no,N/A (disabled)
+CIC-test-uk-aq-ops,Cloudflare Worker,uk-aq-workflow-scheduler,wrangler.toml,0 3 * * *,Daily @ 03:00 UTC,Trigger uk_aq_stations_daily,yes,03:00 UTC
+CIC-test-uk-aq-ops,Cloudflare Worker,uk-aq-workflow-scheduler,wrangler.toml,15 4 * * *,Daily @ 04:15 UTC,Trigger uk_aq_r2_core_snapshot,yes,04:15 UTC
+CIC-test-uk-aq-ops,Cloudflare Worker,uk-aq-workflow-scheduler,wrangler.toml,35 4 * * *,Daily @ 04:35 UTC,Trigger uk_aq_r2_history_dropbox_backup,yes,04:35 UTC
+CIC-test-uk-aq-ops,Cloudflare Worker,uk-aq-workflow-scheduler,wrangler.toml,49 5 * * *,Daily @ 05:49 UTC,Trigger uk_aq_dropbox_prune_raw,yes,05:49 UTC
+CIC-test-uk-aq-ops,GitHub Actions,uk_aq_r2_core_snapshot.yml,CF workflow-scheduler,15 4 * * *,Daily @ 04:15 UTC,Core snapshot to R2,yes,04:15 UTC
+CIC-test-uk-aq-ops,GitHub Actions,uk_aq_r2_history_dropbox_backup.yml,CF workflow-scheduler,35 4 * * *,Daily @ 04:35 UTC,Backup R2 history to Dropbox,yes,04:35 UTC
+CIC-test-uk-aq-ops,GitHub Actions,uk_aq_dropbox_prune_raw.yml,CF workflow-scheduler,49 5 * * *,Daily @ 05:49 UTC,Prune raw data in Dropbox,yes,05:49 UTC
+CIC-test-uk-aq-ops,GitHub Actions,codeql-noarchive.yml,workflow schedule,17 3 * * 1,Weekly Mon @ 03:17 UTC,CodeQL analysis,yes,03:17 UTC
+CIC-test-uk-aq-ops,GCP Cloud Scheduler,uk-aq-prune-daily,deploy workflow default,0 2 * * *,Daily @ 02:00 UTC,Prune old observations,yes,02:00 UTC
+CIC-test-uk-aq-ops,GCP Cloud Scheduler,uk-aq-latest-snapshot-every-minute,deploy workflow default,* * * * *,Every minute,Build latest snapshots to R2,yes,N/A (every min)
+CIC-test-uk-aq-ops,GCP Cloud Scheduler,uk-aq-observs-partition-maintenance-daily,deploy workflow default,0 3 * * *,Daily @ 03:00 UTC,Partition maintenance on obs_aqidb,yes,03:00 UTC
+CIC-test-uk-aq-ops,GCP Cloud Scheduler,uk-aq-timeseries-aqi-hourly-trigger,deploy workflow default,20 * * * *,Hourly at :20 UTC,AQI hourly compute (sync),yes,N/A (hourly)
+CIC-test-uk-aq-ops,GCP Cloud Scheduler,uk-aq-timeseries-aqi-reconcile-short-trigger,deploy workflow default,35 * * * *,Hourly at :35 UTC,AQI reconcile short,no,N/A (hourly)
+CIC-test-uk-aq-ops,GCP Cloud Scheduler,uk-aq-timeseries-aqi-reconcile-deep-trigger,deploy workflow default,50 */6 * * *,Every 6h at :50 UTC,AQI reconcile deep,no,N/A (every 6h)
+CIC-test-uk-aq-ops,GCP Cloud Scheduler,uk-aq-supabase-db-dump-backup-trigger,deploy workflow default,55 0 * * *,Daily @ 00:55 UTC,DB dump backup to Dropbox,yes,00:55 UTC
+CIC-test-uk-aq-ops,GCP Cloud Scheduler,uk-aq-aqilevels-retention-daily,deploy workflow default,15 3 * * *,Daily @ 03:15 UTC,AQI levels retention cleanup,yes,03:15 UTC
+CIC-test-uk-aq-ops,GCP Cloud Scheduler,uk-aq-db-size-logger-hourly,deploy workflow default,0 * * * *,Hourly,DB size logging,no,N/A (hourly)
+CIC-test-uk-aq,None,None,None,None,None,No cron schedules,N/A,N/A
+CIC-Test-uk-population-ingest,GitHub Actions,nomis_ingest.yml,workflow schedule,0 6 * * 1,Weekly Mon @ 06:00 UTC,Nomis population data ingestion,yes,06:00 UTC
+CIC-Test-uk-population-ingest,GitHub Actions,nomis_monthly_check.yml,workflow schedule,0 6 3 * *,Monthly 3rd @ 06:00 UTC,Monthly check edge function,yes,06:00 UTC

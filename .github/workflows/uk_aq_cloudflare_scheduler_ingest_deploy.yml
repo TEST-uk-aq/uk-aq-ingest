@@ -1,0 +1,110 @@
+name: Deploy UK AQ Ingest Cloudflare Cron Scheduler
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "cloudflare/scheduler/*.mjs"
+      - "cloudflare/scheduler/*.js"
+      - "cloudflare/scheduler/*.cjs"
+      - "cloudflare/scheduler/wrangler.toml"
+      - "cloudflare/scheduler/migrations/**"
+      - "cloudflare/scheduler/seeds/**"
+      - ".github/workflows/uk_aq_cloudflare_scheduler_ingest_deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-ingest-scheduler:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || '' }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || '' }}
+      UK_AQ_EDGE_UPSTREAM_SECRET: ${{ secrets.UK_AQ_EDGE_UPSTREAM_SECRET || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Cloudflare credentials and scheduler config
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "Missing secret CLOUDFLARE_ACCOUNT_ID."
+            exit 1
+          fi
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "Missing secret CLOUDFLARE_API_TOKEN."
+            exit 1
+          fi
+          if [ -z "${UK_AQ_EDGE_UPSTREAM_SECRET}" ]; then
+            echo "Missing secret UK_AQ_EDGE_UPSTREAM_SECRET."
+            exit 1
+          fi
+
+      - name: Validate scheduler files
+        run: |
+          set -euo pipefail
+          for path in \
+            cloudflare/scheduler/worker.mjs \
+            cloudflare/scheduler/shared.mjs \
+            cloudflare/scheduler/wrangler.toml \
+            cloudflare/scheduler/README.md \
+            cloudflare/scheduler/migrations/0001_scheduler_schema.sql \
+            cloudflare/scheduler/seeds/0001_cloud_run_jobs.sql
+          do
+            if [ ! -f "${path}" ]; then
+              echo "Missing ${path}."
+              exit 1
+            fi
+          done
+
+          if grep -q '__INGEST_D1_DATABASE_ID__' cloudflare/scheduler/wrangler.toml; then
+            echo "cloudflare/scheduler/wrangler.toml still contains the D1 placeholder __INGEST_D1_DATABASE_ID__."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          wrangler = Path("cloudflare/scheduler/wrangler.toml").read_text(encoding="utf-8")
+          match = re.search(r'crons\s*=\s*\[\s*"([^"]+)"\s*\]', wrangler, re.S)
+          if not match:
+              raise SystemExit("Missing crons = [\"* * * * *\"] in cloudflare/scheduler/wrangler.toml")
+          if match.group(1) != "* * * * *":
+              raise SystemExit(f"Expected exactly one cron '* * * * *'; found {match.group(1)!r}")
+          if 'name = "uk-aq-cron-scheduler-ingest"' not in wrangler:
+              raise SystemExit("Missing worker name uk-aq-cron-scheduler-ingest")
+          if 'binding = "SCHEDULER_DB"' not in wrangler:
+              raise SystemExit("Missing D1 binding SCHEDULER_DB")
+          if 'database_name = "uk_aq_cron_scheduler_ingest_db"' not in wrangler:
+              raise SystemExit("Missing D1 database name uk_aq_cron_scheduler_ingest_db")
+          PY
+
+      - name: Deploy worker
+        uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
+        with:
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare/scheduler
+          command: deploy
+
+      - name: Set worker secrets
+        working-directory: cloudflare/scheduler
+        run: |
+          set -euo pipefail
+          secrets_json="$(jq -n \
+            --arg UK_AQ_EDGE_UPSTREAM_SECRET "${UK_AQ_EDGE_UPSTREAM_SECRET}" \
+            '{UK_AQ_EDGE_UPSTREAM_SECRET: $UK_AQ_EDGE_UPSTREAM_SECRET} | with_entries(select(.value != ""))')"
+          printf '%s' "$secrets_json" | npx --yes wrangler@4 secret bulk --name uk-aq-cron-scheduler-ingest
+
+      - name: Redeploy worker
+        uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
+        with:
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare/scheduler
+          command: deploy

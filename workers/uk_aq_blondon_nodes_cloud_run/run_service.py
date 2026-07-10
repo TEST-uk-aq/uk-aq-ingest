@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import hmac
 import os
 import re
 import signal
@@ -23,6 +24,15 @@ SITE_CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 ALLOWED_SPECIES = {"PM25", "NO2", "PM25Index", "NO2Index"}
 MAX_REQUEST_BYTES = 4096
 RUN_LOCK = threading.Lock()
+
+
+def has_valid_run_auth(headers) -> bool:
+    expected = os.getenv("UK_AQ_EDGE_UPSTREAM_SECRET", "").strip()
+    if not expected:
+        return False
+    upstream = (headers.get("x-uk-aq-upstream-auth") or "").strip()
+    dispatch = (headers.get("x-uk-aq-dispatch-secret") or "").strip()
+    return hmac.compare_digest(upstream, expected) or hmac.compare_digest(dispatch, expected)
 
 
 class RequestValidationError(ValueError):
@@ -177,6 +187,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
 
     def do_POST(self):
+        if not has_valid_run_auth(self.headers):
+            self._json_response(403, {"ok": False, "error": "forbidden"})
+            return
         try:
             length = int(self.headers.get("content-length") or 0)
             if length < 0 or length > MAX_REQUEST_BYTES:

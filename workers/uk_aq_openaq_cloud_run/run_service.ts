@@ -3,8 +3,17 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 const PORT = Number(Deno.env.get("PORT") || "8080");
 const RUN_JOB_SCRIPT = "/app/workers/uk_aq_openaq_cloud_run/run_job.ts";
 const ALLOWED_TRIGGER_MODES = new Set(["safety", "task", "manual"]);
+const UK_AQ_EDGE_UPSTREAM_SECRET = (Deno.env.get("UK_AQ_EDGE_UPSTREAM_SECRET") || "").trim();
 
 let inFlight = false;
+
+function hasValidRunAuth(req: Request): boolean {
+  if (!UK_AQ_EDGE_UPSTREAM_SECRET) return false;
+  const upstream = (req.headers.get("x-uk-aq-upstream-auth") || "").trim();
+  const dispatch = (req.headers.get("x-uk-aq-dispatch-secret") || "").trim();
+  return upstream === UK_AQ_EDGE_UPSTREAM_SECRET ||
+    dispatch === UK_AQ_EDGE_UPSTREAM_SECRET;
+}
 
 function resolveTriggerMode(req: Request, body: unknown): string {
   const url = new URL(req.url);
@@ -74,6 +83,12 @@ serve(async (req: Request) => {
   }
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
+  }
+  if (!hasValidRunAuth(req)) {
+    return new Response(JSON.stringify({ ok: false, error: "forbidden" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
   }
   if (inFlight) {
     return new Response(

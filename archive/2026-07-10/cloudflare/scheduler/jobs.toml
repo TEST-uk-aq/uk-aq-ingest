@@ -1,0 +1,70 @@
+# Canonical job manifest for the ingest Cloudflare scheduler.
+
+config_version = 1
+scheduler_name = "uk-aq-scheduler-ingest"
+
+[jobs.uk_aq_blondon_communities]
+enabled = true
+label = "Breathe London Communities ingest"
+target_label = "uk-aq-blondon-communities-ingest"
+state_source = "ingest_runs"
+connector_code = "blondon_communities"
+cron = "*/15 * * * *"
+interval_minutes = 15
+min_gap_minutes = 10
+stale_after_minutes = 45
+dry_run = true
+notes = "Phase 2 dry-run ingest scheduler"
+
+[jobs.uk_aq_blondon_nodes]
+enabled = true
+label = "Breathe London Nodes ingest"
+target_label = "uk-aq-blondon-nodes-ingest"
+state_source = "ingest_runs"
+connector_code = "blondon_nodes"
+cron = "*/15 * * * *"
+interval_minutes = 15
+min_gap_minutes = 10
+stale_after_minutes = 45
+dry_run = true
+notes = "Phase 2 dry-run ingest scheduler"
+
+[jobs.uk_aq_scomm]
+enabled = true
+label = "Sensor.Community ingest"
+target_label = "uk-aq-scomm-ingest"
+state_source = "ingest_runs"
+connector_code = "sensorcommunity"
+cron = "*/2 * * * *"
+interval_minutes = 15
+min_gap_minutes = 10
+stale_after_minutes = 45
+dry_run = false
+notes = "Phase 2 dry-run ingest scheduler"
+
+[jobs.uk_aq_sos]
+enabled = true
+label = "UK-AIR SOS ingest"
+target_label = "uk-aq-sos-ingest"
+state_source = "ingest_runs"
+connector_code = "sos"
+cron = "*/15 * * * *"
+interval_minutes = 15
+min_gap_minutes = 10
+stale_after_minutes = 45
+dry_run = true
+notes = "Phase 2 dry-run ingest scheduler"
+
+[jobs.uk_aq_openaq_safety]
+enabled = true
+label = "OpenAQ safety trigger"
+target_label = "uk-aq-openaq-ingest"
+state_source = "ingest_runs"
+connector_code = "openaq"
+cron = "*/15 * * * *"
+interval_minutes = 30
+min_gap_minutes = 15
+stale_after_minutes = 90
+dry_run = true
+safety_only = true
+notes = "Phase 2 dry-run ingest scheduler"

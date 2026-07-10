@@ -5,7 +5,9 @@ CIC-test-uk-aq-ingest,GitHub Actions,supabase-keepalive.yml,workflow schedule,0 
 CIC-test-uk-aq-ingest,GitHub Actions,sos_site_register_monthly.yml,workflow schedule,15 4 1 * *,Monthly 1st @ 04:15 UTC,SOS site register download,yes,04:15 UTC
 CIC-test-uk-aq-ingest,GitHub Actions,uk_aq_monthly_index_maintenance.yml,workflow schedule,35 5 1 * *,Monthly 1st @ 05:35 UTC,Index maintenance,yes,05:35 UTC
 CIC-test-uk-aq-ingest,GitHub Actions,uk_aq_stations_daily.yml,CF workflow-scheduler (ops),0 3 * * *,Daily @ 03:00 UTC,Stations daily sync,yes,03:00 UTC
-CIC-test-uk-aq-ingest,Cloudflare Worker,uk_aq_dispatcher,wrangler.toml,disabled (crons=[]),N/A,Poll dispatcher (currently disabled),no,N/A (disabled)
+CIC-test-uk-aq-ingest,Cloudflare Worker,uk_aq_ingest_poller,wrangler.toml,disabled (crons=[]),N/A,Poll ingest jobs (currently disabled),no,N/A (disabled)
+CIC-test-uk-aq-ops,Cloudflare Worker,uk-aq-scheduler-ops,cloudflare/scheduler/ops/wrangler.toml,0 * * * *,Hourly,Dry-run ops scheduler dispatch decisions,no,N/A (hourly)
+CIC-test-uk-aq-ingest,Cloudflare Worker,uk-aq-scheduler-ingest,cloudflare/scheduler/jobs.toml + cloudflare/scheduler/wrangler.toml,*/15 * * * *,Every 15 minutes,Dry-run ingest scheduler dispatch decisions,no,N/A (phase 2 dry-run)
 CIC-test-uk-aq-ops,Cloudflare Worker,uk-aq-workflow-scheduler,wrangler.toml,0 3 * * *,Daily @ 03:00 UTC,Trigger uk_aq_stations_daily,yes,03:00 UTC
 CIC-test-uk-aq-ops,Cloudflare Worker,uk-aq-workflow-scheduler,wrangler.toml,15 4 * * *,Daily @ 04:15 UTC,Trigger uk_aq_r2_core_snapshot,yes,04:15 UTC
 CIC-test-uk-aq-ops,Cloudflare Worker,uk-aq-workflow-scheduler,wrangler.toml,35 4 * * *,Daily @ 04:35 UTC,Trigger uk_aq_r2_history_dropbox_backup,yes,04:35 UTC

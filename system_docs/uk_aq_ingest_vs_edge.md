@@ -2,7 +2,7 @@
 
 This project uses **two different ingestion paths** that serve different purposes.
 
-Dispatcher/queue runtime flow is documented in `system_docs/uk_aq_dispatcher_ingest_flow.md`.
+Dispatcher/queue runtime flow is documented in `system_docs/uk_aq_cloudflare_scheduler_ingest_flow.md`.
 
 ## Ingest script (`scripts/sos/sos_ingest.py`)
 
@@ -26,7 +26,7 @@ Dispatcher/queue runtime flow is documented in `system_docs/uk_aq_dispatcher_ing
   - `observations`
   - `timeseries.last_value` + `timeseries.last_value_at` (update by id)
 - Logs to Dropbox and `error_logs` when configured.
-- Triggered by the dispatcher using helper RPCs in `supabase/uk_aq_polling_helpers.sql`.
+- Triggered by the scheduler using helper RPCs in `supabase/uk_aq_polling_helpers.sql`.
 
 ## Why both exist
 

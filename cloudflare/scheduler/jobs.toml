@@ -1,0 +1,61 @@
+# Canonical job configuration for the ingest Cloudflare cron scheduler.
+
+config_version = 1
+scheduler_name = "uk-aq-cron-scheduler-ingest"
+
+[jobs.uk_aq_blondon_communities]
+enabled = true
+cron_expr = "*/15 * * * *"
+target_type = "cloud_run"
+cloud_run_url_managed_by_deploy = true
+cloud_run_method = "POST"
+dry_run = true
+notes = "Breathe London Communities safety ingest trigger"
+
+[jobs.uk_aq_blondon_communities.cloud_run_body]
+trigger_mode = "safety"
+
+[jobs.uk_aq_blondon_nodes]
+enabled = true
+cron_expr = "*/15 * * * *"
+target_type = "cloud_run"
+cloud_run_url_managed_by_deploy = true
+cloud_run_method = "POST"
+dry_run = true
+notes = "Breathe London Nodes scheduled ingest trigger"
+
+[jobs.uk_aq_openaq_safety]
+enabled = true
+cron_expr = "*/30 * * * *"
+target_type = "cloud_run"
+cloud_run_url_managed_by_deploy = true
+cloud_run_method = "POST"
+dry_run = true
+notes = "OpenAQ safety trigger; service decides whether work is needed"
+
+[jobs.uk_aq_openaq_safety.cloud_run_body]
+trigger_mode = "safety"
+
+[jobs.uk_aq_scomm]
+enabled = true
+cron_expr = "*/15 * * * *"
+target_type = "cloud_run"
+cloud_run_url_managed_by_deploy = true
+cloud_run_method = "POST"
+dry_run = true
+notes = "Sensor.Community safety ingest trigger"
+
+[jobs.uk_aq_scomm.cloud_run_body]
+trigger_mode = "safety"
+
+[jobs.uk_aq_sos]
+enabled = true
+cron_expr = "*/15 * * * *"
+target_type = "cloud_run"
+cloud_run_url_managed_by_deploy = true
+cloud_run_method = "POST"
+dry_run = true
+notes = "UK-AIR SOS safety ingest trigger"
+
+[jobs.uk_aq_sos.cloud_run_body]
+trigger_mode = "safety"

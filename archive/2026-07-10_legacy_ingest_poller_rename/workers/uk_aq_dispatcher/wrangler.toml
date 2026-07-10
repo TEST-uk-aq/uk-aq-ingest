@@ -1,0 +1,11 @@
+name = "uk-aq-dispatcher"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[triggers]
+#crons = ["*/1 * * * *"]
+crons = []
+#keep the crons = [] in case we need to turn off the ingest
+
+[observability]
+enabled = true

@@ -48,7 +48,7 @@ ingest,"/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks
 ingest,"/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-ingest/system_docs/New DB Install/new_db_install.md",docs,uk_aq_history,uk_aq_history,uk_aq_observs,rename,2
 ingest,"/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-ingest/system_docs/table_info/uk_aq_db_size_metrics_hourly.md",docs,aggdailydb,aggdailydb,obs_aqidb,rename,1
 ingest,"/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-ingest/system_docs/table_info/uk_aq_db_size_metrics_hourly.md",docs,obs_aqidb,obs_aqidb,obs_aqidb,rename,1
-ingest,"/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-ingest/system_docs/uk_aq_dispatcher_ingest_flow.md",docs,uk_aq_history,uk_aq_history,uk_aq_observs,rename,2
+ingest,"/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-ingest/system_docs/uk_aq_cloudflare_scheduler_ingest_flow.md",docs,uk_aq_history,uk_aq_history,uk_aq_observs,rename,2
 ingest,"/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-ingest/system_docs/uk_aq_edge_functions.md",docs,OBS_AQIDB_SUPABASE_URL,OBS_AQIDB_SUPABASE_URL,OBS_AQIDB_SUPABASE_URL,rename,3
 ingest,"/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-ingest/system_docs/uk_aq_edge_functions.md",docs,UK_AQ_OBS_AQIDB_DB_LABEL,UK_AQ_OBS_AQIDB_DB_LABEL,UK_AQ_OBS_AQIDB_DB_LABEL,rename,1
 ingest,"/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-ingest/system_docs/uk_aq_edge_functions.md",docs,aggdailydb,aggdailydb,obs_aqidb,rename,1

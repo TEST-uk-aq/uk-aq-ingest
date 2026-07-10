@@ -1,0 +1,112 @@
+name: Sync UK AQ Ingest Cloudflare Cron Scheduler Jobs
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "cloudflare/scheduler/jobs.toml"
+      - "cloudflare/scheduler/scripts/*.py"
+      - ".github/workflows/uk_aq_cloudflare_scheduler_ingest_config_sync.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "cloudflare/scheduler/jobs.toml"
+      - "cloudflare/scheduler/scripts/*.py"
+      - ".github/workflows/uk_aq_cloudflare_scheduler_ingest_config_sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uk-aq-cloudflare-scheduler-ingest-config-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync-jobs:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || '' }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || '' }}
+      SCHEDULER_D1_DATABASE: uk_aq_cron_scheduler_ingest_db
+      JOBS_FILE: cloudflare/scheduler/jobs.toml
+      SYNC_SCRIPT: cloudflare/scheduler/scripts/sync_jobs.py
+      WRANGLER_CONFIG: cloudflare/scheduler/wrangler.toml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate scheduler config and generate sync payload
+        run: |
+          set -euo pipefail
+          python3 "${SYNC_SCRIPT}" \
+            --jobs-file "${JOBS_FILE}" \
+            --sql-file /tmp/scheduler_jobs_sync.sql \
+            --json-file /tmp/scheduler_jobs_expected.json
+
+      - name: Validate Cloudflare credentials for remote sync
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "Missing secret CLOUDFLARE_ACCOUNT_ID."
+            exit 1
+          fi
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "Missing secret CLOUDFLARE_API_TOKEN."
+            exit 1
+          fi
+
+      - name: Apply scheduler jobs to remote D1
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 d1 execute "${SCHEDULER_D1_DATABASE}" \
+            --remote \
+            --config "${WRANGLER_CONFIG}" \
+            --file /tmp/scheduler_jobs_sync.sql
+
+      - name: Verify remote D1 matches jobs.toml
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 d1 execute "${SCHEDULER_D1_DATABASE}" \
+            --remote \
+            --config "${WRANGLER_CONFIG}" \
+            --json \
+            --command "select job_key, enabled, target_type, cron_expr, timezone, github_repo, github_workflow_file, github_ref, github_inputs_json, cloud_run_url, cloud_run_method, cloud_run_headers_json, cloud_run_body_json, dry_run, notes from scheduler_jobs order by job_key" \
+            > /tmp/scheduler_jobs_remote.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          expected = json.loads(Path("/tmp/scheduler_jobs_expected.json").read_text(encoding="utf-8"))
+          remote = json.loads(Path("/tmp/scheduler_jobs_remote.json").read_text(encoding="utf-8"))
+
+          expected_jobs = expected["jobs"]
+          actual_jobs = remote[0]["results"]
+          actual_by_key = {job["job_key"]: job for job in actual_jobs}
+          for expected_job in expected_jobs:
+              job_key = expected_job["job_key"]
+              if job_key not in expected.get("deployment_managed_cloud_run_url_job_keys", []):
+                  continue
+              actual_url = str(actual_by_key.get(job_key, {}).get("cloud_run_url") or "")
+              if actual_url != "https://deployment-pending.invalid/run" and not actual_url.startswith("https://"):
+                  raise SystemExit(
+                      f"Remote D1 job {job_key} has invalid deployment-managed cloud_run_url: {actual_url!r}"
+                  )
+              expected_job["cloud_run_url"] = actual_url
+          if actual_jobs != expected_jobs:
+              raise SystemExit(
+                  "Remote D1 scheduler_jobs rows do not match jobs.toml\n"
+                  f"expected={expected_jobs!r}\nactual={actual_jobs!r}"
+              )
+          PY

@@ -1,6 +1,6 @@
 # UK AQ Dispatcher + Ingest Flow
 
-This doc explains the current two-stage dispatcher flow and why the Cloudflare worker calls the dispatcher once for enqueue and then run-queue calls per cron tick.
+This doc explains the current two-stage scheduler flow and why the Cloudflare worker calls the scheduler once for enqueue and then run-queue calls per cron tick.
 
 ## Overview
 
@@ -58,7 +58,7 @@ Queue retry behavior:
 - Claimed jobs have a lease (`lease_expires_at`) so interrupted runs can be recovered.
 - Queued jobs for disabled connectors are resolved and dropped (`queue_entry_disabled_connector`).
 - Queued jobs for connectors with `scheduler_backend='google_cloud_run'` are resolved and dropped (`queue_entry_external_scheduler`).
-- Run-overlap guard: if a connector run is still active, or started within that connector's poll interval, dispatcher does not start another run and requeues the claimed job with retry.
+- Run-overlap guard: if a connector run is still active, or started within that connector's poll interval, scheduler does not start another run and requeues the claimed job with retry.
 
 Relevant env vars:
 - `DISPATCH_QUEUE_CLAIM_BATCH_LIMIT` (default `1`)
@@ -75,8 +75,8 @@ Relevant env vars:
 
 - Single concurrency dial: `dispatcher_settings.max_runs_per_dispatch_call`.
 - Scheduler backend toggle:
-  - `connectors.scheduler_backend='supabase_function'`: connector runs via dispatcher.
-  - `connectors.scheduler_backend='google_cloud_run'`: dispatcher skips it and expects external scheduling.
+  - `connectors.scheduler_backend='supabase_function'`: connector runs via scheduler.
+  - `connectors.scheduler_backend='google_cloud_run'`: scheduler skips it and expects external scheduling.
   - Current Cloud Run connectors: `sos`, `sensorcommunity`, `blondon_communities`, `openaq`.
   - OpenAQ Cloud Run scheduling is due-driven (one-off Cloud Tasks based on `openaq_station_checkpoints.next_due_at`) with a 15-minute safety cron.
 - Use queue mode for normal operation; use `mode=legacy` only as fallback/debug.

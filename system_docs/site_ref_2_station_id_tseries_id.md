@@ -42,9 +42,9 @@ sos_station_timeseries_site_refs
   
  
 
-  UK_AQ_RAW
+UK_AQ_RAW
 
-  sos_site_register
+sos_site_register
     uk_air_ref
       - Source: UK-AIR monitoring sites CSV
       - Meaning: official UK-AIR site identifier, e.g. UKA00591
@@ -54,7 +54,7 @@ sos_station_timeseries_site_refs
       - Meaning: UK-AIR flat-file/Data Selector site_id, e.g. EA8
 
 
-  sos_station_uk_air_refs
+sos_station_uk_air_refs
     station_id
       - Source: our Supabase uk_aq_core.stations table
       - Meaning: internal UK AQ station id created by daily SOS station discovery
@@ -65,7 +65,7 @@ sos_station_timeseries_site_refs
       - How: monthly matching step should match daily SOS station rows to register rows, probably by name + coordinates
 
 
-  sos_station_timeseries_site_refs
+sos_station_timeseries_site_refs
     station_id
       - Source: our Supabase uk_aq_core.stations table, via sos_station_uk_air_refs
       - Meaning: internal UK AQ station id

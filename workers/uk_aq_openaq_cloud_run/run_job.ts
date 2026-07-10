@@ -112,6 +112,9 @@ const OPENAQ_CLOUD_RUN_SERVICE_NAME = (
 const OPENAQ_CLOUD_RUN_SERVICE_URL = (
   Deno.env.get("OPENAQ_CLOUD_RUN_SERVICE_URL") || ""
 ).trim();
+const UK_AQ_EDGE_UPSTREAM_SECRET = (
+  Deno.env.get("UK_AQ_EDGE_UPSTREAM_SECRET") || ""
+).trim();
 const OPENAQ_TASK_QUEUE_ID = (
   Deno.env.get("OPENAQ_TASK_QUEUE_ID") ||
   Deno.env.get("GCP_OPENAQ_TASK_QUEUE_ID") ||
@@ -1286,6 +1289,9 @@ function effectiveTasksEnabled(): {
   if (!OPENAQ_TASK_INVOKER_SERVICE_ACCOUNT) {
     return { enabled: false, reason: "missing_task_invoker_service_account" };
   }
+  if (OPENAQ_CLOUD_RUN_TARGET === "service" && !UK_AQ_EDGE_UPSTREAM_SECRET) {
+    return { enabled: false, reason: "missing_edge_upstream_secret" };
+  }
   return { enabled: true, reason: "enabled" };
 }
 
@@ -1709,6 +1715,9 @@ async function enqueueSelfRunTask(
         url: target.url,
         headers: {
           "Content-Type": "application/json",
+          ...(target.auth === "oidc"
+            ? { "x-uk-aq-upstream-auth": UK_AQ_EDGE_UPSTREAM_SECRET }
+            : {}),
         },
         body: btoa(JSON.stringify(target.body)),
         ...(target.auth === "oidc"

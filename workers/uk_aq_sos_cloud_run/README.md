@@ -52,6 +52,10 @@ docker push "${IMAGE}"
 
 ## Cloud Run service deploy
 
+The service allows unauthenticated transport access for Cloudflare, but every
+POST must provide `x-uk-aq-dispatch-secret` or `x-uk-aq-upstream-auth` matching
+`UK_AQ_EDGE_UPSTREAM_SECRET`. GET remains a health check.
+
 ```bash
 gcloud run deploy uk-aq-sos-ingest \
   --region europe-west2 \
@@ -62,13 +66,14 @@ gcloud run deploy uk-aq-sos-ingest \
   --max-instances 1 \
   --min-instances 0 \
   --no-cpu-boost \
-  --no-allow-unauthenticated
+  --allow-unauthenticated
 ```
 
 ## Required env vars / secrets
 
 - `SUPABASE_URL`
 - `SB_SECRET_KEY`
+- `UK_AQ_EDGE_UPSTREAM_SECRET`
 
 ## Optional env vars
 

@@ -57,7 +57,7 @@ functions and fixed strict typing/lint issues without changing runtime behavior.
   - `mode=legacy` keeps the previous direct-dispatch behavior.
   - If `mode` is omitted, defaults to `legacy` for backward compatibility with single-call schedulers.
 - Triggered by: External scheduler (Cloudflare Worker cron) calling the edge function directly.
-- Flow reference: `system_docs/uk_aq_dispatcher_ingest_flow.md`
+- Flow reference: `system_docs/uk_aq_cloudflare_scheduler_ingest_flow.md`
 - Reads:
   - `connectors` (`poll_enabled`, `poll_interval_minutes`, `poll_window_hours`, `poll_timeseries_batch_size`, `scheduler_backend`, `last_polled_at`)
   - `dispatcher_settings` (`max_runs_per_dispatch_call` is the effective concurrency setting)
@@ -101,7 +101,7 @@ functions and fixed strict typing/lint issues without changing runtime behavior.
   - Loads latest run state via `uk_aq_rpc_latest_ingest_runs` (lookback-bounded) so dispatcher reads one row per connector instead of broad `uk_aq_ingest_runs` scans.
   - If `uk_aq_rpc_latest_ingest_runs` is unavailable, falls back to a bounded `uk_aq_ingest_runs` read (`run_started_at >= now()-lookback`, small limit).
   - If a connector has `last_run_end` null but the latest `uk_aq_ingest_runs` row has `run_ended_at`, the connector row is reconciled as `ingest_runs_reconciled`.
-  - Cloudflare worker cron runs every 1 minute (`workers/uk_aq_dispatcher/wrangler.toml`) and calls:
+  - Cloudflare worker cron runs every 1 minute (`workers/uk_aq_ingest_poller/wrangler.toml`) and calls:
     - `mode=enqueue` then
     - `mode=run_queue` fan-out calls in parallel, with fan-out count from `max_runs_per_dispatch_call`
   - Worker sends `run_queue_claim_limit=1` with each `mode=run_queue` call to isolate each claim/call.

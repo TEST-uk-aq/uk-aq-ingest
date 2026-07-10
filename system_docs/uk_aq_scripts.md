@@ -94,6 +94,40 @@ Notes:
   - Main/history REST root access with `SB_PUBLISHABLE_DEFAULT_KEY`, main privileged key (`SB_SECRET_KEY` preferred), and `OBS_AQIDB_SECRET_KEY`.
 - Secret values are masked in output.
 
+### `cloudflare/scheduler/scripts/sync_jobs.py`
+Purpose:
+- Validate `cloudflare/scheduler/jobs.toml` for the ingest Cloudflare scheduler.
+- Emit idempotent D1 upsert SQL and a normalized JSON manifest for verification.
+
+Common commands:
+```bash
+python3 cloudflare/scheduler/scripts/sync_jobs.py \
+  --jobs-file cloudflare/scheduler/jobs.toml \
+  --sql-file /tmp/ingest_scheduler_jobs.sql \
+  --json-file /tmp/ingest_scheduler_jobs.json
+```
+
+Notes:
+- Requires Python 3.11+ because it uses the standard-library `tomllib` module.
+- Fails closed on unknown fields, malformed cron expressions, and scheduler-name mismatches.
+- Deployment-managed Cloud Run URLs are preserved during routine config sync.
+
+### `scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh`
+Purpose:
+- Resolve the scheduler configuration, update one deployment-managed Cloud Run URL in remote D1, and verify the exact stored row.
+- Used by each ingest Cloud Run deployment after `gcloud run services describe` returns the deployed service URL.
+
+Common command:
+```bash
+scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh \
+  uk_aq_sos https://SERVICE_HASH-ew.a.run.app
+```
+
+Notes:
+- Requires `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
+- The script first applies the validated `jobs.toml` upserts, then changes only the named `cloud_run` row.
+- This is an operational command; do not run it as part of local validation.
+
 ### `scripts/uk_aq_sync_github_secrets.sh`
 Purpose:
 - Sync local env files to GitHub Actions secrets/variables.

@@ -172,10 +172,10 @@ UK_AQ_EDGE_UPSTREAM_SECRET=...
   `LA_RETRY_BACKOFF_SECONDS`.
 - Vars: `PCON_VERSION`, `LA_VERSION` (optional; defaults to latest in Dropbox selection).
 
-### `uk_aq_dispatcher_deploy.yml`
-- Trigger: push to `main` affecting `workers/uk_aq_dispatcher/**`, or manual dispatch.
-- Purpose: deploy the Cloudflare Worker cron dispatcher and set its secrets.
-- Worker: `workers/uk_aq_dispatcher`.
+### `uk_aq_ingest_poller_deploy.yml`
+- Trigger: push to `main` affecting `workers/uk_aq_ingest_poller/**`, or manual dispatch.
+- Purpose: deploy the Cloudflare Worker ingest poller and set its secrets.
+- Worker: `workers/uk_aq_ingest_poller`.
 - Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`,
   `SUPABASE_URL`, `SB_PUBLISHABLE_DEFAULT_KEY`, `SB_UK_AQ_CRON_SECRET`.
 - Deploy sequence:
@@ -184,6 +184,30 @@ UK_AQ_EDGE_UPSTREAM_SECRET=...
   3. Deploy again (`Deploy Worker`) so code + updated secrets are active together.
 - Why bulk secrets: avoids Cloudflare Worker Versions failure seen with multiple sequential
   `wrangler secret put` calls in one run.
+
+### `uk_aq_cloudflare_scheduler_ingest_deploy.yml`
+- Trigger: push to `main` affecting `cloudflare/scheduler/*.mjs`, `cloudflare/scheduler/*.toml`, or manual dispatch.
+- Purpose: deploy the ingest phase-2 Cloudflare dry-run scheduler worker and set its secrets.
+- Worker: `uk-aq-scheduler-ingest` (`cloudflare/scheduler`).
+- Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `SUPABASE_URL`, `SB_SECRET_KEY`.
+- Deploy sequence:
+  1. Deploy current Worker code.
+  2. Apply the two secrets in one `wrangler secret bulk` call.
+  3. Deploy again so code + updated secrets are active together.
+- The worker logs due/skip decisions only in phase 2 and does not trigger Cloud Run yet.
+
+### `uk_aq_cloudflare_scheduler_ingest_config_sync.yml`
+- Trigger: push or pull request touching `cloudflare/scheduler/jobs.toml`, `cloudflare/scheduler/scripts/sync_jobs.py`, `cloudflare/scheduler/worker.mjs`, or the workflow file itself; also manual dispatch.
+- Purpose: validate the canonical ingest scheduler manifest and keep it aligned with the worker's exported `INGEST_JOBS` table.
+- Inputs:
+  - `cloudflare/scheduler/jobs.toml`
+  - `cloudflare/scheduler/scripts/sync_jobs.py`
+  - `cloudflare/scheduler/worker.mjs`
+- Behavior:
+  1. Parse and validate the TOML manifest.
+  2. Generate a normalized JSON manifest.
+  3. Compare the normalized jobs to `INGEST_JOBS`.
+  4. Fail on mismatch without touching external services.
 
 ### `uk_aq_cache_proxy_deploy.yml`
 - Ownership moved to `uk-aq-ops`.

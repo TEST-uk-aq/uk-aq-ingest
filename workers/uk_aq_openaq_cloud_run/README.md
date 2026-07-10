@@ -39,8 +39,12 @@ state is visible without using the failure log path.
 - Queue reconciliation rule:
   - If an earlier/equal pending OpenAQ task exists, the worker does not enqueue another.
   - If only later pending OpenAQ task(s) exist, the worker deletes them and enqueues the newly computed earlier task.
-- Safety trigger: Cloud Scheduler cron (recommended every 15 minutes) to recover
+- Safety trigger: Cloudflare cron scheduler every 30 minutes to recover
   from missed/deleted tasks and to bootstrap if task creation fails.
+- A safety invocation exits successfully without ingest when a sufficiently
+  recent `succeeded`, `success`, `partial`, or `skipped` ingest-run row exists;
+  this guard does not separately verify next-task creation. Normal one-off
+  Cloud Tasks remain the primary scheduling path.
 
 ## Build and push
 
@@ -56,6 +60,11 @@ docker push "${IMAGE}"
 
 ## Cloud Run service deploy
 
+The service allows unauthenticated transport access for Cloudflare, but every
+POST must provide `x-uk-aq-dispatch-secret` or `x-uk-aq-upstream-auth` matching
+`UK_AQ_EDGE_UPSTREAM_SECRET`. OpenAQ self-created Cloud Tasks use the upstream
+header. GET remains a health check.
+
 ```bash
 gcloud run deploy uk-aq-openaq-ingest \
   --region europe-west2 \
@@ -66,7 +75,7 @@ gcloud run deploy uk-aq-openaq-ingest \
   --max-instances 1 \
   --min-instances 0 \
   --no-cpu-boost \
-  --no-allow-unauthenticated
+  --allow-unauthenticated
 ```
 
 ## Required env vars / secrets
@@ -74,6 +83,7 @@ gcloud run deploy uk-aq-openaq-ingest \
 - `SUPABASE_URL`
 - `SB_SECRET_KEY`
 - `OPENAQ_API_KEY`
+- `UK_AQ_EDGE_UPSTREAM_SECRET`
 
 ## Optional env vars
 

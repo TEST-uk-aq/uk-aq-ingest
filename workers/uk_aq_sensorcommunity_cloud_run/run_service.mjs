@@ -4,6 +4,15 @@ import { spawn } from "node:child_process";
 const PORT = Number(process.env.PORT || "8080");
 const RUN_SCRIPT = "/app/index.mjs";
 const ALLOWED_TRIGGER_MODES = new Set(["safety", "task", "manual"]);
+const UK_AQ_EDGE_UPSTREAM_SECRET = String(process.env.UK_AQ_EDGE_UPSTREAM_SECRET || "").trim();
+
+function hasValidRunAuth(req) {
+  if (!UK_AQ_EDGE_UPSTREAM_SECRET) return false;
+  const upstream = String(req.headers["x-uk-aq-upstream-auth"] || "").trim();
+  const dispatch = String(req.headers["x-uk-aq-dispatch-secret"] || "").trim();
+  return upstream === UK_AQ_EDGE_UPSTREAM_SECRET ||
+    dispatch === UK_AQ_EDGE_UPSTREAM_SECRET;
+}
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -75,6 +84,12 @@ const server = createServer(async (req, res) => {
   if (req.method !== "POST") {
     res.writeHead(405, { "content-type": "text/plain" });
     res.end("Method not allowed");
+    return;
+  }
+
+  if (!hasValidRunAuth(req)) {
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: false, error: "forbidden" }));
     return;
   }
 

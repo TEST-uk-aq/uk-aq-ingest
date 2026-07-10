@@ -16,8 +16,17 @@ const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") || "").trim();
 const SUPABASE_PRIVILEGED_KEY = (Deno.env.get("SB_SECRET_KEY") || "").trim();
 const UK_AQ_CORE_SCHEMA = (Deno.env.get("UK_AQ_CORE_SCHEMA") || "uk_aq_core")
   .trim();
+const UK_AQ_EDGE_UPSTREAM_SECRET = (Deno.env.get("UK_AQ_EDGE_UPSTREAM_SECRET") || "").trim();
 
 let inFlight = false;
+
+function hasValidRunAuth(req: Request): boolean {
+  if (!UK_AQ_EDGE_UPSTREAM_SECRET) return false;
+  const upstream = (req.headers.get("x-uk-aq-upstream-auth") || "").trim();
+  const dispatch = (req.headers.get("x-uk-aq-dispatch-secret") || "").trim();
+  return upstream === UK_AQ_EDGE_UPSTREAM_SECRET ||
+    dispatch === UK_AQ_EDGE_UPSTREAM_SECRET;
+}
 
 type RunJobResult = {
   success: boolean;
@@ -367,6 +376,13 @@ serve(async (req: Request) => {
   }
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
+  }
+
+  if (!hasValidRunAuth(req)) {
+    return new Response(JSON.stringify({ ok: false, error: "forbidden" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
   }
   if (inFlight) {
     return new Response(

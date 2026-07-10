@@ -37,6 +37,7 @@ The previous proxy worker (Cloud Run -> Supabase Edge function) is archived at:
 
 - `SUPABASE_URL`
 - `SB_SECRET_KEY`
+- `UK_AQ_EDGE_UPSTREAM_SECRET`
 - `UK_AQ_CORE_SCHEMA` (optional; default `uk_aq_core`)
 - `UK_AQ_RAW_SCHEMA` (optional; default `uk_aq_raw`)
 - `OBS_AQIDB_SUPABASE_URL` (required when `OBSERVS_WRITE_MODE=direct`; optional for `pubsub_only`/`outbox_only`)
@@ -95,6 +96,10 @@ gcloud builds submit --tag "${IMAGE}" .
 
 ## Create/update Cloud Run Service
 
+The service allows unauthenticated transport access for Cloudflare, but every
+POST must provide `x-uk-aq-dispatch-secret` or `x-uk-aq-upstream-auth` matching
+`UK_AQ_EDGE_UPSTREAM_SECRET`. GET remains a health check.
+
 ```bash
 PROJECT_ID="your-gcp-project"
 REGION="europe-west2"
@@ -112,7 +117,7 @@ gcloud run deploy uk-aq-scomm-ingest \
   --max-instances "1" \
   --min-instances "0" \
   --no-cpu-boost \
-  --no-allow-unauthenticated
+  --allow-unauthenticated
 ```
 
 ## Manual trigger
@@ -124,6 +129,7 @@ SERVICE_URL="https://uk-aq-scomm-ingest-<hash>-nw.a.run.app"
 TOKEN="$(gcloud auth print-identity-token)"
 curl -i -X POST "${SERVICE_URL}" \
   -H "Authorization: Bearer ${TOKEN}" \
+  -H "X-UK-AQ-Upstream-Auth: ${UK_AQ_EDGE_UPSTREAM_SECRET}" \
   -H "Content-Type: application/json" \
   -d '{"trigger_mode":"manual"}'
 ```
