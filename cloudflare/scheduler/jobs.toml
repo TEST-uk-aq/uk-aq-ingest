@@ -10,10 +10,7 @@ target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
 dry_run = true
-notes = "Breathe London Communities safety ingest trigger"
-
-[jobs.uk_aq_blondon_communities.cloud_run_body]
-trigger_mode = "safety"
+notes = "Breathe London Communities ingest trigger"
 
 [jobs.uk_aq_blondon_nodes]
 enabled = true
@@ -43,10 +40,7 @@ target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
 dry_run = false
-notes = "Sensor.Community safety ingest trigger"
-
-[jobs.uk_aq_scomm.cloud_run_body]
-trigger_mode = "safety"
+notes = "Sensor.Community ingest trigger"
 
 [jobs.uk_aq_sos]
 enabled = true
@@ -55,7 +49,5 @@ target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
 dry_run = true
-notes = "UK-AIR SOS safety ingest trigger"
+notes = "UK-AIR SOS ingest trigger"
 
-[jobs.uk_aq_sos.cloud_run_body]
-trigger_mode = "safety"
