@@ -3,6 +3,16 @@
 config_version = 1
 scheduler_name = "uk-aq-cron-scheduler-ingest"
 
+[jobs.uk_uk_aq_stations_daily]
+enabled = true
+cron_expr = "0 3 * * *"
+target_type = "github_workflow"
+github_repo = "TEST-uk-aq/uk-aq-ingest"
+github_workflow_file = "uk_aq_stations_daily.yml"
+github_ref = "main"
+dry_run = false
+notes = "UK-AQ Stations Daily Sync"
+
 [jobs.uk_aq_blondon_communities]
 enabled = true
 cron_expr = "*/15 * * * *"
