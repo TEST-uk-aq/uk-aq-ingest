@@ -4,7 +4,7 @@
 
 **Date**: 2026-07-12
 **Status**: COMPLETED
-**Commit**: (local, not pushed)
+**Commit**: d1ced11 (local, not pushed)
 **Repository**: TEST-uk-aq-ingest
 **Branch**: main
 
@@ -77,6 +77,9 @@ Phase 2c.1 implemented the following validation requirements for v2 history inte
    - Tests for empty timeseries counts detection
    - Tests for missing vs genuine zero-row handling
    - Tests for new gap types
+
+3. **`plans/2026-07-12 Integrity/uk-aq-phase-2c-main-correction-plan-2026-07-12-1055.md`**
+   - This implementation record
 
 ### Modified Files
 None (all new files, no existing code modified per requirements)
