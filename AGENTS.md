@@ -3,7 +3,6 @@
 ## Main Repo
 - `TEST-uk-aq-ops` is the main repo for this project and the default starting point for cross-repo work.
 - Ops repo path: `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-ops`.
-- When working on mirrored CIC-Test scripts, treat the edited copy in the current CIC-Test repo as the source of truth and keep the sibling CIC-Test repo copy in sync.
 - Do not inspect or modify any `LIVE` repo unless the user explicitly asks.
 
 ## Codex operating mode
