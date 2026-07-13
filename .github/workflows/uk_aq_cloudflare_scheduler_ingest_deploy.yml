@@ -58,6 +58,7 @@ jobs:
             cloudflare/scheduler/wrangler.toml \
             cloudflare/scheduler/README.md \
             cloudflare/scheduler/migrations/0001_scheduler_schema.sql \
+            cloudflare/scheduler/migrations/0002_blondon_nodes_staged_response.sql \
             cloudflare/scheduler/seeds/0001_cloud_run_jobs.sql
           do
             if [ ! -f "${path}" ]; then
@@ -88,6 +89,12 @@ jobs:
           if 'database_name = "uk_aq_cron_scheduler_ingest_db"' not in wrangler:
               raise SystemExit("Missing D1 database name uk_aq_cron_scheduler_ingest_db")
           PY
+
+      - name: Apply scheduler D1 migrations
+        working-directory: cloudflare/scheduler
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 d1 migrations apply uk_aq_cron_scheduler_ingest_db --remote
 
       - name: Deploy worker
         uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
