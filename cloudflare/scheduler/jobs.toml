@@ -20,7 +20,7 @@ cron_expr = "*/15 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
-dry_run = true
+dry_run = false
 notes = "Breathe London Communities ingest trigger"
 
 [jobs.uk_aq_blondon_nodes]
@@ -29,7 +29,7 @@ cron_expr = "*/15 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
-dry_run = true
+dry_run = false
 notes = "Breathe London Nodes scheduled ingest trigger"
 
 [jobs.uk_aq_openaq_safety]
