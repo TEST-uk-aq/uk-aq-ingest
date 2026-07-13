@@ -184,6 +184,27 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def do_GET(self):
+        if self.path == "/status":
+            if not has_valid_run_auth(self.headers):
+                self._json_response(403, {"ok": False, "error": "forbidden"})
+                return
+            try:
+                from run_job import RunTracker
+
+                connector = RunTracker().load_connector()
+                if connector is None:
+                    self._json_response(404, {"ok": False, "error": "connector_not_found"})
+                    return
+                self._json_response(200, {
+                    "connector_code": connector.get("connector_code"),
+                    "last_run_start": connector.get("last_run_start"),
+                    "last_run_end": connector.get("last_run_end"),
+                    "last_run_status": connector.get("last_run_status"),
+                    "last_run_message": connector.get("last_run_message"),
+                })
+            except Exception:
+                self._json_response(500, {"ok": False, "error": "status_unavailable"})
+            return
         self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
 
     def do_POST(self):
@@ -209,7 +230,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 status, body = run_job(
                     payload,
-                    int(os.getenv("BLONDON_NODES_MAX_RUNTIME_SECONDS", "840")),
+                    int(os.getenv("BLONDON_NODES_MAX_RUNTIME_SECONDS", "780")),
                 )
             except Exception as exc:
                 status = 500

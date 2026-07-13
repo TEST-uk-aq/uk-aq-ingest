@@ -32,6 +32,14 @@ dispatch of a scheduled slot. Each evaluation claims due slots and records
 dry-run decisions first, then starts all claimed live job targets concurrently.
 The run summary is recorded only after every live dispatch has settled.
 
+### Breathe London Nodes staged response
+
+`uk_aq_blondon_nodes` has a 90-second soft response deadline. Its original Cloud
+Run request is not cancelled. When it is still pending, the Worker records
+`waiting_response` and checks the service's authenticated `/status` endpoint at
+5, 10, and 14 minutes. The Nodes child runtime default is 780 seconds; the Cloud
+Run service timeout remains 900 seconds. The scheduler has no Supabase integration.
+
 ## Jobs
 
 | Job key | Schedule (UTC) | Request body | Initial mode |

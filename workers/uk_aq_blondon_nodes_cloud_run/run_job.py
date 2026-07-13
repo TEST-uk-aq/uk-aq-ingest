@@ -58,7 +58,7 @@ class RunTracker:
         response = self.core.table("connectors").select(
             "id,connector_code,poll_enabled,poll_interval_minutes,"
             "scheduler_backend,last_polled_at,last_run_start,last_run_end,"
-            "last_run_status"
+            "last_run_status,last_run_message"
         ).eq("connector_code", CONNECTOR_CODE).limit(1).execute()
         rows = response_rows(response)
         return rows[0] if rows else None

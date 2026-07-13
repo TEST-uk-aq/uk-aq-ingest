@@ -9,6 +9,16 @@ export const DISPATCH_LEAD_MINUTES = 0.5;
 export const DISPATCH_LEAD_MS = DISPATCH_LEAD_MINUTES * MINUTE_MS;
 export const RESPONSE_PREVIEW_LIMIT = 1_000;
 export const GITHUB_USER_AGENT = "uk-aq-cloudflare-cron-scheduler";
+export const BLONDON_NODES_JOB_KEY = "uk_aq_blondon_nodes";
+export const BLONDON_NODES_RESPONSE_WAIT_MS = 90_000;
+export const BLONDON_NODES_RECONCILE_AFTER_MS = [
+  5 * 60_000,
+  10 * 60_000,
+  14 * 60_000,
+];
+const BLONDON_NODES_STATUS_MATCH_BEFORE_MS = 30_000;
+const BLONDON_NODES_STATUS_MATCH_AFTER_MS = 4 * 60_000;
+const BLONDON_NODES_STATUS_TIMEOUT_MS = 20_000;
 
 const MONTH_NAME_TO_NUMBER = Object.freeze({
   JAN: 1,
@@ -455,7 +465,55 @@ export function createSchedulerStore(db) {
     },
 
     async updateDispatch(dispatchId, patch) {
+      const patchColumns = [
+        "dispatched_at",
+        "dispatch_status",
+        "reason",
+        "response_status",
+        "response_preview",
+        "next_reconcile_at",
+        "reconcile_stage",
+        "ingest_status",
+      ].filter((column) => Object.prototype.hasOwnProperty.call(patch, column));
+      if (patchColumns.length === 0) {
+        return;
+      }
       await dbRun(
+        schedulerDb,
+        `
+          update scheduler_dispatches
+          set ${patchColumns.map((column) => `${column} = ?`).join(",\n              ")}
+          where id = ?
+        `,
+        [...patchColumns.map((column) => patch[column]), dispatchId],
+      );
+    },
+
+    async listDueBlondonNodesReconciliations(nowIsoText) {
+      return dbAll(
+        schedulerDb,
+        `
+          select
+            d.id,
+            d.due_at,
+            d.claimed_at,
+            d.next_reconcile_at,
+            d.reconcile_stage,
+            j.cloud_run_url
+          from scheduler_dispatches d
+          join scheduler_jobs j on j.job_key = d.job_key
+          where d.job_key = ?
+            and d.dispatch_status = 'waiting_response'
+            and d.next_reconcile_at is not null
+            and d.next_reconcile_at <= ?
+          order by d.next_reconcile_at asc, d.id asc
+        `,
+        [BLONDON_NODES_JOB_KEY, nowIsoText],
+      );
+    },
+
+    async finishBlondonNodesResponse(dispatchId, patch) {
+      const result = await dbRun(
         schedulerDb,
         `
           update scheduler_dispatches
@@ -463,17 +521,36 @@ export function createSchedulerStore(db) {
               dispatch_status = ?,
               reason = ?,
               response_status = ?,
-              response_preview = ?
+              response_preview = ?,
+              next_reconcile_at = null,
+              reconcile_stage = null
           where id = ?
+            and dispatch_status in ('claimed', 'waiting_response')
         `,
         [
-          patch.dispatched_at ?? null,
+          patch.dispatched_at,
           patch.dispatch_status,
           patch.reason ?? null,
           patch.response_status ?? null,
           patch.response_preview ?? null,
           dispatchId,
         ],
+      );
+      return Number(result?.meta?.changes ?? 0) > 0;
+    },
+
+    async recordBlondonNodesProxyTimeout(dispatchId, patch) {
+      await dbRun(
+        schedulerDb,
+        `
+          update scheduler_dispatches
+          set reason = ?,
+              response_status = ?,
+              response_preview = ?
+          where id = ?
+            and dispatch_status = 'waiting_response'
+        `,
+        [patch.reason, patch.response_status ?? null, patch.response_preview ?? null, dispatchId],
       );
     },
 
@@ -640,62 +717,231 @@ export function dueSlotsForJob(job, windowStartMs, windowEndMs) {
   );
 }
 
-async function dispatchClaimedLiveJob(store, job, dispatchId, dueAt, env, context) {
-  logJson(WORKER_NAME, "scheduler_dispatch_attempt", formatLogJobPayload(job, dueAt));
+function delay(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
 
-  let result;
-  let dispatchError = null;
+function isProxyTimeoutResult(result) {
+  return Number(result?.response_status) >= 520 && Number(result?.response_status) <= 524;
+}
+
+function isProxyTimeoutError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(?:520|522|523|524)\b|timeout|timed out/i.test(message);
+}
+
+function isRecognizedSkippedResult(result) {
+  const text = `${result?.reason ?? ""} ${result?.response_preview ?? ""}`.toLowerCase();
+  return ["run_in_flight", "not_due", "claim_not_acquired"].some((reason) => text.includes(reason));
+}
+
+function addMillisecondsToIso(isoTimestamp, milliseconds) {
+  const timestampMs = Date.parse(isoTimestamp);
+  if (!Number.isFinite(timestampMs)) {
+    throw new Error(`Invalid scheduler dispatch timestamp: ${isoTimestamp}`);
+  }
+  return nowIso(timestampMs + milliseconds);
+}
+
+async function dispatchTargetSafely(job, env) {
   try {
-    result = await dispatchTarget(job, env);
+    return { result: await dispatchTarget(job, env) };
   } catch (error) {
-    dispatchError = error;
-    const message = error instanceof Error ? error.message : String(error);
-    result = {
-      ok: false,
-      response_status: null,
-      response_preview: null,
-      reason: message,
+    return {
+      error,
+      result: {
+        ok: false,
+        response_status: null,
+        response_preview: null,
+        reason: error instanceof Error ? error.message : String(error),
+      },
     };
   }
+}
 
-  const dispatchStatus = result.ok ? "dispatched" : "failed";
-  await store.updateDispatch(dispatchId, {
+async function persistLiveDispatchOutcome(store, job, dispatchId, dueAt, context, outcome, { nodesOnly = false } = {}) {
+  const { result, error: dispatchError } = outcome;
+  const skipped = !result.ok && isRecognizedSkippedResult(result);
+  const dispatchStatus = result.ok ? "dispatched" : skipped ? "skipped" : "failed";
+  const patch = {
     dispatched_at: nowIso(Date.now()),
     dispatch_status: dispatchStatus,
     reason: result.ok ? null : result.reason,
     response_status: result.response_status ?? null,
     response_preview: result.response_preview ?? null,
-  });
-
-  if (dispatchError) {
-    logJson(WORKER_NAME, "scheduler_dispatch_failed", {
-      scheduler_name: SCHEDULER_NAME,
-      scheduler_run_id: context.scheduler_run_id ?? null,
-      job_key: job.job_key,
-      target_type: job.target_type,
-      due_at: dueAt,
-      dry_run: false,
-      dispatch_status: "failed",
-      reason: result.reason,
-    });
+  };
+  if (nodesOnly) {
+    await store.finishBlondonNodesResponse(dispatchId, patch);
   } else {
-    logJson(WORKER_NAME, "scheduler_dispatch_result", {
-      scheduler_name: SCHEDULER_NAME,
-      scheduler_run_id: context.scheduler_run_id ?? null,
-      job_key: job.job_key,
-      target_type: job.target_type,
-      due_at: dueAt,
-      dry_run: false,
-      dispatch_status: dispatchStatus,
-      reason: result.reason ?? null,
-      response_status: result.response_status ?? null,
-    });
+    await store.updateDispatch(dispatchId, patch);
   }
 
-  return {
-    jobs_dispatched: result.ok ? 1 : 0,
-    jobs_failed: result.ok ? 0 : 1,
-  };
+  logJson(WORKER_NAME, dispatchError ? "scheduler_dispatch_failed" : "scheduler_dispatch_result", {
+    scheduler_name: SCHEDULER_NAME,
+    scheduler_run_id: context.scheduler_run_id ?? null,
+    job_key: job.job_key,
+    target_type: job.target_type,
+    due_at: dueAt,
+    dry_run: false,
+    dispatch_status: dispatchStatus,
+    reason: result.reason ?? null,
+    response_status: result.response_status ?? null,
+  });
+  return { jobs_dispatched: result.ok ? 1 : 0, jobs_failed: result.ok || skipped ? 0 : 1 };
+}
+
+async function dispatchBlondonNodes(store, dispatch, env, context) {
+  const { dispatch_id: dispatchId, due_at: dueAt, job, claimed_at: claimedAt } = dispatch;
+  const requestOutcome = dispatchTargetSafely(job, env);
+  logJson(WORKER_NAME, "scheduler_dispatch_attempt", formatLogJobPayload(job, dueAt));
+  const firstOutcome = await Promise.race([
+    requestOutcome.then((outcome) => ({ type: "response", outcome })),
+    delay(BLONDON_NODES_RESPONSE_WAIT_MS).then(() => ({ type: "deadline" })),
+  ]);
+
+  if (firstOutcome.type === "response") {
+    return persistLiveDispatchOutcome(store, job, dispatchId, dueAt, context, firstOutcome.outcome, { nodesOnly: true });
+  }
+
+  await store.updateDispatch(dispatchId, {
+    dispatch_status: "waiting_response",
+    next_reconcile_at: addMillisecondsToIso(claimedAt, BLONDON_NODES_RECONCILE_AFTER_MS[0]),
+    reconcile_stage: 1,
+  });
+  logJson(WORKER_NAME, "scheduler_dispatch_waiting_response", {
+    scheduler_name: SCHEDULER_NAME,
+    scheduler_run_id: context.scheduler_run_id ?? null,
+    dispatch_id: dispatchId,
+    job_key: job.job_key,
+    due_at: dueAt,
+  });
+
+  const eventualOutcome = await requestOutcome;
+  if (eventualOutcome.result.ok
+    || (!isProxyTimeoutResult(eventualOutcome.result) && !isProxyTimeoutError(eventualOutcome.error))) {
+    return persistLiveDispatchOutcome(store, job, dispatchId, dueAt, context, eventualOutcome, { nodesOnly: true });
+  }
+
+  await store.recordBlondonNodesProxyTimeout(dispatchId, {
+    reason: eventualOutcome.result.reason ?? "proxy_timeout",
+    response_status: eventualOutcome.result.response_status ?? null,
+    response_preview: eventualOutcome.result.response_preview ?? null,
+  });
+  return { jobs_dispatched: 0, jobs_failed: 0 };
+}
+
+async function dispatchClaimedLiveJob(store, dispatch, env, context) {
+  if (dispatch.job.job_key === BLONDON_NODES_JOB_KEY) {
+    return dispatchBlondonNodes(store, dispatch, env, context);
+  }
+  logJson(WORKER_NAME, "scheduler_dispatch_attempt", formatLogJobPayload(dispatch.job, dispatch.due_at));
+  return persistLiveDispatchOutcome(
+    store,
+    dispatch.job,
+    dispatch.dispatch_id,
+    dispatch.due_at,
+    context,
+    await dispatchTargetSafely(dispatch.job, env),
+  );
+}
+
+function mapBlondonNodesStatus(status, message) {
+  const normalizedStatus = trimText(status).toLowerCase();
+  const normalizedMessage = trimText(message).toLowerCase();
+  if (normalizedStatus === "partial" || /budget[-_ ]?limit/.test(normalizedMessage)) return "partial";
+  if (normalizedStatus === "success" || normalizedStatus === "succeeded") return "succeeded";
+  if (normalizedStatus === "skipped") return "skipped";
+  if (normalizedStatus === "failed" || normalizedStatus === "error") return "failed";
+  return "unconfirmed";
+}
+
+function blondonNodesStatusUrl(cloudRunUrl) {
+  const url = new URL(cloudRunUrl);
+  url.pathname = "/status";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+async function loadBlondonNodesStatus(cloudRunUrl, env) {
+  const secret = trimText(await readSecret(env.UK_AQ_EDGE_UPSTREAM_SECRET));
+  if (!secret) throw new Error("Missing required Worker secret: UK_AQ_EDGE_UPSTREAM_SECRET");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), BLONDON_NODES_STATUS_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(blondonNodesStatusUrl(cloudRunUrl), {
+      headers: { "x-uk-aq-dispatch-secret": secret },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) throw new Error(`Breathe London Nodes status returned HTTP ${response.status}`);
+  const status = await response.json();
+  if (!isPlainObject(status)) throw new Error("Breathe London Nodes status response must be an object");
+  return status;
+}
+
+function statusMatchesBlondonNodesDispatch(status, claimedAt) {
+  if (trimText(status.connector_code) !== "blondon_nodes") return false;
+  const startedAtMs = Date.parse(trimText(status.last_run_start));
+  const claimedAtMs = Date.parse(claimedAt);
+  return Number.isFinite(startedAtMs)
+    && Number.isFinite(claimedAtMs)
+    && startedAtMs >= claimedAtMs - BLONDON_NODES_STATUS_MATCH_BEFORE_MS
+    && startedAtMs <= claimedAtMs + BLONDON_NODES_STATUS_MATCH_AFTER_MS;
+}
+
+async function reconcileBlondonNodesDispatches(store, env, nowMs, context) {
+  if (typeof store.listDueBlondonNodesReconciliations !== "function") {
+    return;
+  }
+  const dueDispatches = await store.listDueBlondonNodesReconciliations(nowIso(nowMs));
+  for (const dispatch of dueDispatches) {
+    const stage = Number(dispatch.reconcile_stage || 1);
+    const finalStage = stage >= BLONDON_NODES_RECONCILE_AFTER_MS.length;
+    let status;
+    let reason = "status_unavailable";
+    try {
+      status = await loadBlondonNodesStatus(dispatch.cloud_run_url, env);
+      reason = statusMatchesBlondonNodesDispatch(status, dispatch.claimed_at)
+        ? "run_not_finished"
+        : "status_does_not_match_dispatch";
+    } catch (error) {
+      reason = error instanceof Error ? error.message : String(error);
+    }
+
+    if (status && statusMatchesBlondonNodesDispatch(status, dispatch.claimed_at) && status.last_run_end) {
+      const ingestStatus = mapBlondonNodesStatus(status.last_run_status, status.last_run_message);
+      await store.updateDispatch(dispatch.id, {
+        dispatch_status: "dispatched",
+        next_reconcile_at: null,
+        reconcile_stage: null,
+        ingest_status: ingestStatus,
+        reason: status.last_run_message ?? null,
+      });
+      continue;
+    }
+    if (finalStage) {
+      await store.updateDispatch(dispatch.id, {
+        dispatch_status: "dispatched",
+        next_reconcile_at: null,
+        reconcile_stage: null,
+        ingest_status: "unconfirmed",
+        reason,
+      });
+      continue;
+    }
+    await store.updateDispatch(dispatch.id, {
+      next_reconcile_at: addMillisecondsToIso(
+        dispatch.claimed_at,
+        BLONDON_NODES_RECONCILE_AFTER_MS[stage],
+      ),
+      reconcile_stage: stage + 1,
+      reason,
+    });
+  }
 }
 
 export async function dispatchDueJobsForWindow(store, jobs, env, windowStartMs, windowEndMs, context = {}) {
@@ -796,19 +1042,13 @@ export async function dispatchDueJobsForWindow(store, jobs, env, windowStartMs, 
         dispatch_id: dispatchId,
         due_at: dueAt,
         job,
+        claimed_at: claimedAt,
       });
     }
   }
 
   const dispatchResults = await Promise.allSettled(
-    claimedLiveDispatches.map((dispatch) => dispatchClaimedLiveJob(
-      store,
-      dispatch.job,
-      dispatch.dispatch_id,
-      dispatch.due_at,
-      env,
-      context,
-    )),
+    claimedLiveDispatches.map((dispatch) => dispatchClaimedLiveJob(store, dispatch, env, context)),
   );
 
   for (let index = 0; index < dispatchResults.length; index += 1) {
@@ -884,6 +1124,7 @@ export async function runScheduler(store, env = {}, nowMs = Date.now(), schedule
   });
 
   try {
+    await reconcileBlondonNodesDispatches(store, env, startedAtMs, { scheduler_run_id: runId });
     const jobs = await store.listEnabledJobs();
     const summary = await dispatchDueJobsForWindow(
       store,
