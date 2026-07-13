@@ -28,7 +28,9 @@ state, or contain a hard-coded production job array.
 
 The D1 schema uses `scheduler_jobs`, `scheduler_dispatches`, and
 `scheduler_runs`. The unique `(job_key, due_at)` constraint prevents duplicate
-dispatch of a scheduled slot.
+dispatch of a scheduled slot. Each evaluation claims due slots and records
+dry-run decisions first, then starts all claimed live job targets concurrently.
+The run summary is recorded only after every live dispatch has settled.
 
 ## Jobs
 

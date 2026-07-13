@@ -640,6 +640,64 @@ export function dueSlotsForJob(job, windowStartMs, windowEndMs) {
   );
 }
 
+async function dispatchClaimedLiveJob(store, job, dispatchId, dueAt, env, context) {
+  logJson(WORKER_NAME, "scheduler_dispatch_attempt", formatLogJobPayload(job, dueAt));
+
+  let result;
+  let dispatchError = null;
+  try {
+    result = await dispatchTarget(job, env);
+  } catch (error) {
+    dispatchError = error;
+    const message = error instanceof Error ? error.message : String(error);
+    result = {
+      ok: false,
+      response_status: null,
+      response_preview: null,
+      reason: message,
+    };
+  }
+
+  const dispatchStatus = result.ok ? "dispatched" : "failed";
+  await store.updateDispatch(dispatchId, {
+    dispatched_at: nowIso(Date.now()),
+    dispatch_status: dispatchStatus,
+    reason: result.ok ? null : result.reason,
+    response_status: result.response_status ?? null,
+    response_preview: result.response_preview ?? null,
+  });
+
+  if (dispatchError) {
+    logJson(WORKER_NAME, "scheduler_dispatch_failed", {
+      scheduler_name: SCHEDULER_NAME,
+      scheduler_run_id: context.scheduler_run_id ?? null,
+      job_key: job.job_key,
+      target_type: job.target_type,
+      due_at: dueAt,
+      dry_run: false,
+      dispatch_status: "failed",
+      reason: result.reason,
+    });
+  } else {
+    logJson(WORKER_NAME, "scheduler_dispatch_result", {
+      scheduler_name: SCHEDULER_NAME,
+      scheduler_run_id: context.scheduler_run_id ?? null,
+      job_key: job.job_key,
+      target_type: job.target_type,
+      due_at: dueAt,
+      dry_run: false,
+      dispatch_status: dispatchStatus,
+      reason: result.reason ?? null,
+      response_status: result.response_status ?? null,
+    });
+  }
+
+  return {
+    jobs_dispatched: result.ok ? 1 : 0,
+    jobs_failed: result.ok ? 0 : 1,
+  };
+}
+
 export async function dispatchDueJobsForWindow(store, jobs, env, windowStartMs, windowEndMs, context = {}) {
   const summary = {
     jobs_checked: 0,
@@ -648,6 +706,7 @@ export async function dispatchDueJobsForWindow(store, jobs, env, windowStartMs, 
     jobs_dispatched: 0,
     jobs_failed: 0,
   };
+  const claimedLiveDispatches = [];
 
   for (const rawJob of jobs) {
     summary.jobs_checked += 1;
@@ -733,58 +792,48 @@ export async function dispatchDueJobsForWindow(store, jobs, env, windowStartMs, 
         continue;
       }
 
-      logJson(WORKER_NAME, "scheduler_dispatch_attempt", formatLogJobPayload(job, dueAt));
-
-      try {
-        const result = await dispatchTarget(job, env);
-        const dispatchStatus = result.ok ? "dispatched" : "failed";
-        await store.updateDispatch(dispatchId, {
-          dispatched_at: nowIso(Date.now()),
-          dispatch_status: dispatchStatus,
-          reason: result.ok ? null : result.reason,
-          response_status: result.response_status ?? null,
-          response_preview: result.response_preview ?? null,
-        });
-
-        if (result.ok) {
-          summary.jobs_dispatched += 1;
-        } else {
-          summary.jobs_failed += 1;
-        }
-
-        logJson(WORKER_NAME, "scheduler_dispatch_result", {
-          scheduler_name: SCHEDULER_NAME,
-          scheduler_run_id: context.scheduler_run_id ?? null,
-          job_key: job.job_key,
-          target_type: job.target_type,
-          due_at: dueAt,
-          dry_run: false,
-          dispatch_status: dispatchStatus,
-          reason: result.reason ?? null,
-          response_status: result.response_status ?? null,
-        });
-      } catch (error) {
-        summary.jobs_failed += 1;
-        const message = error instanceof Error ? error.message : String(error);
-        await store.updateDispatch(dispatchId, {
-          dispatched_at: nowIso(Date.now()),
-          dispatch_status: "failed",
-          reason: message,
-          response_status: null,
-          response_preview: null,
-        });
-        logJson(WORKER_NAME, "scheduler_dispatch_failed", {
-          scheduler_name: SCHEDULER_NAME,
-          scheduler_run_id: context.scheduler_run_id ?? null,
-          job_key: job.job_key,
-          target_type: job.target_type,
-          due_at: dueAt,
-          dry_run: false,
-          dispatch_status: "failed",
-          reason: message,
-        });
-      }
+      claimedLiveDispatches.push({
+        dispatch_id: dispatchId,
+        due_at: dueAt,
+        job,
+      });
     }
+  }
+
+  const dispatchResults = await Promise.allSettled(
+    claimedLiveDispatches.map((dispatch) => dispatchClaimedLiveJob(
+      store,
+      dispatch.job,
+      dispatch.dispatch_id,
+      dispatch.due_at,
+      env,
+      context,
+    )),
+  );
+
+  for (let index = 0; index < dispatchResults.length; index += 1) {
+    const dispatchResult = dispatchResults[index];
+    if (dispatchResult.status === "fulfilled") {
+      summary.jobs_dispatched += dispatchResult.value.jobs_dispatched;
+      summary.jobs_failed += dispatchResult.value.jobs_failed;
+      continue;
+    }
+
+    summary.jobs_failed += 1;
+    const dispatch = claimedLiveDispatches[index];
+    const message = dispatchResult.reason instanceof Error
+      ? dispatchResult.reason.message
+      : String(dispatchResult.reason);
+    logJson(WORKER_NAME, "scheduler_dispatch_failed", {
+      scheduler_name: SCHEDULER_NAME,
+      scheduler_run_id: context.scheduler_run_id ?? null,
+      job_key: dispatch.job.job_key,
+      target_type: dispatch.job.target_type,
+      due_at: dispatch.due_at,
+      dry_run: false,
+      dispatch_status: "failed",
+      reason: message,
+    });
   }
 
   return summary;

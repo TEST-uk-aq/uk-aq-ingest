@@ -7,8 +7,11 @@
 4. For every due slot it inserts a unique dispatch claim keyed by `job_key` and
    `due_at`.
 5. Dry-run jobs record the decision and make no network request.
-6. Real jobs POST the D1-configured body to the deployment-managed Cloud Run URL
-   with `x-uk-aq-dispatch-secret`.
+6. After all due slots have been claimed, real job targets start concurrently.
+   Cloud Run jobs POST the D1-configured body to the deployment-managed URL with
+   `x-uk-aq-dispatch-secret`; GitHub workflow jobs dispatch their configured
+   workflow. One slow or failed target does not delay another target's initial
+   dispatch.
 7. The Cloud Run service validates `UK_AQ_EDGE_UPSTREAM_SECRET` before starting
    work and returns 403 for missing or invalid authentication.
 8. The Worker records response status, a bounded response preview, and the final

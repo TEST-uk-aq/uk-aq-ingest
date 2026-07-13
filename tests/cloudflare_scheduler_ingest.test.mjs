@@ -128,6 +128,43 @@ function captureLogs() {
   };
 }
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitFor(condition, message) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) {
+      return;
+    }
+    await Promise.resolve();
+  }
+  assert.fail(message);
+}
+
+function getCloudRunJob(template = {}) {
+  return getJob({
+    job_key: "uk_aq_cloud_run_test",
+    target_type: "cloud_run",
+    github_repo: null,
+    github_workflow_file: null,
+    github_ref: null,
+    github_inputs_json: null,
+    cloud_run_url: "https://example.invalid/run",
+    cloud_run_method: "POST",
+    cloud_run_headers_json: "{}",
+    cloud_run_body_json: "{}",
+    dry_run: 0,
+    ...template,
+  });
+}
+
 test("wrangler config uses exactly one minute cron and the ingest D1 binding", () => {
   const crons = parseWranglerCronList();
   assert.deepEqual(crons, ["* * * * *"]);
@@ -286,6 +323,176 @@ test("dry-run jobs do not make network requests", async () => {
     assert.equal(fetchCalls, 0);
     assert.equal(store.state.dispatches[0].dispatch_status, "dry_run");
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("claimed Cloud Run jobs start concurrently and each dispatch row is updated once", async () => {
+  const store = createMemorySchedulerStore({
+    jobs: [
+      getCloudRunJob({ job_key: "uk_aq_slow" }),
+      getCloudRunJob({ job_key: "uk_aq_fast" }),
+    ],
+  });
+  const responses = {
+    "https://example.invalid/slow": createDeferred(),
+    "https://example.invalid/fast": createDeferred(),
+  };
+  const fetchUrls = [];
+  const updateDispatchCalls = [];
+  const originalFetch = globalThis.fetch;
+  const originalUpdateDispatch = store.updateDispatch.bind(store);
+  store.updateDispatch = async (dispatchId, patch) => {
+    updateDispatchCalls.push({ dispatchId, patch });
+    await originalUpdateDispatch(dispatchId, patch);
+  };
+  globalThis.fetch = async (url) => {
+    assert.equal(store.state.dispatches.length, 2, "all due jobs must be claimed before dispatch starts");
+    const urlText = String(url);
+    fetchUrls.push(urlText);
+    return responses[urlText].promise;
+  };
+
+  try {
+    const dispatchPromise = dispatchDueJobsForWindow(
+      store,
+      [
+        getCloudRunJob({ job_key: "uk_aq_slow", cloud_run_url: "https://example.invalid/slow" }),
+        getCloudRunJob({ job_key: "uk_aq_fast", cloud_run_url: "https://example.invalid/fast" }),
+      ],
+      { UK_AQ_EDGE_UPSTREAM_SECRET: "cloud-secret" },
+      Date.parse("2026-07-10T04:13:30Z"),
+      Date.parse("2026-07-10T04:14:30Z"),
+      { scheduler_run_id: 1 },
+    );
+
+    await waitFor(
+      () => fetchUrls.length === 2,
+      "both Cloud Run dispatches should start before either response settles",
+    );
+    assert.deepEqual(fetchUrls, [
+      "https://example.invalid/slow",
+      "https://example.invalid/fast",
+    ]);
+
+    responses["https://example.invalid/fast"].resolve(new Response("fast", { status: 200 }));
+    responses["https://example.invalid/slow"].resolve(new Response("slow", { status: 200 }));
+
+    const summary = await dispatchPromise;
+    assert.deepEqual(summary, {
+      jobs_checked: 2,
+      jobs_due: 2,
+      jobs_claimed: 2,
+      jobs_dispatched: 2,
+      jobs_failed: 0,
+    });
+    assert.equal(updateDispatchCalls.length, 2);
+    assert.deepEqual(
+      updateDispatchCalls.map((call) => call.dispatchId).sort((left, right) => left - right),
+      [1, 2],
+    );
+    assert.deepEqual(
+      store.state.dispatches.map((dispatch) => dispatch.dispatch_status).sort(),
+      ["dispatched", "dispatched"],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("concurrent Cloud Run and GitHub dispatches retain independent outcomes and logs", async () => {
+  const store = createMemorySchedulerStore({
+    jobs: [
+      getCloudRunJob({
+        job_key: "uk_aq_cloud_run_failure",
+        cloud_run_url: "https://example.invalid/failure",
+      }),
+      getJob({
+        job_key: "uk_aq_github_success",
+        dry_run: 0,
+      }),
+    ],
+  });
+  const logs = captureLogs();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url) === "https://example.invalid/failure") {
+      return new Response("service failure", { status: 503 });
+    }
+    return new Response(null, { status: 204 });
+  };
+
+  try {
+    const summary = await dispatchDueJobsForWindow(
+      store,
+      await store.listEnabledJobs(),
+      {
+        UK_AQ_EDGE_UPSTREAM_SECRET: "cloud-secret",
+        UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT: "github-pat",
+      },
+      Date.parse("2026-07-10T04:13:30Z"),
+      Date.parse("2026-07-10T04:14:30Z"),
+      { scheduler_run_id: 9 },
+    );
+
+    assert.deepEqual(summary, {
+      jobs_checked: 2,
+      jobs_due: 2,
+      jobs_claimed: 2,
+      jobs_dispatched: 1,
+      jobs_failed: 1,
+    });
+    const dispatchesByJob = Object.fromEntries(
+      store.state.dispatches.map((dispatch) => [dispatch.job_key, dispatch]),
+    );
+    assert.deepEqual(dispatchesByJob.uk_aq_cloud_run_failure, {
+      id: 1,
+      job_key: "uk_aq_cloud_run_failure",
+      due_at: "2026-07-10T04:15:00.000Z",
+      claimed_at: dispatchesByJob.uk_aq_cloud_run_failure.claimed_at,
+      target_type: "cloud_run",
+      dry_run: 0,
+      dispatch_status: "failed",
+      dispatched_at: dispatchesByJob.uk_aq_cloud_run_failure.dispatched_at,
+      reason: "Cloud Run dispatch failed with HTTP 503",
+      response_status: 503,
+      response_preview: "service failure",
+    });
+    assert.equal(dispatchesByJob.uk_aq_github_success.dispatch_status, "dispatched");
+    assert.equal(dispatchesByJob.uk_aq_github_success.response_status, 204);
+
+    const events = logs.lines.map((line) => JSON.parse(line));
+    const attempts = events.filter((event) => event.event === "scheduler_dispatch_attempt");
+    const results = events.filter((event) => event.event === "scheduler_dispatch_result");
+    assert.equal(attempts.length, 2);
+    assert.equal(results.length, 2);
+    assert.deepEqual(
+      results.map((event) => ({
+        job_key: event.job_key,
+        target_type: event.target_type,
+        due_at: event.due_at,
+        dispatch_status: event.dispatch_status,
+        response_status: event.response_status,
+      })).sort((left, right) => left.job_key.localeCompare(right.job_key)),
+      [
+        {
+          job_key: "uk_aq_cloud_run_failure",
+          target_type: "cloud_run",
+          due_at: "2026-07-10T04:15:00.000Z",
+          dispatch_status: "failed",
+          response_status: 503,
+        },
+        {
+          job_key: "uk_aq_github_success",
+          target_type: "github_workflow",
+          due_at: "2026-07-10T04:15:00.000Z",
+          dispatch_status: "dispatched",
+          response_status: 204,
+        },
+      ],
+    );
+  } finally {
+    logs.restore();
     globalThis.fetch = originalFetch;
   }
 });
