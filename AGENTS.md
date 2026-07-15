@@ -13,6 +13,7 @@ Codex should:
 - provide a clear manual validation and deployment plan;
 - include exact SQL, gcloud, wrangler, GitHub Actions, and Supabase commands for the user to run manually.
 Codex must not, unless explicitly asked:
+- create, amend, or otherwise modify Git commits;
 - run SQL against live/test Supabase databases;
 - apply migration files;
 - deploy Cloud Run services, Workers, or GitHub Actions workflows;
