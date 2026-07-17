@@ -8,7 +8,7 @@
 ## Codex operating mode
 Default mode is code-only implementation.
 Codex should:
-- make focused code, schema, documentation, and test edits requested by the task;
+- make focused code, schema, non-system documentation, and test edits requested by the task;
 - run only fast, local, non-destructive checks needed to verify the edit;
 - provide a clear manual validation and deployment plan;
 - include exact SQL, gcloud, wrangler, GitHub Actions, and Supabase commands for the user to run manually.
@@ -39,6 +39,14 @@ Level 1 plus local-only scripts/tests that do not call Supabase, GCP, Cloudflare
 Prepare SQL, deploy commands, and validation commands, but do not run them.
 ### Level 4 — Execute operations
 Only when explicitly requested in the prompt. May run database, deployment, or cloud commands.
+
+## System Documentation Ownership
+
+- Codex and other coding agents must not create, edit, move, rename, or delete files under `system_docs/`.
+- Coding agents may read `system_docs/` for context, but it is read-only to them.
+- When implementation changes require system documentation changes, the coding agent must identify the affected documents and provide a concise handover for ChatGPT in Chat mode.
+- The handover must summarise the implemented behaviour, files changed, schema or configuration changes, deployment implications, and validation results needed to update the documentation accurately.
+- Updating `system_docs/` is reserved for ChatGPT in Chat mode using the coding-agent handover and the implemented repository changes as source material.
 
 ## Schema
 - Permission confirmed: all files under `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema` may be edited (except `archive/`).
@@ -83,7 +91,7 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - Archive paths are retired for active execution. Active scripts, workers, services, and runner-path defaults must only target non-archive paths, and archive fallbacks must not be used for active runtime code paths.
 
 ## Permissions
-- The agent may edit any files without asking for permission, except files under any `/archive` directory.
+- The agent may edit any files without asking for permission, except files under any `/archive` directory and files under `system_docs/`.
 
 ## Code removal
 - Remove any legacy code if it is definitely redundant.
@@ -96,16 +104,18 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - This repo has an env sync script: `scripts/uk_aq_sync_github_secrets.sh`.
 - The script syncs `.env` keys to GitHub and packages `.env.supabase` into GitHub secret `SUPABASE_SECRETS_ENV`; ingest Supabase edge deploy workflows apply that payload via `supabase secrets set`.
 
-## Documentation
-- Add a script note to `system_docs/uk_aq_scripts.md` when new scripts are added.
-- Add a per-network doc in `system_docs/` (e.g., `sos.md`) when a new network is introduced.
-- When `supabase/uk_air_quality_schema.sql` changes, update `system_docs/schema-overview.md` to match.
-- When new tables are added, add a matching doc in `system_docs/table_info/`.
-- When new edge functions are added under `supabase/functions/`, update `.github/workflows/supabase_edge_deploy.yml` to deploy them.
-- When edge functions are modified, update `system_docs/uk_aq_edge_functions.md`.
-- When functions or logic change, update the relevant `system_docs/` pages accordingly.
-- `system_docs/` is markdown-only; store data files under `network_info/` in the relevant network directory.
-- Naming for any file/function: single-network uses the network name prefix; all SOS networks use `sos_`; all networks use `uk_aq_`.
+## Documentation Handover
+- Do not modify `system_docs/`; follow the System Documentation Ownership rules above.
+- Include the following required documentation changes in the handover to ChatGPT when applicable:
+  - add a script note to `system_docs/uk_aq_scripts.md` when new scripts are added;
+  - add a per-network document in `system_docs/` when a new network is introduced;
+  - update `system_docs/schema-overview.md` when `supabase/uk_air_quality_schema.sql` changes;
+  - add a matching document in `system_docs/table_info/` when new tables are added;
+  - update `system_docs/uk_aq_edge_functions.md` when edge functions are modified;
+  - update the relevant `system_docs/` pages whenever functions or system behaviour change.
+- When new edge functions are added under `supabase/functions/`, the coding agent must update `.github/workflows/supabase_edge_deploy.yml` itself and hand the corresponding `system_docs/` update to ChatGPT.
+- Tell ChatGPT that `system_docs/` is markdown-only and that data files belong under `network_info/` in the relevant network directory.
+- Preserve the naming rule in the handover: single-network files/functions use the network name prefix; all SOS networks use `sos_`; all networks use `uk_aq_`.
 - DB schemas live outside this repo at `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema/schemas`.
 
 ## Station Name Enrichment
