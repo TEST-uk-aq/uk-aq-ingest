@@ -2,7 +2,7 @@
 
 ## Main Repo
 - `TEST-uk-aq-ops` is the main repo for this project and the default starting point for cross-repo work.
-- Ops repo path: `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-ops`.
+- Ops repo path: `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK.AQ GH Repos/TEST-uk-aq-ops`.
 - Do not inspect or modify any `LIVE` repo unless the user explicitly asks.
 
 ## Codex operating mode
@@ -28,6 +28,19 @@ When database or deployment work is needed, Codex should stop after producing:
 4. expected outputs,
 5. rollback notes,
 6. post-deploy validation checklist.
+
+## TEST System Validation Policy
+
+- This repository is part of the UK AQ TEST system. It is intended for development and real operational testing before changes are transferred to LIVE.
+- Perform as little pre-deployment testing as reasonably possible.
+- Before deployment, run only the smallest fast local check needed to establish that changed code or configuration is structurally viable, such as syntax, type checking, parsing or one directly relevant existing check.
+- Do not create new automated tests by default.
+- Add a targeted test only when it is genuinely needed to protect against a specific high-risk regression that would be difficult to detect through normal TEST operation.
+- Do not run broad test suites, exhaustive edge-case testing, large fixture programmes, shadow comparisons, soak tests or extended validation unless the user explicitly requests them.
+- Functional testing should normally happen after deployment through real operation on the TEST system.
+- For a reversible change, one successful normal operation and one representative output check are generally sufficient.
+- Data deletion, schema safety, message acknowledgement and irreversible operations may require one narrowly targeted check before execution.
+- Do not expand the task solely to improve test coverage.
 
 ## Permission levels
 Unless the prompt says otherwise, use Level 1.
@@ -63,7 +76,7 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - AQ means Air Quality in this project.
 - Use project terminology: "timeseries" (not "sensors") in code, docs, and discussion.
 - For SOS-derived UK networks, use `gov_uk_<network>_` prefixes (e.g., `gov_uk_aurn_`) and place them under `scripts/gov_uk_<network>/`.
-- For non-SOS networks, use the network prefix (e.g., `sensorcommunity_`) and place them under a matching `scripts/<network>/` directory.
+- For non-SOS networm� use the network prefix (e.g., `sensorcommunity_`) and place them under a matching `scripts/<network>/` directory.
 - Connectors represent data sources; SOS networks live in `sos_networks` (use `network_display_name` for UI) and must not be added to `connectors`. Non-SOS connectors are 1:1 with their network.
 - Terminology: `*_ref` = source identifier; `*_code` = internal unique code; `label` = raw source label string; `display_name` = UI-friendly name we curate.
 - LAQN is sourced from ERG (London Air), not GOV.UK; use connector code `erg_laqn` with connector-facing prefixes `erg_laqn_` under `scripts/erg_laqn/`.
@@ -72,11 +85,11 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 
 ## Runtime
 - Use `python3` for all Python scripts and commands.
-- When writing regex patterns, avoid double-escaping (`\\d`) inside raw strings; use `\d` so year matching works correctly.
+- When writing regex patterns, avoid double-escaping (`\\\\d`) inside raw strings; use `\\d` so year matching works correctly.
 - Platform constraint: Supabase Postgres 17 in this project does not support TimescaleDB. Do not suggest TimescaleDB, hypertables, or Timescale compression features; use standard Postgres approaches only.
 
 ## Supabase API
-- `uk_aq_core`, `uk_aq_raw`, and `uk_aq_public` are exposed to PostgREST.
+- `uk_aq_core`, `uk_aq_raw`, and `uk_aq_public` are exposed to PostGREST.
 
 ## Archive
 - Files in `archive/` can be referenced for context but must never be modified once created. Adding new files/directories under `archive/` is allowed.
@@ -98,7 +111,7 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - This project was never completed, so assume all existing code is still relevant.
 
 ## Environment Variables
-- Whenever a new environment variable is added to any repo, add a corresponding row to the master CSV at `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-ops/env-vars-master.csv`. Place it in the correct section, fill in the env var name, default value, and which services require it (GitHub/Supabase/Cloudflare/GCP). Leave the Test Value and Live Value columns blank — the user maintains those.
+- Whenever a new environment variable is added to any repo, add a corresponding row to the master CSV at `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK.AQ GH Repos/TEST-uk-aq-ops/env-vars-master.csv`. Place it in the correct section, fill in the env var name, default value, and which services require it (GitHub/Supabase/Cloudflare/GCP). Leave the Test Value and Live Value columns blank — the user maintains those.
 - Whenever a new env var is added/removed/renamed in ingest workflows or scripts, also update `config/uk_aq_github_env_targets.csv` in this repo so GitHub variable/secret targeting stays correct.
 - Keep `scripts/uk_aq_sync_github_secrets.sh` in sync with the target map and env set; update the script when env handling rules or target behavior changes.
 - This repo has an env sync script: `scripts/uk_aq_sync_github_secrets.sh`.
@@ -109,14 +122,14 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - Include the following required documentation changes in the handover to ChatGPT when applicable:
   - add a script note to `system_docs/uk_aq_scripts.md` when new scripts are added;
   - add a per-network document in `system_docs/` when a new network is introduced;
-  - update `system_docs/schema-overview.md` when `supabase/uk_air_quality_schema.sql` changes;
+  - update `system_docs/schema-overview.md` when `supabase/uk_arr_quality_schema.sql` changes;
   - add a matching document in `system_docs/table_info/` when new tables are added;
   - update `system_docs/uk_aq_edge_functions.md` when edge functions are modified;
   - update the relevant `system_docs/` pages whenever functions or system behaviour change.
 - When new edge functions are added under `supabase/functions/`, the coding agent must update `.github/workflows/supabase_edge_deploy.yml` itself and hand the corresponding `system_docs/` update to ChatGPT.
 - Tell ChatGPT that `system_docs/` is markdown-only and that data files belong under `network_info/` in the relevant network directory.
 - Preserve the naming rule in the handover: single-network files/functions use the network name prefix; all SOS networks use `sos_`; all networks use `uk_aq_`.
-- DB schemas live outside this repo at `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema/schemas`.
+- DB schemas live outside this repo at `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema/schemas/`.
 
 ## Station Name Enrichment
 - Keep enrichment logic centralized in `scripts/uk_aq_enrich_station_names.py` so report scripts stay in sync.
