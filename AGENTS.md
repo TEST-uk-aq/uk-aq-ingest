@@ -72,9 +72,12 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 
 ## Archive
 - Files in `archive/` can be referenced for context but must never be modified once created. Adding new files/directories under `archive/` is allowed.
-- Do not create archive copies for routine/small edits by default.
-- Create archive snapshots before major/high-risk changes (for example: broad refactors, cross-repo updates, schema-shape migrations, or large workflow rewires), and whenever the user explicitly asks.
-- For `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema`, edits are allowed for any file except under `archive/` directories. Archive files are read-only; new files may be added under `archive/` but must never be modified once created.
+- Archive snapshots are restricted to active, non-test implementation code.
+- Never create archive copies for documentation, including anything under `system_docs/`, tests, test fixtures, snapshots, test data, generated outputs, or other non-code files.
+- Do not create archive copies for routine or small code edits by default.
+- Create archive snapshots only before major or high-risk changes to active non-test code, and whenever the user explicitly asks to archive an in-scope code file.
+- Files excluded from archive snapshots rely on Git history and the project’s daily backups.
+- For `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema`, edits are allowed for any file except under `archive/` directories. Archive files are read-only; new in-scope code snapshots may be added under `archive/` but must never be modified once created.
 - The agent has permission to read files under `/Users/mikehinford/Dropbox/Apps/github-uk-air-quality-networks/CIC-Test` (including subdirectories).
 - Archive paths are retired for active execution. Active scripts, workers, services, and runner-path defaults must only target non-archive paths, and archive fallbacks must not be used for active runtime code paths.
 
