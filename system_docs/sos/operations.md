@@ -85,7 +85,7 @@ The Cloud Run worker updates:
 - `uk_aq_core.connectors.last_polled_at` for successful or partial runs;
 - `uk_aq_core.uk_aq_ingest_runs` for persisted attempts;
 - `uk_aq_raw.sos_station_checkpoints` after successful or partial polling;
-- `uk_aq_raw.error_logs` for edge-owned errors and genuine wrapper failures.
+- `uk_aq_raw.error_logs` for edge-owned errors and child-job wrapper failures caught inside `run_job.ts`.
 
 Not-due and claim-not-acquired results are scheduler-level skips and do not create new ingest-run rows. `no_station_refs` and `no_timeseries_ids` retain their persisted skipped-run behaviour.
 
@@ -95,7 +95,7 @@ Not-due and claim-not-acquired results are scheduler-level skips and do not crea
 
 Expected evidence includes:
 
-- outer HTTP 502 or 503;
+- the real upstream HTTP status preserved through Cloud Run, including HTTP 502, or HTTP 503 for a recognised timeout/deadline with no upstream response;
 - `status: upstream_unavailable`;
 - truthful `upstream_status`;
 - `upstream_failure_kind`;
@@ -114,9 +114,15 @@ Expected evidence includes:
 - bounded deadline count and timeseries sample;
 - normal individual records only for non-deadline timeseries failures.
 
-### Wrapper failure
+### Child-job wrapper failure
 
-A process, configuration, persistence or invalid-result failure returns generic HTTP 500 and uses the Cloud Run wrapper error path.
+A process, configuration, persistence or unexpected child-job failure exits non-zero, returns generic HTTP 500 and uses the `run_job.ts` catch path. That path attempts connector failure persistence, a wrapper-owned error row and optional Dropbox error JSON.
+
+### Result-contract failure
+
+A code-zero child with an empty or invalid result file returns HTTP 500 with `missing_child_result` or `invalid_child_result`.
+
+This branch is detected by `run_service.ts` after the child has exited successfully. It is visible in the service response and Cloud Run request logs, but it does not pass through the child-job catch path and therefore does not by itself guarantee a new database error row or Dropbox error JSON.
 
 ## Logging
 
