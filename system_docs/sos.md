@@ -1,5 +1,9 @@
 # UK-AIR SOS Network
 
+This document remains authoritative for UK-AIR SOS source discovery, filters, station metadata, site-register loading, archive mapping and network assignment.
+
+Current observation-polling, Cloud Run response and failure behaviour is authoritative under [`system_docs/sos/`](sos/README.md). Do not duplicate that contract here.
+
 UK-AIR SOS phenomena are written through the central
 `uk_aq_public.uk_aq_rpc_phenomena_upsert` function by both discovery paths.
 Verified Eionet source URIs are seeded as authoritative mappings. A new URI
@@ -98,6 +102,11 @@ It does not update `stations.station_name` (station metadata comes from the inge
 Both edge and Cloud Run polling paths only select active rows (`timeseries.ended_at is null`).
 Pollutant filters now match canonical observed-property codes/display names (via `phenomena.observed_property_id -> observed_properties`) with fallback to legacy `notation`/`label`/`source_label`.
 
+The authoritative polling, partial-run and upstream-failure rules are in:
+
+- [`sos/contract.md`](sos/contract.md)
+- [`sos/interfaces.md`](sos/interfaces.md)
+
 ## Timeseries lifecycle reconciliation
 - Daily full-catalog UK-AIR discovery (`scripts/sos/sos_ingest.py --discover` when timeseries are not station-scoped) is the source of truth for timeseries lifecycle.
 - `timeseries.last_catalog_seen_at` stores the last discovery run where the source `timeseries_ref` was present.
@@ -112,7 +121,14 @@ Pollutant filters now match canonical observed-property codes/display names (via
   - selector RPC: `uk_aq_core.sos_select_station_refs(batch_limit, stale_limit)`
   - table: `uk_aq_raw.sos_station_checkpoints`
 - Flow: select due stations -> resolve scoped timeseries ids -> call `ingest_sos` once with `timeseries_ids`.
-- Edge behavior stays unchanged; the edge path still uses `sos_timeseries_checkpoints`.
+- Edge behaviour stays unchanged; the edge path still uses `sos_timeseries_checkpoints`.
+
+Authoritative Cloud Run behaviour and operation is documented in:
+
+- [`sos/contract.md`](sos/contract.md)
+- [`sos/interfaces.md`](sos/interfaces.md)
+- [`sos/operations.md`](sos/operations.md)
+- [`sos/validation.md`](sos/validation.md)
 
 Environment variables (Supabase secrets):
 - `SB_SUPABASE_URL`
