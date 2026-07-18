@@ -70,24 +70,36 @@ A recognised dependency failure requires:
 
 A recognised dependency failure MUST:
 
-- retain HTTP 502 or 503 through the outer Cloud Run service;
+- retain the actual upstream HTTP status through the outer Cloud Run service, including HTTP 502;
+- retain HTTP 503 for a recognised timeout or deadline with no upstream response;
 - persist the connector and ingest-run result as `failed` with a meaningful upstream message;
 - retain the bounded diagnostic fields in the Cloud Run response;
 - avoid the generic Cloud Run wrapper exception path;
 - avoid a second wrapper-owned `error_logs` row or Dropbox error JSON for the same dependency incident.
 
-An arbitrary HTTP 502 or 503 response without the validated structured contract MUST NOT be treated as a recognised dependency result.
+An arbitrary HTTP error response without the validated structured contract MUST NOT be treated as a recognised dependency result.
 
 ## Wrapper and local failures
 
-Failures in Cloud Run process startup, local service startup, configuration, malformed ingest output, persistence or unexpected wrapper code are wrapper failures.
+Failures in Cloud Run process startup, local service startup, configuration, malformed ingest output, persistence or unexpected child-job code are child-job wrapper failures.
 
-Wrapper failures MUST:
+A child-job wrapper failure MUST:
 
-- exit the child job non-zero;
+- exit the child process non-zero;
 - return generic HTTP 500 from the outer service;
-- use the existing wrapper error logging path;
-- never be reclassified as an upstream availability failure merely because an HTTP status resembles 502 or 503.
+- use the existing `run_job.ts` catch path, which attempts connector failure persistence, a wrapper-owned `error_logs` row and optional Dropbox error JSON;
+- never be reclassified as an upstream availability failure merely because an HTTP status resembles an upstream error.
+
+A separate result-contract failure exists when the child exits with code 0 but leaves the temporary result file empty, malformed or invalid.
+
+A result-contract failure MUST:
+
+- return HTTP 500 from `run_service.ts`;
+- use `missing_child_result` for an empty result and `invalid_child_result` for malformed or schema-invalid content;
+- never be reported as HTTP 200 merely because the child exit code was zero;
+- rely on the Cloud Run service response and platform request logs for immediate evidence unless separate outer-service logging is added later.
+
+A result-contract failure does not pass through the `run_job.ts` catch path and therefore does not by itself guarantee a new database `error_logs` row or Dropbox error JSON.
 
 ## Runtime-budget behaviour
 
