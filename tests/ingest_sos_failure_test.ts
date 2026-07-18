@@ -8,8 +8,11 @@ import {
 } from "../supabase/functions/ingest_sos/failure.ts";
 import {
   buildSosCloudRunChildResult,
+  buildSosCloudRunSkippedResult,
+  decideSosCloudRunServiceResult,
   isCompletedSosChildResponse,
   isRecognizedSosDependencyFailure,
+  isSosCloudRunChildResult,
 } from "../workers/uk_aq_sos_cloud_run/result_contract.ts";
 
 Deno.test("SOS probe maps timeout failures without an upstream response to 503", () => {
@@ -205,5 +208,86 @@ Deno.test("SOS Cloud Run keeps local failures generic and preserves partial runt
     throw new Error(
       `Partial result was not retained: ${JSON.stringify(result)}`,
     );
+  }
+});
+
+Deno.test("SOS Cloud Run writes and accepts compact results for every skipped outcome", () => {
+  for (
+    const reason of [
+      "poll_disabled",
+      "claim_not_acquired",
+      "no_station_refs",
+      "no_timeseries_ids",
+    ]
+  ) {
+    const result = buildSosCloudRunSkippedResult(reason, 42);
+    if (
+      !isSosCloudRunChildResult(result) || result.httpStatus !== 200 ||
+      result.payload.ok !== true || result.payload.status !== "skipped" ||
+      result.payload.reason !== reason || result.payload.connector_id !== 42
+    ) {
+      throw new Error(`Skipped result was invalid: ${JSON.stringify(result)}`);
+    }
+  }
+});
+
+Deno.test("SOS Cloud Run service fails closed when a successful child has no valid result", () => {
+  const valid = buildSosCloudRunSkippedResult("poll_disabled");
+  const validDecision = decideSosCloudRunServiceResult(
+    true,
+    0,
+    valid,
+    "valid",
+  );
+  if (
+    validDecision.httpStatus !== 200 ||
+    validDecision.payload.status !== "skipped"
+  ) {
+    throw new Error(
+      `Valid child result was not returned: ${JSON.stringify(validDecision)}`,
+    );
+  }
+
+  const missingDecision = decideSosCloudRunServiceResult(
+    true,
+    0,
+    null,
+    "missing",
+  );
+  const invalidDecision = decideSosCloudRunServiceResult(
+    true,
+    0,
+    null,
+    "invalid",
+  );
+  const failedDecision = decideSosCloudRunServiceResult(
+    false,
+    1,
+    null,
+    "missing",
+  );
+  if (
+    missingDecision.httpStatus !== 500 ||
+    missingDecision.payload.error !== "missing_child_result" ||
+    invalidDecision.httpStatus !== 500 ||
+    invalidDecision.payload.error !== "invalid_child_result" ||
+    failedDecision.httpStatus !== 500 || failedDecision.payload.ok !== false
+  ) {
+    throw new Error("Cloud Run service did not fail closed");
+  }
+
+  if (
+    isSosCloudRunChildResult({ httpStatus: 200 }) ||
+    isSosCloudRunChildResult({ httpStatus: 200, payload: {} }) ||
+    isSosCloudRunChildResult({
+      httpStatus: 200,
+      payload: {
+        ok: true,
+        status: "skipped",
+        run_status: "skipped",
+      },
+    })
+  ) {
+    throw new Error("Malformed child result was incorrectly accepted");
   }
 });

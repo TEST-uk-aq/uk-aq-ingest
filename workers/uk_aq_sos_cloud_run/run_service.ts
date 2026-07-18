@@ -1,6 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import {
+  decideSosCloudRunServiceResult,
   isSosCloudRunChildResult,
+  type SosCloudRunResultReadState,
   type SosCloudRunChildResult,
 } from "./result_contract.ts";
 
@@ -75,12 +77,20 @@ async function runJob(
   return await child.status;
 }
 
-async function readChildResult(path: string): Promise<SosCloudRunChildResult | null> {
+async function readChildResult(
+  path: string,
+): Promise<{ result: SosCloudRunChildResult | null; state: SosCloudRunResultReadState }> {
   try {
-    const parsed = JSON.parse(await Deno.readTextFile(path));
-    return isSosCloudRunChildResult(parsed) ? parsed : null;
+    const content = await Deno.readTextFile(path);
+    if (!content.trim()) {
+      return { result: null, state: "missing" };
+    }
+    const parsed = JSON.parse(content);
+    return isSosCloudRunChildResult(parsed)
+      ? { result: parsed, state: "valid" }
+      : { result: null, state: "invalid" };
   } catch {
-    return null;
+    return { result: null, state: "invalid" };
   }
 }
 
@@ -137,30 +147,24 @@ serve(async (req: Request) => {
   try {
     resultPath = await Deno.makeTempFile({ prefix: "uk-aq-sos-result-" });
     const status = await runJob(triggerMode, currentTaskName, resultPath);
-    const childResult = status.success ? await readChildResult(resultPath) : null;
-    if (childResult) {
-      return new Response(
-        JSON.stringify({
-          ...childResult.payload,
-          trigger_mode: triggerMode,
-          current_task_name: currentTaskName,
-          code: status.code,
-        }),
-        {
-          status: childResult.httpStatus,
-          headers: { "content-type": "application/json" },
-        },
-      );
-    }
+    const childRead = status.success
+      ? await readChildResult(resultPath)
+      : { result: null, state: "missing" as const };
+    const serviceResult = decideSosCloudRunServiceResult(
+      status.success,
+      status.code,
+      childRead.result,
+      childRead.state,
+    );
     return new Response(
       JSON.stringify({
-        ok: status.success,
+        ...serviceResult.payload,
         trigger_mode: triggerMode,
         current_task_name: currentTaskName,
         code: status.code,
       }),
       {
-        status: status.success ? 200 : 500,
+        status: serviceResult.httpStatus,
         headers: { "content-type": "application/json" },
       },
     );

@@ -5,6 +5,7 @@ import {
 } from "../shared/dropbox_error_log.ts";
 import {
   buildSosCloudRunChildResult,
+  buildSosCloudRunSkippedResult,
   describeSosDependencyFailure,
   isCompletedSosChildResponse,
   isRecognizedSosDependencyFailure,
@@ -1164,6 +1165,12 @@ async function main(): Promise<void> {
   const connector = await loadConnector();
   const due = evaluateDue(connector, now);
   if (!due.due) {
+    await writeChildResult(
+      buildSosCloudRunSkippedResult(
+        due.reason,
+        toIntegerOrNull(connector?.id),
+      ),
+    );
     logSummary("skipped", {
       reason: due.reason,
       interval_minutes: due.intervalMinutes,
@@ -1176,6 +1183,13 @@ async function main(): Promise<void> {
 
   const claim = await claimConnector(runStartedAtIso);
   if (!claim || claim.claimed !== true) {
+    await writeChildResult(
+      buildSosCloudRunSkippedResult(
+        "claim_not_acquired",
+        toIntegerOrNull(claim?.connector_id) ??
+          toIntegerOrNull(connector?.id),
+      ),
+    );
     logSummary("skipped", {
       reason: "claim_not_acquired",
       claim,
@@ -1198,6 +1212,9 @@ async function main(): Promise<void> {
 
     if (!payloadPlan.stationRows.length) {
       await recordSkippedRun(connectorId, runStartedAtIso, "no_station_refs");
+      await writeChildResult(
+        buildSosCloudRunSkippedResult("no_station_refs", connectorId),
+      );
       logSummary("skipped", {
         reason: "no_station_refs",
         connector_id: connectorId,
@@ -1209,6 +1226,9 @@ async function main(): Promise<void> {
 
     if (!payloadPlan.timeseriesIds.length) {
       await recordSkippedRun(connectorId, runStartedAtIso, "no_timeseries_ids");
+      await writeChildResult(
+        buildSosCloudRunSkippedResult("no_timeseries_ids", connectorId),
+      );
       logSummary("skipped", {
         reason: "no_timeseries_ids",
         connector_id: connectorId,
