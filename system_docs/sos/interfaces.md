@@ -106,11 +106,11 @@ The service MUST NOT parse arbitrary child stdout or logs as a result fallback.
 |---|---|
 | 200 | Successful complete result or intentional skip. |
 | 207 | Partial ingest, including a genuine runtime-budget stop. |
-| 502 | Real upstream HTTP 502 preserved through the recognised dependency contract. |
+| Real upstream status | Preserved when the failure kind is `http` and the structured dependency contract is valid. HTTP 502 is the common gateway-failure example. |
 | 503 | Probe request timeout or runtime deadline where no upstream HTTP response was received. |
 | 500 | Wrapper, local, unknown or invalid-result failure. |
 
-A 502 or 503 is recognised as a dependency result only when the structured body passes the validation rules in [`contract.md`](contract.md).
+An upstream HTTP error or a timeout-derived HTTP 503 is recognised as a dependency result only when the structured body passes the validation rules in [`contract.md`](contract.md).
 
 ## Temporary-file lifecycle
 
