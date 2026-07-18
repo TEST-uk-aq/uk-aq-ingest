@@ -1080,6 +1080,9 @@ export async function dispatchDueJobsForWindow(store, jobs, env, windowStartMs, 
         job_key: job.job_key,
         coalesced_due_slot_count: allDueTimes.length,
         due_at: latestDueAt,
+        earliest_due_at: allDueTimes[0],
+        selected_latest_due_at: latestDueAt,
+        older_slots_coalesced: allDueTimes.length - 1,
       });
     }
 

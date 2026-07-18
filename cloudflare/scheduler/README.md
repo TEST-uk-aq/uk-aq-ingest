@@ -33,9 +33,8 @@ The config-sync workflow validates pull requests and applies idempotent upserts
 after changes reach `main`. Deployment-managed Cloud Run URLs are preserved by
 normal config syncs and are reconciled by each service deployment.
 
-All five initial jobs are deliberately `dry_run = true`. Change jobs to real
-dispatch only after the Worker, D1 rows, service URL, and service authentication
-have been verified.
+The current manifest mixes live dispatches with dry-run safeguards. OpenAQ
+safety and SOS remain `dry_run = true`; the other enabled jobs dispatch live.
 
 ## Local validation
 
