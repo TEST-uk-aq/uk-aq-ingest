@@ -1,6 +1,8 @@
 # UK-AIR SOS Ingest Flow
 
-This page summarizes how SOS data lands in tables and how stations map to multiple networks.
+This page summarises how SOS data lands in tables and how stations map to multiple networks.
+
+It remains the high-level data-flow document during the gradual SOS documentation migration. Current polling, Cloud Run result and failure behaviour is authoritative under [`system_docs/sos/`](sos/README.md).
 
 ## Key Tables
 - `connectors`: data sources. UK-AIR SOS is one connector.
@@ -42,10 +44,46 @@ This page summarizes how SOS data lands in tables and how stations map to multip
    - Validates the station's scalar `network_id` against `networks.id`.
 
 ## Polling Flow (Observations)
-- 15-minute polling uses `timeseries_ref` to resolve `timeseries.id`.
-- Each sample is stored in `observations` keyed by `connector_id` + `timeseries_id` + `observed_at`.
-- Edge path: `sos_timeseries_checkpoints` records `last_polled_at` so the dispatcher rotates timeseries batches.
-- Cloud Run path: `sos_station_checkpoints` records station due-state and lag samples; station refs are selected first, then scoped timeseries are polled.
+
+### Edge path
+
+```text
+Cloudflare scheduler
+  -> uk_aq_dispatch_polls
+  -> ingest_sos
+  -> observations and timeseries last-value state
+```
+
+- `sos_timeseries_checkpoints` records `last_polled_at` so the dispatcher rotates timeseries batches.
+- The dispatcher passes internal `timeseries.id` values into `ingest_sos`.
+
+### Cloud Run path
+
+```text
+Google Cloud Scheduler or configured external trigger
+  -> Cloud Run run_service.ts
+  -> unique temporary child-result file
+  -> run_job.ts
+  -> select due station refs
+  -> resolve scoped internal timeseries IDs
+  -> local ingest_sos process
+  -> connector and ingest-run persistence
+  -> bounded child result
+  -> run_service.ts returns the declared HTTP status
+```
+
+- `sos_station_checkpoints` records station due-state and lag samples.
+- The child writes a result for every intentional successful exit, including skips.
+- A successful child with an empty or invalid result fails closed as HTTP 500.
+- Recognised upstream dependency failures preserve HTTP 502 or 503 without creating a duplicate wrapper error.
+- Runtime-budget stops return a partial HTTP 207 result with one consolidated run-level error.
+
+The detailed authority for these rules is:
+
+- [`sos/contract.md`](sos/contract.md)
+- [`sos/interfaces.md`](sos/interfaces.md)
+- [`sos/operations.md`](sos/operations.md)
+- [`sos/validation.md`](sos/validation.md)
 
 ## Why Coordinate Matching Exists
 - UK-AIR register is keyed by `uk_air_ref`, but SOS metadata does not always include it.
