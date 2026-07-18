@@ -9,13 +9,18 @@ Cloud Run services.
 - D1 database: `uk_aq_cron_scheduler_ingest_db`
 - D1 binding: `SCHEDULER_DB`
 - Cloudflare cron: `* * * * *`
-- Dispatch lead: one minute
-- Worker secret: `UK_AQ_EDGE_UPSTREAM_SECRET`
+- Dispatch lead: 30 seconds
+- Worker secrets: `UK_AQ_EDGE_UPSTREAM_SECRET` and
+  `UK_AQ_SCHEDULER_TRIGGER_SECRET`
 
 The Worker reads enabled jobs from `scheduler_jobs`, claims each `(job_key,
 due_at)` once, and records scheduler runs and dispatch results in D1. Cloud Run
 requests include `x-uk-aq-dispatch-secret`; secret values are never read from
 `jobs.toml` or D1.
+
+Cloudflare cron and authenticated `POST /run-if-due` calls share an atomic D1
+UTC-minute claim. A duplicate trigger returns a bounded `already_claimed`
+response and does not evaluate jobs or dispatch targets.
 
 ## Configuration
 

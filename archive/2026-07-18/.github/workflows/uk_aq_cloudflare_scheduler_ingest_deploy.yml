@@ -25,7 +25,6 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || '' }}
       UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT: ${{ secrets.UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT || '' }}
       UK_AQ_EDGE_UPSTREAM_SECRET: ${{ secrets.UK_AQ_EDGE_UPSTREAM_SECRET || '' }}
-      UK_AQ_SCHEDULER_TRIGGER_SECRET: ${{ secrets.UK_AQ_SCHEDULER_TRIGGER_SECRET || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,10 +48,6 @@ jobs:
             echo "Missing secret UK_AQ_EDGE_UPSTREAM_SECRET."
             exit 1
           fi
-          if [ -z "${UK_AQ_SCHEDULER_TRIGGER_SECRET}" ]; then
-            echo "Missing secret UK_AQ_SCHEDULER_TRIGGER_SECRET."
-            exit 1
-          fi
 
       - name: Validate scheduler files
         run: |
@@ -64,7 +59,6 @@ jobs:
             cloudflare/scheduler/README.md \
             cloudflare/scheduler/migrations/0001_scheduler_schema.sql \
             cloudflare/scheduler/migrations/0002_blondon_nodes_staged_response.sql \
-            cloudflare/scheduler/migrations/0003_scheduler_minute_slot_claim.sql \
             cloudflare/scheduler/seeds/0001_cloud_run_jobs.sql
           do
             if [ ! -f "${path}" ]; then
@@ -117,8 +111,7 @@ jobs:
           secrets_json="$(jq -n \
             --arg UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT "${UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT}" \
             --arg UK_AQ_EDGE_UPSTREAM_SECRET "${UK_AQ_EDGE_UPSTREAM_SECRET}" \
-            --arg UK_AQ_SCHEDULER_TRIGGER_SECRET "${UK_AQ_SCHEDULER_TRIGGER_SECRET}" \
-            '{UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT: $UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT, UK_AQ_EDGE_UPSTREAM_SECRET: $UK_AQ_EDGE_UPSTREAM_SECRET, UK_AQ_SCHEDULER_TRIGGER_SECRET: $UK_AQ_SCHEDULER_TRIGGER_SECRET} | with_entries(select(.value != ""))')"
+            '{UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT: $UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT, UK_AQ_EDGE_UPSTREAM_SECRET: $UK_AQ_EDGE_UPSTREAM_SECRET} | with_entries(select(.value != ""))')"
           printf '%s' "$secrets_json" | npx --yes wrangler@4 secret bulk --name uk-aq-cron-scheduler-ingest
 
       - name: Redeploy worker

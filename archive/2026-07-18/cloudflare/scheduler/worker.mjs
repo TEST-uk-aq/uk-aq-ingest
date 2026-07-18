@@ -9,15 +9,6 @@ export const DISPATCH_LEAD_MINUTES = 0.5;
 export const DISPATCH_LEAD_MS = DISPATCH_LEAD_MINUTES * MINUTE_MS;
 export const RESPONSE_PREVIEW_LIMIT = 1_000;
 export const GITHUB_USER_AGENT = "uk-aq-cloudflare-cron-scheduler";
-export const TRIGGER_SOURCE_CLOUDFLARE_CRON = "cloudflare_cron";
-export const TRIGGER_SOURCE_EXTERNAL_WATCHDOG = "external_watchdog";
-
-const SCHEDULER_TRIGGER_HEADER = "x-uk-aq-scheduler-trigger";
-const SCHEDULER_TRIGGER_SECRET_MAX_LENGTH = 512;
-const ALLOWED_TRIGGER_SOURCES = new Set([
-  TRIGGER_SOURCE_CLOUDFLARE_CRON,
-  TRIGGER_SOURCE_EXTERNAL_WATCHDOG,
-]);
 export const BLONDON_NODES_JOB_KEY = "uk_aq_blondon_nodes";
 export const BLONDON_NODES_RESPONSE_WAIT_MS = 90_000;
 export const BLONDON_NODES_RECONCILE_AFTER_MS = [
@@ -56,39 +47,6 @@ const DOW_NAME_TO_NUMBER = Object.freeze({
 
 function trimText(value) {
   return String(value ?? "").trim();
-}
-
-function boundedText(value, maxLength) {
-  const text = trimText(value);
-  return text && text.length <= maxLength ? text : "";
-}
-
-export function canonicalMinuteSlot(nowMs) {
-  const timestamp = Number(nowMs);
-  if (!Number.isFinite(timestamp)) {
-    throw new Error("Invalid scheduler invocation time");
-  }
-  return nowIso(Math.floor(timestamp / MINUTE_MS) * MINUTE_MS);
-}
-
-function normalizeTriggerSource(value) {
-  const source = boundedText(value, 64);
-  if (!ALLOWED_TRIGGER_SOURCES.has(source)) {
-    throw new Error("Invalid scheduler trigger source");
-  }
-  return source;
-}
-
-async function hasValidSchedulerTriggerSecret(request, env) {
-  const provided = boundedText(
-    request.headers.get(SCHEDULER_TRIGGER_HEADER),
-    SCHEDULER_TRIGGER_SECRET_MAX_LENGTH,
-  );
-  const expected = boundedText(
-    await readSecret(env?.UK_AQ_SCHEDULER_TRIGGER_SECRET),
-    SCHEDULER_TRIGGER_SECRET_MAX_LENGTH,
-  );
-  return Boolean(provided && expected && provided === expected);
 }
 
 function isPlainObject(value) {
@@ -397,31 +355,26 @@ export function createSchedulerStore(db) {
   const schedulerDb = requireD1Db(db);
 
   return {
-    async getLatestFinishedRun(schedulerName, minuteSlot) {
+    async getPreviousRun(schedulerName, startedAtIso) {
       return dbFirst(
         schedulerDb,
         `
-          select id, scheduler_name, started_at, evaluation_window_end
+          select id, scheduler_name, started_at
           from scheduler_runs
-          where scheduler_name = ?
-            and status = 'finished'
-            and evaluation_window_end is not null
-            and evaluation_window_end < ?
-          order by evaluation_window_end desc, id desc
+          where scheduler_name = ? and started_at < ?
+          order by started_at desc
           limit 1
         `,
-        [schedulerName, minuteSlot],
+        [schedulerName, startedAtIso],
       );
     },
 
-    async claimMinute(run) {
+    async insertRun(run) {
       const result = await dbRun(
         schedulerDb,
         `
-          insert or ignore into scheduler_runs (
+          insert into scheduler_runs (
             scheduler_name,
-            minute_slot,
-            trigger_source,
             started_at,
             status,
             previous_run_started_at,
@@ -433,12 +386,10 @@ export function createSchedulerStore(db) {
             jobs_dispatched,
             jobs_failed,
             error_message
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           run.scheduler_name,
-          run.minute_slot,
-          run.trigger_source,
           run.started_at,
           run.status,
           run.previous_run_started_at,
@@ -452,33 +403,7 @@ export function createSchedulerStore(db) {
           run.error_message,
         ],
       );
-      if (Number(result?.meta?.changes ?? 0) > 0) {
-        return {
-          claimed: true,
-          scheduler_run_id: Number(result?.meta?.last_row_id ?? 0) || null,
-          run_status: "started",
-          trigger_source: run.trigger_source,
-        };
-      }
-      const existing = await dbFirst(
-        schedulerDb,
-        `
-          select id, status, trigger_source
-          from scheduler_runs
-          where scheduler_name = ? and minute_slot = ?
-          limit 1
-        `,
-        [run.scheduler_name, run.minute_slot],
-      );
-      if (!existing) {
-        throw new Error("Scheduler minute claim was not recorded");
-      }
-      return {
-        claimed: false,
-        scheduler_run_id: Number(existing.id) || null,
-        run_status: boundedText(existing.status, 64) || "unknown",
-        trigger_source: boundedText(existing.trigger_source, 64) || null,
-      };
+      return Number(result?.meta?.last_row_id ?? 0) || null;
     },
 
     async listEnabledJobs() {
@@ -1154,47 +1079,31 @@ export async function dispatchDueJobsForWindow(store, jobs, env, windowStartMs, 
   return summary;
 }
 
-export async function runScheduler(
-  store,
-  env = {},
-  nowMs = Date.now(),
-  schedulerName = SCHEDULER_NAME,
-  triggerSource = TRIGGER_SOURCE_CLOUDFLARE_CRON,
-) {
+export async function runScheduler(store, env = {}, nowMs = Date.now(), schedulerName = SCHEDULER_NAME) {
   const startedAtMs = Number(nowMs);
   if (!Number.isFinite(startedAtMs)) {
     throw new Error("Invalid scheduler invocation time");
   }
 
   const startedAt = nowIso(startedAtMs);
-  const minuteSlot = canonicalMinuteSlot(startedAtMs);
-  const minuteSlotMs = Date.parse(minuteSlot);
-  const normalizedTriggerSource = normalizeTriggerSource(triggerSource);
-  const previousRun = await store.getLatestFinishedRun(schedulerName, minuteSlot);
+  const previousRun = await store.getPreviousRun(schedulerName, startedAt);
   const previousRunStartedAt = previousRun?.started_at ? trimText(previousRun.started_at) : null;
-  const previousEvaluationWindowEnd = previousRun?.evaluation_window_end
-    ? trimText(previousRun.evaluation_window_end)
-    : null;
-  const previousEvaluationWindowEndMs = previousEvaluationWindowEnd
-    ? Date.parse(previousEvaluationWindowEnd)
-    : null;
-  if (previousEvaluationWindowEnd && !Number.isFinite(previousEvaluationWindowEndMs)) {
-    throw new Error(`Invalid previous scheduler evaluation window: ${previousEvaluationWindowEnd}`);
+  const previousRunStartedAtMs = previousRunStartedAt ? Date.parse(previousRunStartedAt) : null;
+  if (previousRunStartedAt && !Number.isFinite(previousRunStartedAtMs)) {
+    throw new Error(`Invalid previous scheduler run timestamp: ${previousRunStartedAt}`);
   }
-  const evaluationWindowStartMs = Number.isFinite(previousEvaluationWindowEndMs)
-    ? previousEvaluationWindowEndMs
-    : minuteSlotMs - DEFAULT_LOOKBACK_MINUTES * MINUTE_MS;
+  const evaluationWindowStartMs = Number.isFinite(previousRunStartedAtMs)
+    ? previousRunStartedAtMs
+    : startedAtMs - DEFAULT_LOOKBACK_MINUTES * MINUTE_MS;
   const evaluationWindowStart = nowIso(evaluationWindowStartMs);
 
-  const minuteClaim = await store.claimMinute({
+  const runId = await store.insertRun({
     scheduler_name: schedulerName,
-    minute_slot: minuteSlot,
-    trigger_source: normalizedTriggerSource,
     started_at: startedAt,
     status: "started",
     previous_run_started_at: previousRunStartedAt,
     evaluation_window_start: evaluationWindowStart,
-    evaluation_window_end: minuteSlot,
+    evaluation_window_end: startedAt,
     jobs_checked: 0,
     jobs_due: 0,
     jobs_claimed: 0,
@@ -1202,39 +1111,16 @@ export async function runScheduler(
     jobs_failed: 0,
     error_message: null,
   });
-  if (!minuteClaim.claimed) {
-    logJson(WORKER_NAME, "scheduler_run_already_claimed", {
-      scheduler_name: schedulerName,
-      scheduler_run_id: minuteClaim.scheduler_run_id,
-      minute_slot: minuteSlot,
-      trigger_source: normalizedTriggerSource,
-      claimed_trigger_source: minuteClaim.trigger_source,
-      run_status: minuteClaim.run_status,
-    });
-    return {
-      scheduler_run_id: minuteClaim.scheduler_run_id,
-      scheduler_name: schedulerName,
-      minute_slot: minuteSlot,
-      trigger_source: normalizedTriggerSource,
-      claimed_trigger_source: minuteClaim.trigger_source,
-      run_status: minuteClaim.run_status,
-      status: "already_claimed",
-    };
-  }
-
-  const runId = minuteClaim.scheduler_run_id;
   if (runId === null || runId === undefined) {
-    throw new Error("Failed to claim scheduler minute");
+    throw new Error("Failed to insert scheduler run row");
   }
 
   logJson(WORKER_NAME, "scheduler_run_started", {
     scheduler_name: schedulerName,
     scheduler_run_id: runId,
-    minute_slot: minuteSlot,
-    trigger_source: normalizedTriggerSource,
     previous_run_started_at: previousRunStartedAt,
     evaluation_window_start: evaluationWindowStart,
-    evaluation_window_end: minuteSlot,
+    evaluation_window_end: startedAt,
   });
 
   try {
@@ -1245,7 +1131,7 @@ export async function runScheduler(
       jobs,
       env,
       evaluationWindowStartMs,
-      minuteSlotMs,
+      startedAtMs,
       { scheduler_run_id: runId },
     );
 
@@ -1254,7 +1140,7 @@ export async function runScheduler(
       finished_at: nowIso(Date.now()),
       previous_run_started_at: previousRunStartedAt,
       evaluation_window_start: evaluationWindowStart,
-      evaluation_window_end: minuteSlot,
+      evaluation_window_end: startedAt,
       jobs_checked: summary.jobs_checked,
       jobs_due: summary.jobs_due,
       jobs_claimed: summary.jobs_claimed,
@@ -1267,11 +1153,9 @@ export async function runScheduler(
       scheduler_name: schedulerName,
       scheduler_run_id: runId,
       status: "finished",
-      minute_slot: minuteSlot,
-      trigger_source: normalizedTriggerSource,
       previous_run_started_at: previousRunStartedAt,
       evaluation_window_start: evaluationWindowStart,
-      evaluation_window_end: minuteSlot,
+      evaluation_window_end: startedAt,
       jobs_checked: summary.jobs_checked,
       jobs_due: summary.jobs_due,
       jobs_claimed: summary.jobs_claimed,
@@ -1283,14 +1167,11 @@ export async function runScheduler(
       scheduler_run_id: runId,
       scheduler_name: schedulerName,
       started_at: startedAt,
-      minute_slot: minuteSlot,
-      trigger_source: normalizedTriggerSource,
       previous_run_started_at: previousRunStartedAt,
       evaluation_window_start: evaluationWindowStart,
-      evaluation_window_end: minuteSlot,
+      evaluation_window_end: startedAt,
       ...summary,
-      run_status: "finished",
-      status: "triggered",
+      status: "finished",
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1300,7 +1181,7 @@ export async function runScheduler(
         finished_at: nowIso(Date.now()),
         previous_run_started_at: previousRunStartedAt,
         evaluation_window_start: evaluationWindowStart,
-        evaluation_window_end: minuteSlot,
+        evaluation_window_end: startedAt,
         jobs_checked: 0,
         jobs_due: 0,
         jobs_claimed: 0,
@@ -1316,11 +1197,9 @@ export async function runScheduler(
       scheduler_name: schedulerName,
       scheduler_run_id: runId,
       status: "failed",
-      minute_slot: minuteSlot,
-      trigger_source: normalizedTriggerSource,
       previous_run_started_at: previousRunStartedAt,
       evaluation_window_start: evaluationWindowStart,
-      evaluation_window_end: minuteSlot,
+      evaluation_window_end: startedAt,
       reason: message,
     });
 
@@ -1335,46 +1214,11 @@ function getSchedulerStoreFromEnv(env) {
 export default {
   async scheduled(controller, env, ctx) {
     const scheduledTime = Number(controller?.scheduledTime ?? Date.now());
-    ctx.waitUntil(
-      runScheduler(
-        getSchedulerStoreFromEnv(env),
-        env,
-        scheduledTime,
-        SCHEDULER_NAME,
-        TRIGGER_SOURCE_CLOUDFLARE_CRON,
-      ),
-    );
+    ctx.waitUntil(runScheduler(getSchedulerStoreFromEnv(env), env, scheduledTime));
   },
 
-  async fetch(request, env) {
+  async fetch(request) {
     const url = new URL(request.url);
-    if (url.pathname === "/run-if-due") {
-      if (request.method !== "POST") {
-        return new Response("Method not allowed", { status: 405 });
-      }
-      if (!await hasValidSchedulerTriggerSecret(request, env)) {
-        return jsonResponse({ ok: false, error: "unauthorized" }, 401);
-      }
-      const invokedAtMs = Date.now();
-      try {
-        const result = await runScheduler(
-          getSchedulerStoreFromEnv(env),
-          env,
-          invokedAtMs,
-          SCHEDULER_NAME,
-          TRIGGER_SOURCE_EXTERNAL_WATCHDOG,
-        );
-        return jsonResponse({ ok: true, ...result });
-      } catch {
-        return jsonResponse({
-          ok: false,
-          status: "failed",
-          scheduler_name: SCHEDULER_NAME,
-          trigger_source: TRIGGER_SOURCE_EXTERNAL_WATCHDOG,
-          minute_slot: canonicalMinuteSlot(invokedAtMs),
-        }, 500);
-      }
-    }
     if (url.pathname !== "/" && url.pathname !== "/health") {
       return new Response("Not found", { status: 404 });
     }
