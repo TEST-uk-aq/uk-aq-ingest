@@ -3,6 +3,13 @@ import {
   normalizeDropboxPath,
   uploadErrorLogJsonToDropbox,
 } from "../shared/dropbox_error_log.ts";
+import {
+  buildSosCloudRunChildResult,
+  describeSosDependencyFailure,
+  isCompletedSosChildResponse,
+  isRecognizedSosDependencyFailure,
+  type SosCloudRunChildResult,
+} from "./result_contract.ts";
 
 const CONNECTOR_CODE =
   (Deno.env.get("SOS_CONNECTOR_CODE") || "sos").trim();
@@ -79,6 +86,7 @@ const DROPBOX_ERROR_FOLDER = (
 const CHECKPOINT_WARMUP_SECONDS = 5 * 60;
 const CHECKPOINT_BASE_PERIOD_SECONDS = 60 * 60;
 const CHECKPOINT_LAG_SAMPLE_MAX = 50;
+const SOS_RUN_RESULT_PATH = (Deno.env.get("SOS_RUN_RESULT_PATH") ?? "").trim();
 
 type IngestResponse = {
   ok: boolean;
@@ -785,6 +793,14 @@ function deriveRunSummary(ingestResponse: IngestResponse): {
     runStatus = "partial";
   }
 
+  if (isRecognizedSosDependencyFailure(ingestResponse)) {
+    return {
+      runStatus: "failed",
+      runMessage: describeSosDependencyFailure(ingestResponse),
+      payload,
+    };
+  }
+
   let runMessage = toStringOrNull(payload?.run_message);
   if (!runMessage && stoppedReason) {
     runMessage = stoppedReason;
@@ -1067,6 +1083,13 @@ function logSummary(message: string, details: Record<string, unknown>): void {
   );
 }
 
+async function writeChildResult(result: SosCloudRunChildResult): Promise<void> {
+  if (!SOS_RUN_RESULT_PATH) {
+    return;
+  }
+  await Deno.writeTextFile(SOS_RUN_RESULT_PATH, JSON.stringify(result));
+}
+
 async function runIngestOnce(
   payload: Record<string, unknown>,
 ): Promise<IngestResponse> {
@@ -1226,6 +1249,17 @@ async function main(): Promise<void> {
     ingestResponse = await runIngestOnce(payloadPlan.payload);
 
     const { runStatus, runMessage, payload } = deriveRunSummary(ingestResponse);
+    const childResult = buildSosCloudRunChildResult(
+      ingestResponse,
+      runStatus,
+      runMessage,
+    );
+    if (!childResult) {
+      throw new Error("Malformed SOS ingest response.");
+    }
+    const recognizedDependencyFailure = isRecognizedSosDependencyFailure(
+      ingestResponse,
+    );
     const runEndedAtIso = new Date().toISOString();
     const maxTimeseriesLastObservedAt = await fetchMaxTimeseriesLastValueAt(
       payloadPlan.timeseriesIds,
@@ -1269,11 +1303,15 @@ async function main(): Promise<void> {
       maxTimeseriesLastObservedAt,
     );
 
-    if (!ingestResponse.ok || runStatus === "failed" || runStatus === "error") {
+    if (!isCompletedSosChildResponse(ingestResponse) ||
+      (!recognizedDependencyFailure &&
+        (runStatus === "failed" || runStatus === "error"))) {
       throw new Error(
         `ingest_sos failed (${ingestResponse.status}): ${ingestResponse.raw}`,
       );
     }
+
+    await writeChildResult(childResult);
 
     logSummary("success", {
       run_status: runStatus,
@@ -1284,6 +1322,7 @@ async function main(): Promise<void> {
       observations_upserted: toIntegerOrNull(payload?.observations_upserted),
       partial: payload?.partial === true,
       stopped_reason: toStringOrNull(payload?.stopped_reason),
+      recognized_dependency_failure: recognizedDependencyFailure,
     });
   } catch (error) {
     const errorMessage = shortError(error);

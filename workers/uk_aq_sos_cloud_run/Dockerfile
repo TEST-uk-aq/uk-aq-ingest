@@ -4,6 +4,7 @@ WORKDIR /app
 
 COPY workers/uk_aq_sos_cloud_run/run_job.ts /app/workers/uk_aq_sos_cloud_run/run_job.ts
 COPY workers/uk_aq_sos_cloud_run/run_service.ts /app/workers/uk_aq_sos_cloud_run/run_service.ts
+COPY workers/uk_aq_sos_cloud_run/result_contract.ts /app/workers/uk_aq_sos_cloud_run/result_contract.ts
 COPY workers/shared/dropbox_error_log.ts /app/workers/shared/dropbox_error_log.ts
 
 # Reuse existing SOS ingest implementation + shared helpers.

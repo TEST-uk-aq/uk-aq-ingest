@@ -1,4 +1,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import {
+  isSosCloudRunChildResult,
+  type SosCloudRunChildResult,
+} from "./result_contract.ts";
 
 const PORT = Number(Deno.env.get("PORT") || "8080");
 const RUN_JOB_SCRIPT = "/app/workers/uk_aq_sos_cloud_run/run_job.ts";
@@ -44,10 +48,12 @@ function resolveTriggerMode(req: Request, body: unknown): string {
 async function runJob(
   triggerMode: string,
   currentTaskName: string | null,
+  resultPath: string,
 ): Promise<Deno.CommandStatus> {
   const childEnv: Record<string, string> = {
     ...Deno.env.toObject(),
     SOS_TRIGGER_MODE: triggerMode,
+    SOS_RUN_RESULT_PATH: resultPath,
   };
   if (currentTaskName) {
     childEnv.SOS_CURRENT_TASK_NAME = currentTaskName;
@@ -67,6 +73,15 @@ async function runJob(
     stderr: "inherit",
   }).spawn();
   return await child.status;
+}
+
+async function readChildResult(path: string): Promise<SosCloudRunChildResult | null> {
+  try {
+    const parsed = JSON.parse(await Deno.readTextFile(path));
+    return isSosCloudRunChildResult(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 serve(async (req: Request) => {
@@ -118,8 +133,25 @@ serve(async (req: Request) => {
     (req.headers.get("x-cloudtasks-taskname") || "").trim() || null;
 
   inFlight = true;
+  let resultPath: string | null = null;
   try {
-    const status = await runJob(triggerMode, currentTaskName);
+    resultPath = await Deno.makeTempFile({ prefix: "uk-aq-sos-result-" });
+    const status = await runJob(triggerMode, currentTaskName, resultPath);
+    const childResult = status.success ? await readChildResult(resultPath) : null;
+    if (childResult) {
+      return new Response(
+        JSON.stringify({
+          ...childResult.payload,
+          trigger_mode: triggerMode,
+          current_task_name: currentTaskName,
+          code: status.code,
+        }),
+        {
+          status: childResult.httpStatus,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }
     return new Response(
       JSON.stringify({
         ok: status.success,
@@ -133,6 +165,9 @@ serve(async (req: Request) => {
       },
     );
   } finally {
+    if (resultPath) {
+      await Deno.remove(resultPath).catch(() => undefined);
+    }
     inFlight = false;
   }
 }, { port: PORT });

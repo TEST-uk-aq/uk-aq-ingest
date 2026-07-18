@@ -11,7 +11,9 @@ import {
   asSosFetchFailure,
   boundMessage,
   connectorHttpStatusForProbe,
+  isIndividuallyReportedTimeseriesFailure,
   isRuntimeDeadlineFailure,
+  runtimeBudgetStopObserved,
   type RuntimeDeadlineFailureSummary,
   SosFetchFailure,
 } from "./failure.ts";
@@ -297,6 +299,7 @@ serve(async (req) => {
   const runtimeDeadline = runStartedAt + maxRuntimeSeconds * 1000;
   const shouldStop = () => Date.now() >= runtimeDeadline;
   let timeBudgetHit = false;
+  let individualTimeseriesErrorCount = 0;
   const runtimeDeadlineFailures: RuntimeDeadlineFailureSummary = {
     count: 0,
     timeseriesSample: [],
@@ -688,6 +691,9 @@ serve(async (req) => {
               if (failure.upstreamStatus === 502) {
                 gateway502Failures += 1;
               }
+              if (isIndividuallyReportedTimeseriesFailure(failure)) {
+                individualTimeseriesErrorCount += 1;
+              }
               errors.push(`${row.id}: upsert_failed`);
               console.warn(`Poll failed for ${row.id}: ${failure.message}`);
               await errorLogger.logError({
@@ -710,9 +716,10 @@ serve(async (req) => {
             }
           }, shouldStop);
 
-          const runtimeBudgetExceeded = timeBudgetHit ||
-            runtimeDeadlineFailures.count > 0 ||
-            shouldStop();
+          const runtimeBudgetExceeded = runtimeBudgetStopObserved(
+            timeBudgetHit,
+            runtimeDeadlineFailures.count,
+          );
           if (runtimeBudgetExceeded) {
             log.warn("Stopping UK-AIR SOS poll early (runtime budget exceeded).", {
               max_runtime_seconds: maxRuntimeSeconds,
@@ -722,7 +729,7 @@ serve(async (req) => {
           }
           await flushPendingObservsRows("run_complete", true);
 
-          if (runtimeDeadlineFailures.count > 0) {
+          if (runtimeBudgetExceeded) {
             errors.push("runtime_budget_exceeded");
             await errorLogger.logError({
               source: "edge",
@@ -789,7 +796,7 @@ serve(async (req) => {
             observs_flushes: observsFlushes,
             http_502_failures: gateway502Failures,
             errors,
-            individual_error_count: errors.length - (runtimeDeadlineFailures.count > 0 ? 1 : 0),
+            individual_error_count: individualTimeseriesErrorCount,
             runtime_deadline_failure_count: runtimeDeadlineFailures.count,
             runtime_deadline_timeseries_sample: runtimeDeadlineFailures.timeseriesSample,
             partial: runtimeBudgetExceeded,

@@ -65,6 +65,19 @@ export function isRuntimeDeadlineFailure(failure: SosFetchFailure): boolean {
   return failure.kind === "runtime_deadline";
 }
 
+export function isIndividuallyReportedTimeseriesFailure(
+  failure: SosFetchFailure,
+): boolean {
+  return !isRuntimeDeadlineFailure(failure);
+}
+
+export function runtimeBudgetStopObserved(
+  poolStoppedBeforeScheduling: boolean,
+  runtimeDeadlineFailureCount: number,
+): boolean {
+  return poolStoppedBeforeScheduling || runtimeDeadlineFailureCount > 0;
+}
+
 export function addRuntimeDeadlineFailure(
   summary: RuntimeDeadlineFailureSummary,
   timeseriesId: number,
