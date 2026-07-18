@@ -6,15 +6,6 @@ import {
   type ObservsObservationRow,
   writeObservsWithOutbox,
 } from "../_shared/observs_client.ts";
-import {
-  addRuntimeDeadlineFailure,
-  asSosFetchFailure,
-  boundMessage,
-  connectorHttpStatusForProbe,
-  isRuntimeDeadlineFailure,
-  type RuntimeDeadlineFailureSummary,
-  SosFetchFailure,
-} from "./failure.ts";
 
 type PollRequest = {
   connector_id?: string;
@@ -69,7 +60,6 @@ const DEFAULT_BOOTSTRAP_NULL_LAST_VALUE_BATCH = 50;
 const DEFAULT_OBSERVS_BUFFER_FLUSH_ROWS = 5000;
 const PAGE_SIZE = 1000;
 const CONCURRENCY_LIMIT = 5;
-const RUNTIME_DEADLINE_TIMESERIES_SAMPLE_LIMIT = 10;
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")
   ?? Deno.env.get("SB_SUPABASE_URL")
@@ -297,10 +287,6 @@ serve(async (req) => {
   const runtimeDeadline = runStartedAt + maxRuntimeSeconds * 1000;
   const shouldStop = () => Date.now() >= runtimeDeadline;
   let timeBudgetHit = false;
-  const runtimeDeadlineFailures: RuntimeDeadlineFailureSummary = {
-    count: 0,
-    timeseriesSample: [],
-  };
 
   try {
     if (!SUPABASE_URL || !SUPABASE_PRIVILEGED_KEY) {
@@ -443,15 +429,14 @@ serve(async (req) => {
           const probe = await probeSosUpstream(baseUrl, rawRecorder, runtimeDeadline);
           if (!probe.ok) {
             shouldPoll = false;
-            const upstreamStatus = probe.failure.upstreamStatus;
-            const connectorHttpStatus = connectorHttpStatusForProbe(probe.failure);
+            const upstreamStatus = probe.status;
+            const retryableStatus = upstreamStatus !== null &&
+              RETRYABLE_FETCH_STATUSES.has(upstreamStatus);
             errors.push(`upstream_probe_failed:${upstreamStatus ?? "unknown"}`);
             log.warn("UK-AIR SOS upstream probe failed; skipping poll.", {
               connector_id: connector.id,
               upstream_status: upstreamStatus,
-              upstream_failure_kind: probe.failure.kind,
-              connector_http_status: connectorHttpStatus,
-              upstream_error: probe.failure.message,
+              upstream_error: probe.error,
             });
             await errorLogger.logError({
               source: "edge",
@@ -460,14 +445,12 @@ serve(async (req) => {
               context: {
                 connector_id: connector.id,
                 upstream_status: upstreamStatus,
-                upstream_failure_kind: probe.failure.kind,
-                connector_http_status: connectorHttpStatus,
-                upstream_error: probe.failure.message,
+                upstream_error: probe.error,
               },
               connector_code: connector.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
               connector_id: connector.id,
             });
-            status = connectorHttpStatus;
+            status = upstreamStatus ?? (retryableStatus ? 503 : 500);
             responsePayload = {
               status: "upstream_unavailable",
               run_message: upstreamStatus === 502
@@ -478,9 +461,7 @@ serve(async (req) => {
               observations_upserted: 0,
               errors,
               upstream_status: upstreamStatus,
-              upstream_failure_kind: probe.failure.kind,
-              connector_http_status: connectorHttpStatus,
-              upstream_error: probe.failure.message,
+              upstream_error: probe.error,
             };
           }
         }
@@ -676,20 +657,12 @@ serve(async (req) => {
               );
               polled += 1;
             } catch (err) {
-              const failure = asSosFetchFailure(err);
-              if (isRuntimeDeadlineFailure(failure)) {
-                addRuntimeDeadlineFailure(
-                  runtimeDeadlineFailures,
-                  row.id,
-                  RUNTIME_DEADLINE_TIMESERIES_SAMPLE_LIMIT,
-                );
-                return;
-              }
-              if (failure.upstreamStatus === 502) {
+              const message = err instanceof Error ? err.message : String(err);
+              if (extractHttpStatus(err) === 502) {
                 gateway502Failures += 1;
               }
               errors.push(`${row.id}: upsert_failed`);
-              console.warn(`Poll failed for ${row.id}: ${failure.message}`);
+              console.warn(`Poll failed for ${row.id}: ${message}`);
               await errorLogger.logError({
                 source: "edge",
                 severity: "error",
@@ -699,9 +672,6 @@ serve(async (req) => {
                   timeseries_ref: row.timeseries_ref,
                   timespan,
                   connector_id: connector?.id ?? requestedConnectorId ?? null,
-                  upstream_status: failure.upstreamStatus,
-                  upstream_failure_kind: failure.kind,
-                  upstream_error: failure.message,
                 },
                 connector_code: connector?.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
                 connector_id: connector?.id ?? requestedConnectorId ?? null,
@@ -710,36 +680,12 @@ serve(async (req) => {
             }
           }, shouldStop);
 
-          const runtimeBudgetExceeded = timeBudgetHit ||
-            runtimeDeadlineFailures.count > 0 ||
-            shouldStop();
-          if (runtimeBudgetExceeded) {
+          if (timeBudgetHit) {
             log.warn("Stopping UK-AIR SOS poll early (runtime budget exceeded).", {
               max_runtime_seconds: maxRuntimeSeconds,
-              runtime_deadline_failure_count: runtimeDeadlineFailures.count,
-              runtime_deadline_timeseries_sample: runtimeDeadlineFailures.timeseriesSample,
             });
           }
           await flushPendingObservsRows("run_complete", true);
-
-          if (runtimeDeadlineFailures.count > 0) {
-            errors.push("runtime_budget_exceeded");
-            await errorLogger.logError({
-              source: "edge",
-              severity: "error",
-              message: "UK-AIR SOS runtime budget exceeded while polling timeseries.",
-              context: {
-                connector_id: connector.id,
-                max_runtime_seconds: maxRuntimeSeconds,
-                runtime_deadline_failure_count: runtimeDeadlineFailures.count,
-                runtime_deadline_timeseries_sample: runtimeDeadlineFailures.timeseriesSample,
-                series_selected: series.length,
-                series_polled: polled,
-              },
-              connector_code: connector.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-              connector_id: connector.id,
-            });
-          }
 
           if (checkpointCandidates.length) {
             await upsertSosTimeseriesCheckpoints(
@@ -789,11 +735,8 @@ serve(async (req) => {
             observs_flushes: observsFlushes,
             http_502_failures: gateway502Failures,
             errors,
-            individual_error_count: errors.length - (runtimeDeadlineFailures.count > 0 ? 1 : 0),
-            runtime_deadline_failure_count: runtimeDeadlineFailures.count,
-            runtime_deadline_timeseries_sample: runtimeDeadlineFailures.timeseriesSample,
-            partial: runtimeBudgetExceeded,
-            stopped_reason: runtimeBudgetExceeded ? "runtime_budget_exceeded" : null,
+            partial: timeBudgetHit,
+            stopped_reason: timeBudgetHit ? "runtime_budget_exceeded" : null,
           };
         }
       }
@@ -976,11 +919,24 @@ function sleep(ms: number): Promise<void> {
 }
 
 function errorMessage(error: unknown): string {
-  return boundMessage(error);
+  return error instanceof Error ? error.message : String(error);
+}
+
+function extractHttpStatus(error: unknown): number | null {
+  const match = errorMessage(error).match(/\bHTTP\s+(\d{3})\b/);
+  if (!match) {
+    return null;
+  }
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function isRetryableFetchFailure(error: unknown): boolean {
-  return asSosFetchFailure(error).retryable;
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return true;
+  }
+  const status = extractHttpStatus(error);
+  return status !== null && RETRYABLE_FETCH_STATUSES.has(status);
 }
 
 function asString(value: unknown): string | undefined {
@@ -1831,38 +1787,15 @@ async function fetchJson(
       ? Number.POSITIVE_INFINITY
       : deadlineMs - Date.now();
     if (remainingBudgetMs <= MIN_FETCH_TIMEOUT_MS) {
-      throw new SosFetchFailure({
-        kind: "runtime_deadline",
-        message: "Runtime budget exhausted before UK-AIR SOS fetch completed.",
-      });
+      throw new Error("Runtime budget exhausted before UK-AIR SOS fetch completed.");
     }
     const timeoutMs = Number.isFinite(remainingBudgetMs)
       ? Math.max(MIN_FETCH_TIMEOUT_MS, Math.min(DEFAULT_TIMEOUT_MS, remainingBudgetMs - 250))
       : DEFAULT_TIMEOUT_MS;
-    const timeoutKind = timeoutMs < DEFAULT_TIMEOUT_MS
-      ? "runtime_deadline"
-      : "request_timeout";
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      let resp: Response;
-      try {
-        resp = await fetch(url.toString(), { signal: controller.signal });
-      } catch (err) {
-        if (controller.signal.aborted) {
-          throw new SosFetchFailure({
-            kind: timeoutKind,
-            message: timeoutKind === "runtime_deadline"
-              ? "Runtime budget exhausted during UK-AIR SOS fetch."
-              : "UK-AIR SOS request timed out.",
-            retryable: timeoutKind === "request_timeout",
-          });
-        }
-        throw new SosFetchFailure({
-          kind: "network",
-          message: boundMessage(err),
-        });
-      }
+      const resp = await fetch(url.toString(), { signal: controller.signal });
       const contentType = resp.headers.get("content-type") || "";
       const payload = contentType.includes("application/json")
         ? await resp.json()
@@ -1871,19 +1804,13 @@ async function fetchJson(
         recorder.recordResponse(path, params, resp.status, payload);
       }
       if (!resp.ok) {
-        throw new SosFetchFailure({
-          kind: "http",
-          message: `HTTP ${resp.status} ${resp.statusText}`,
-          upstreamStatus: resp.status,
-          retryable: RETRYABLE_FETCH_STATUSES.has(resp.status),
-        });
+        throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
       }
       return payload;
     } catch (err) {
-      const failure = asSosFetchFailure(err);
-      const shouldRetry = attempt < attempts && isRetryableFetchFailure(failure);
+      const shouldRetry = attempt < attempts && isRetryableFetchFailure(err);
       if (!shouldRetry) {
-        throw failure;
+        throw err;
       }
       const retryDelayMs = Math.min(
         FETCH_RETRY_BACKOFF_MAX_MS,
@@ -1893,7 +1820,7 @@ async function fetchJson(
         ? Number.POSITIVE_INFINITY
         : deadlineMs - Date.now();
       if (remainingAfterCatchMs <= retryDelayMs + MIN_FETCH_TIMEOUT_MS) {
-        throw failure;
+        throw err;
       }
       if (recorder) {
         recorder.recordEvent("retry", {
@@ -1901,7 +1828,7 @@ async function fetchJson(
           params,
           attempt,
           delay_ms: retryDelayMs,
-          reason: failure.message,
+          reason: errorMessage(err),
         });
       }
       await sleep(retryDelayMs);
@@ -1916,17 +1843,15 @@ async function probeSosUpstream(
   baseUrl: string,
   recorder: RawRecorder | null | undefined,
   runtimeDeadline: number,
-): Promise<
-  | { ok: true; status: 200 }
-  | { ok: false; failure: SosFetchFailure }
-> {
+): Promise<{ ok: true; status: 200; error: null } | { ok: false; status: number | null; error: string }> {
   try {
     await fetchJson(baseUrl, "/services", {}, recorder, { attempts: 2, deadlineMs: runtimeDeadline });
-    return { ok: true, status: 200 };
+    return { ok: true, status: 200, error: null };
   } catch (err) {
     return {
       ok: false,
-      failure: asSosFetchFailure(err),
+      status: extractHttpStatus(err),
+      error: errorMessage(err),
     };
   }
 }
