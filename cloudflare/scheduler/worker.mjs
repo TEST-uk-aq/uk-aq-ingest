@@ -792,6 +792,11 @@ export function dueSlotsForJob(job, windowStartMs, windowEndMs) {
   );
 }
 
+export function latestDueSlotForJob(job, windowStartMs, windowEndMs) {
+  const dueSlots = dueSlotsForJob(job, windowStartMs, windowEndMs);
+  return dueSlots.length > 0 ? dueSlots.at(-1) : null;
+}
+
 function delay(delayMs) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
@@ -1048,9 +1053,9 @@ export async function dispatchDueJobsForWindow(store, jobs, env, windowStartMs, 
       continue;
     }
 
-    let dueTimes;
+    let allDueTimes;
     try {
-      dueTimes = dueSlotsForJob(job, windowStartMs, windowEndMs);
+      allDueTimes = dueSlotsForJob(job, windowStartMs, windowEndMs);
     } catch (error) {
       summary.jobs_failed += 1;
       const message = error instanceof Error ? error.message : String(error);
@@ -1064,7 +1069,19 @@ export async function dispatchDueJobsForWindow(store, jobs, env, windowStartMs, 
       continue;
     }
 
+    const latestDueAt = allDueTimes.at(-1) ?? null;
+    const dueTimes = latestDueAt ? [latestDueAt] : [];
     summary.jobs_due += dueTimes.length;
+
+    if (allDueTimes.length > 1) {
+      logJson(WORKER_NAME, "scheduler_due_slots_coalesced", {
+        scheduler_name: SCHEDULER_NAME,
+        scheduler_run_id: context.scheduler_run_id ?? null,
+        job_key: job.job_key,
+        coalesced_due_slot_count: allDueTimes.length,
+        due_at: latestDueAt,
+      });
+    }
 
     for (const dueAt of dueTimes) {
       const claimedAt = nowIso(Date.now());

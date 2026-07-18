@@ -22,6 +22,10 @@ Cloudflare cron and authenticated `POST /run-if-due` calls share an atomic D1
 UTC-minute claim. A duplicate trigger returns a bounded `already_claimed`
 response and does not evaluate jobs or dispatch targets.
 
+Ingest recovers from the latest finished scheduler evaluation window. If that
+window contains multiple missed slots for one job, it selects only the latest
+slot for that job in the recovery run.
+
 ## Configuration
 
 `jobs.toml` is the reviewed desired configuration. D1 is the runtime source.
