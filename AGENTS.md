@@ -6,6 +6,15 @@ The existing repository-specific rules are stored in [`AGENTS_BASE.md`](AGENTS_B
 
 Coding agents must read and follow `AGENTS_BASE.md` before making changes in this repository. The TEST validation policy below takes precedence where older wording could be interpreted as requiring broader testing.
 
+## Authoritative System Contracts
+
+- Before analysing, planning, or changing code, schema, workflows, configuration, or non-system documentation, coding agents must read this `AGENTS.md`, any linked `AGENTS_BASE.md`, and the relevant active files under `system_docs/` in this or the related UK AQ repositories.
+- Active files under `system_docs/` define the authoritative UK AQ system contracts. Codex and other coding agents must follow those contracts and preserve the documented behaviour.
+- If a user request, the current code, or another document conflicts with `system_docs/`, stop and report the conflict. Do not silently override, reinterpret, weaken, or work around the contract.
+- `system_docs_legacy/` and archived documentation are historical references and do not override active `system_docs/`.
+- Codex and other coding agents must not create, edit, move, rename, or delete files under `system_docs/`.
+- Updating `system_docs/` is reserved for ChatGPT in Chat mode. When an implementation change requires a system-documentation update, the coding agent must provide a concise handover identifying the affected documents and summarising the implemented behaviour, files changed, schema or configuration changes, deployment implications, and validation results.
+
 ## TEST System Validation Policy
 
 - This repository is part of the UK AQ TEST system. It is intended for development and real operational testing before changes are transferred to LIVE.
