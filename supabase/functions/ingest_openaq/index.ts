@@ -8,8 +8,11 @@ import {
 } from "../_shared/observs_client.ts";
 import {
   createEmptyIngestDbObservationWriteStats,
+  isIngestDbObservationWriteError,
+  mergeIngestDbObservationWriteStats,
   writeIngestDbObservations,
 } from "../_shared/ingestdb_observation_writer.mjs";
+import { writeOpenAqIngestDbObservations } from "./ingestdb_observation_write.mjs";
 
 type PollRequest = {
   connector_code?: string;
@@ -3820,14 +3823,38 @@ serve(async (req) => {
     observsRowsPrepared = observsRows.length;
     observsRowsDedupedPrewrite = observationsRowsDedupedPrewrite;
 
-    ingestDbObservationWriteStats = await upsertObservations(
-      observationRows,
-      {
-        shouldStop: runtimeDeadlineReached,
-        remainingRuntimeMs: () => Math.max(0, runtimeDeadline - Date.now()),
+    await writeOpenAqIngestDbObservations({
+      write: () =>
+        upsertObservations(
+          observationRows,
+          {
+            shouldStop: runtimeDeadlineReached,
+            remainingRuntimeMs: () =>
+              Math.max(0, runtimeDeadline - Date.now()),
+          },
+        ),
+      aggregateStats: ingestDbObservationWriteStats,
+      isWriteError: isIngestDbObservationWriteError,
+      mergeStats: mergeIngestDbObservationWriteStats,
+      onObservationsUpserted: (committedRows: number) => {
+        observationsUpserted = committedRows;
       },
-    );
-    observationsUpserted = ingestDbObservationWriteStats.committed_rows;
+      onTerminalError: (error: {
+        classification?: string;
+        terminalReason?: string;
+      }) => {
+        logLine("ERROR", "OpenAQ IngestDB observation write failed", {
+          connector_id: connector.id,
+          observations_upserted: observationsUpserted,
+          ingestdb_observation_write: ingestDbObservationWriteStats,
+          cross_database_transaction: false,
+          failure_classification: error.classification ??
+            ingestDbObservationWriteStats.terminal_failure_classification,
+          terminal_reason: error.terminalReason ??
+            ingestDbObservationWriteStats.terminal_reason,
+        });
+      },
+    });
     if (observsRows.length) {
       // The stores are deliberately independent: this ObsAQIDB operation is
       // not part of a cross-database transaction with IngestDB.

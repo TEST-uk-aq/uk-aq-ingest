@@ -4,10 +4,17 @@ import test from "node:test";
 
 import {
   classifyIngestDbObservationWriteFailure,
+  createEmptyIngestDbObservationWriteStats,
   INGESTDB_OBSERVATION_WRITE_DEFAULTS,
+  IngestDbObservationWriteError,
+  isIngestDbObservationWriteError,
+  mergeIngestDbObservationWriteStats,
   parseIngestDbObservationWriteConfig,
   writeIngestDbObservations,
 } from "../supabase/functions/_shared/ingestdb_observation_writer.mjs";
+import {
+  writeOpenAqIngestDbObservations,
+} from "../supabase/functions/ingest_openaq/ingestdb_observation_write.mjs";
 
 const silentLogger = { warn() {}, error() {} };
 const rows = (count) => Array.from({ length: count }, (_, index) => ({
@@ -200,6 +207,78 @@ test("successful child is not repeated when its sibling reaches a terminal failu
     [1, 2, 3, 4],
     [5, 6, 7, 8],
   ]);
+});
+
+test("OpenAQ retains partial committed-row statistics and rethrows the terminal writer error", async () => {
+  const aggregateStats = createEmptyIngestDbObservationWriteStats();
+  const terminalStats = {
+    input_rows: 500,
+    normal_chunk_size: 500,
+    committed_rows: 250,
+    write_requests: 7,
+    retry_attempts: 4,
+    retried_chunks: 2,
+    split_operations: 1,
+    smallest_attempted_chunk: 250,
+    unresolved_rows: 250,
+    terminal_failure_classification: "statement_timeout",
+    terminal_reason: "retry_exhausted",
+    stopped_for_runtime_budget: false,
+  };
+  const cause = statementTimeout();
+  const writeError = new IngestDbObservationWriteError(
+    "IngestDB observation write failed",
+    {
+      cause,
+      classification: "statement_timeout",
+      terminalReason: "retry_exhausted",
+      stats: terminalStats,
+    },
+  );
+  let observationsUpserted = 0;
+  let terminalErrorReported = null;
+  let latestValuesProcessed = false;
+  let checkpointsProcessed = false;
+
+  await assert.rejects(
+    async () => {
+      await writeOpenAqIngestDbObservations({
+        write: async () => {
+          throw writeError;
+        },
+        aggregateStats,
+        isWriteError: isIngestDbObservationWriteError,
+        mergeStats: mergeIngestDbObservationWriteStats,
+        onObservationsUpserted: (committedRows) => {
+          observationsUpserted = committedRows;
+        },
+        onTerminalError: (error) => {
+          terminalErrorReported = error;
+        },
+      });
+      latestValuesProcessed = true;
+      checkpointsProcessed = true;
+    },
+    (error) => error === writeError,
+  );
+
+  assert.equal(observationsUpserted, 250);
+  assert.equal(aggregateStats.committed_rows, 250);
+  assert.equal(aggregateStats.unresolved_rows, 250);
+  assert.equal(aggregateStats.retry_attempts, 4);
+  assert.equal(aggregateStats.retried_chunks, 2);
+  assert.equal(aggregateStats.split_operations, 1);
+  assert.equal(aggregateStats.smallest_attempted_chunk, 250);
+  assert.equal(
+    aggregateStats.terminal_failure_classification,
+    "statement_timeout",
+  );
+  assert.equal(aggregateStats.terminal_reason, "retry_exhausted");
+  assert.equal(aggregateStats.stopped_for_runtime_budget, false);
+  assert.equal(terminalErrorReported, writeError);
+  assert.equal(writeError.cause, cause);
+  assert.equal(latestValuesProcessed, false);
+  assert.equal(checkpointsProcessed, false);
 });
 
 test("minimum chunk size and maximum split depth are terminal and never create empty children", async () => {

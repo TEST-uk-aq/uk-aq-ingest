@@ -1,7 +1,41 @@
 # IngestDB observation-write retry implementation report
 
 Date: 2026-07-29  
-Starting HEAD: `6ab46abddb123befe055719795a494c33dccdff1`
+Original implementation starting HEAD: `6ab46abddb123befe055719795a494c33dccdff1`
+
+OpenAQ terminal-statistics correction starting HEAD: `8b16494097cc11734e8c1dc7e9e999f79f460a97`
+
+## OpenAQ terminal-statistics correction
+
+OpenAQ previously assigned the result of `upsertObservations(...)` directly to its connector-level statistics only after the complete shared write resolved. When a split child committed and a later sibling failed, the shared writer correctly threw an `IngestDbObservationWriteError` containing partial committed-row and unresolved-row statistics, but the direct assignment never ran. OpenAQ therefore retained its empty aggregate and could report zero committed rows even though genuine rows had committed.
+
+The shared helper did not need changing: it already preserves successful split children, calculates accurate terminal statistics, retains the terminal cause and fails closed while rows remain unresolved. The correction is confined to the OpenAQ caller and its Cloud Run packaging:
+
+- `ingest_openaq/index.ts` now imports `isIngestDbObservationWriteError` and `mergeIngestDbObservationWriteStats`.
+- A small OpenAQ-specific write unit merges returned statistics on success. On a specialised terminal error it merges `error.stats`, recalculates `observations_upserted` from aggregate `committed_rows`, records the aggregate with `cross_database_transaction: false`, `failure_classification` and `terminal_reason`, then rethrows the same error object.
+- Because the specialised error itself is rethrown, its `stats`, `classification`, `terminalReason`, `cause` and failed-run semantics remain intact.
+- The write remains before ObsAQIDB processing, timeseries latest-value updates and both checkpoint stages. A terminal IngestDB error therefore prevents all of those later stages from running.
+- The independent ObsAQIDB design, database schema, environment variables and polling schedules were not changed.
+
+The focused Node test constructs a specialised terminal error representing a 500-row parent split into a committed 250-row child and an unresolved 250-row child. It verifies retained retry/split/terminal statistics, `observations_upserted = 250`, identity-preserving rethrow (including the cause), and that latest-value and checkpoint processing remain unreachable.
+
+Correction files changed:
+
+- `supabase/functions/ingest_openaq/index.ts`
+- `supabase/functions/ingest_openaq/ingestdb_observation_write.mjs`
+- `tests/ingestdb_observation_writer.test.mjs`
+- `workers/uk_aq_openaq_cloud_run/Dockerfile`
+- this implementation report
+
+Correction validation completed without network or database access:
+
+- `deno check supabase/functions/ingest_openaq/index.ts`: passed.
+- `node --test tests/ingestdb_observation_writer.test.mjs`: 15 passed, 0 failed.
+- `git diff --check`: passed.
+
+The existing `archive/2026-07-29_ingestdb_observation_retry/` snapshots for the OpenAQ source and Cloud Run Dockerfile were reused. No duplicate same-day archive was created, and tests, plans and `system_docs/` were not archived.
+
+No deployment, database mutation, real ingest, ObsAQIDB mutation, historical repair, commit, push or LIVE change was performed for this correction.
 
 ## Scope and incident evidence
 
