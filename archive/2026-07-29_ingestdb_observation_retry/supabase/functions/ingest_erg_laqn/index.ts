@@ -7,12 +7,6 @@ import {
   writeObservsWithOutbox,
 } from "../_shared/observs_client.ts";
 import {
-  createEmptyIngestDbObservationWriteStats,
-  isIngestDbObservationWriteError,
-  mergeIngestDbObservationWriteStats,
-  writeIngestDbObservations,
-} from "../_shared/ingestdb_observation_writer.mjs";
-import {
   addUtcDays,
   buildErgDateRange,
   formatUtcDate,
@@ -81,21 +75,6 @@ const DEFAULT_MAX_RUNTIME_SECONDS = 120;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const UPSERT_PREFER = "resolution=merge-duplicates,return=minimal";
-
-async function postgrestFetch(url: string, init: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("PostgREST request timed out.");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 const SPECIES_CONFIG: Record<
   string,
@@ -215,16 +194,7 @@ async function postgrestRequest<T>(
   body?: unknown,
   prefer?: string,
   schema?: string,
-): Promise<{
-  data: T | null;
-  error: {
-    message: string;
-    code?: string | null;
-    details?: string | null;
-    hint?: string | null;
-    http_status?: number | null;
-  } | null;
-}> {
+): Promise<{ data: T | null; error: { message: string } | null }> {
   if (!REST_BASE_URL || !SUPABASE_PRIVILEGED_KEY) {
     return {
       data: null,
@@ -235,34 +205,22 @@ async function postgrestRequest<T>(
   if (params) {
     Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
   }
-  const resp = await postgrestFetch(url.toString(), {
+  const resp = await fetch(url.toString(), {
     method,
     headers: postgrestHeaders(prefer, schema),
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!resp.ok) {
     let message = `${resp.status} ${resp.statusText}`;
-    let errorPayload: Record<string, unknown> = {};
     try {
-      errorPayload = await resp.json();
+      const errorPayload = await resp.json();
       if (errorPayload?.message) {
-        message = String(errorPayload.message);
+        message = errorPayload.message;
       }
     } catch {
       // ignore
     }
-    return {
-      data: null,
-      error: {
-        message,
-        code: errorPayload.code == null ? null : String(errorPayload.code),
-        details: errorPayload.details == null
-          ? null
-          : String(errorPayload.details),
-        hint: errorPayload.hint == null ? null : String(errorPayload.hint),
-        http_status: resp.status,
-      },
-    };
+    return { data: null, error: { message } };
   }
   if (resp.status === 204 || resp.status === 201) {
     return { data: null, error: null };
@@ -950,28 +908,21 @@ async function fetchTimeseriesMeta(
   return mapping;
 }
 
-async function upsertObservations(
-  rows: Record<string, unknown>[],
-  runtimeBudget?: { shouldStop: () => boolean; remainingRuntimeMs: () => number },
-) {
-  return await writeIngestDbObservations({
+async function upsertObservations(rows: Record<string, unknown>[]): Promise<number> {
+  if (!rows.length) {
+    return 0;
+  }
+  const { error } = await postgrestRequest(
+    "POST",
+    "observations",
+    { on_conflict: "connector_id,timeseries_id,observed_at" },
     rows,
-    chunkSize: rows.length || 1,
-    connectorCode: LAQN_CONNECTOR_CODE,
-    logger: console,
-    runtimeBudget,
-    config: { minimumAttemptRuntimeMs: DEFAULT_TIMEOUT_MS },
-    writeChunk: async (chunk: Record<string, unknown>[]) => {
-      const { error } = await postgrestRequest(
-        "POST",
-        "observations",
-        { on_conflict: "connector_id,timeseries_id,observed_at" },
-        chunk,
-        UPSERT_PREFER,
-      );
-      if (error) throw error;
-    },
-  });
+    UPSERT_PREFER,
+  );
+  if (error) {
+    throw new Error(`Observations upsert failed: ${error.message}`);
+  }
+  return rows.length;
 }
 
 function toObservsObservationRows(
@@ -1777,8 +1728,6 @@ serve(async (req) => {
   let observsReceiptsUpserted = 0;
   let observsEnqueued = 0;
   let observsFlushes = 0;
-  const ingestDbObservationWriteStats =
-    createEmptyIngestDbObservationWriteStats();
   const runStartedAt = Date.now();
   const maxRuntimeSeconds = Number.isFinite(LAQN_MAX_RUNTIME_SECONDS)
     ? Math.max(30, LAQN_MAX_RUNTIME_SECONDS)
@@ -2108,17 +2057,7 @@ serve(async (req) => {
             }
             if (observations.length && !dryRun) {
               for (const batch of chunk(observations, batchSize)) {
-                const writeStats = await upsertObservations(batch, {
-                  shouldStop,
-                  remainingRuntimeMs: () =>
-                    Math.max(0, runtimeDeadline - Date.now()),
-                });
-                mergeIngestDbObservationWriteStats(
-                  ingestDbObservationWriteStats,
-                  writeStats,
-                );
-                observationsUpserted =
-                  ingestDbObservationWriteStats.committed_rows;
+                observationsUpserted += await upsertObservations(batch);
                 observsRowsPending.push(
                   ...toObservsObservationRows(
                     batch,
@@ -2187,8 +2126,6 @@ serve(async (req) => {
           stations_processed: stationsProcessed,
           species: speciesList,
           observations_upserted: observationsUpserted,
-          ingestdb_observation_write: ingestDbObservationWriteStats,
-          cross_database_transaction: false,
           observs_written: observsWritten,
           observs_receipts_upserted: observsReceiptsUpserted,
           observs_enqueued: observsEnqueued,
@@ -2236,42 +2173,7 @@ serve(async (req) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     status = 500;
-    if (isIngestDbObservationWriteError(err)) {
-      const writeError = err as {
-        stats?: Record<string, unknown>;
-        classification?: string;
-        terminalReason?: string;
-      };
-      if (writeError.stats) {
-        mergeIngestDbObservationWriteStats(
-          ingestDbObservationWriteStats,
-          writeError.stats,
-        );
-      }
-      responsePayload = {
-        error: "IngestDB observation write failed.",
-        observations_upserted:
-          ingestDbObservationWriteStats.committed_rows,
-        ingestdb_observation_write: ingestDbObservationWriteStats,
-        cross_database_transaction: false,
-        observs_written: observsWritten,
-        observs_receipts_upserted: observsReceiptsUpserted,
-        observs_enqueued: observsEnqueued,
-        failure_classification: writeError.classification ?? null,
-        terminal_reason: writeError.terminalReason ?? null,
-      };
-    } else {
-      responsePayload = {
-        error: "Internal server error.",
-        observations_upserted:
-          ingestDbObservationWriteStats.committed_rows,
-        ingestdb_observation_write: ingestDbObservationWriteStats,
-        cross_database_transaction: false,
-        observs_written: observsWritten,
-        observs_receipts_upserted: observsReceiptsUpserted,
-        observs_enqueued: observsEnqueued,
-      };
-    }
+    responsePayload = { error: "Internal server error." };
     log.error("Poll failed.", { error: message });
     await errorLogger.logError({
       source: "edge",

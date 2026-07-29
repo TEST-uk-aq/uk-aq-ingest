@@ -1,0 +1,9 @@
+*
+!workers/
+!workers/uk_aq_sensorcommunity_cloud_run/
+!workers/uk_aq_sensorcommunity_cloud_run/index.mjs
+!workers/uk_aq_sensorcommunity_cloud_run/run_service.mjs
+!supabase/
+!supabase/functions/
+!supabase/functions/_shared/
+!supabase/functions/_shared/ingestdb_observation_writer.mjs

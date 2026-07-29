@@ -560,6 +560,15 @@ class SupabaseWriter:
                 mapping[str(row["timeseries_ref"])] = int(row["id"])
         return mapping
 
+    def upsert_observations(self, rows: Iterable[Dict[str, Any]]) -> int:
+        payload = list(rows)
+        if not payload:
+            return 0
+        self.core.table("observations").upsert(
+            payload, on_conflict="timeseries_id,observed_at"
+        ).execute()
+        return len(payload)
+
     def fetch_checkpoints(
         self, station_ids: Sequence[int], species: Sequence[str]
     ) -> Dict[Tuple[int, str], Dict[str, Any]]:

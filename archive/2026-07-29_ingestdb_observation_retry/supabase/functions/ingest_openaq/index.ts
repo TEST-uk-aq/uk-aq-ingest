@@ -6,10 +6,6 @@ import {
   type ObservsObservationRow,
   writeObservsWithOutbox,
 } from "../_shared/observs_client.ts";
-import {
-  createEmptyIngestDbObservationWriteStats,
-  writeIngestDbObservations,
-} from "../_shared/ingestdb_observation_writer.mjs";
 
 type PollRequest = {
   connector_code?: string;
@@ -199,7 +195,6 @@ const DEFAULT_MIN_NON_GAP_STATIONS = 10;
 const DEFAULT_SHARED_BUDGET_MINUTE_LIMIT = 40;
 const DEFAULT_SHARED_BUDGET_HOUR_LIMIT = 1500;
 const DEFAULT_SHARED_BUDGET_CALLER = "ingest_openaq";
-const DEFAULT_POSTGREST_TIMEOUT_MS = 30_000;
 type LagStat = "min" | "median" | "p25";
 const DEFAULT_LAG_STAT: LagStat = "min";
 const PROVIDER_SHORTNAMES: Record<string, string> = {
@@ -392,24 +387,6 @@ const REST_BASE_URL = SUPABASE_URL
   ? `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1`
   : "";
 
-async function postgrestFetch(url: string, init: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    DEFAULT_POSTGREST_TIMEOUT_MS,
-  );
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("PostgREST request timed out.");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 function postgrestHeaders(
   prefer?: string,
   schema = UK_AQ_CORE_SCHEMA,
@@ -483,7 +460,7 @@ async function postgrestRequest<T>(
       }
     }
     const headers = postgrestHeaders(prefer, schema);
-    const resp = await postgrestFetch(url.toString(), {
+    const resp = await fetch(url.toString(), {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -510,16 +487,7 @@ async function postgrestRequest<T>(
 async function rpcRequest<T>(
   fn: string,
   args?: Record<string, unknown>,
-): Promise<{
-  data: T | null;
-  error: {
-    message: string;
-    code?: string | null;
-    details?: string | null;
-    hint?: string | null;
-    http_status?: number | null;
-  } | null;
-}> {
+): Promise<{ data: T | null; error: { message: string } | null }> {
   if (!REST_BASE_URL || !SUPABASE_PRIVILEGED_KEY) {
     return {
       data: null,
@@ -532,7 +500,7 @@ async function rpcRequest<T>(
     const headers = postgrestHeaders(undefined, schema);
     headers["Accept-Profile"] = schema;
     headers["Content-Profile"] = schema;
-    const resp = await postgrestFetch(url.toString(), {
+    const resp = await fetch(url.toString(), {
       method: "POST",
       headers,
       body: JSON.stringify(args ?? {}),
@@ -548,21 +516,7 @@ async function rpcRequest<T>(
       const message = typeof payload === "string"
         ? payload
         : JSON.stringify(payload);
-      const errorPayload = payload && typeof payload === "object"
-        ? payload as Record<string, unknown>
-        : {};
-      return {
-        data: null,
-        error: {
-          message,
-          code: errorPayload.code == null ? null : String(errorPayload.code),
-          details: errorPayload.details == null
-            ? null
-            : String(errorPayload.details),
-          hint: errorPayload.hint == null ? null : String(errorPayload.hint),
-          http_status: resp.status,
-        },
-      };
+      return { data: null, error: { message } };
     }
     return { data: payload as T, error: null };
   } catch (err) {
@@ -2450,25 +2404,25 @@ async function fetchTimeseriesStationIds(
 
 async function upsertObservations(
   rows: Array<Record<string, unknown>>,
-  runtimeBudget?: { shouldStop: () => boolean; remainingRuntimeMs: () => number },
-) {
-  return await writeIngestDbObservations({
-    rows,
-    chunkSize: rows.length || 1,
-    connectorCode: "openaq",
-    logger: console,
-    runtimeBudget,
-    config: { minimumAttemptRuntimeMs: DEFAULT_POSTGREST_TIMEOUT_MS },
-    writeChunk: async (chunk: Array<Record<string, unknown>>) => {
-      const { error } = await rpcRequest<
-        Array<{ observations_upserted: number }>
-      >(
-        "uk_aq_rpc_observations_upsert",
-        { rows: chunk },
-      );
-      if (error) throw error;
-    },
-  });
+): Promise<number> {
+  if (!rows.length) {
+    return 0;
+  }
+  const { data, error } = await rpcRequest<
+    Array<{ observations_upserted: number }>
+  >(
+    "uk_aq_rpc_observations_upsert",
+    { rows },
+  );
+  if (error) {
+    throw new Error(`Observations upsert failed: ${error.message}`);
+  }
+  const touched = Number(data?.[0]?.observations_upserted ?? 0);
+  // Keep run metrics meaningful even if the RPC reports 0 for idempotent updates.
+  if (touched === 0 && rows.length > 0) {
+    return rows.length;
+  }
+  return touched;
 }
 
 function observationValueDedupeToken(value: unknown): string {
@@ -3770,16 +3724,11 @@ serve(async (req) => {
   });
 
   let observationsUpserted = 0;
-  let ingestDbObservationWriteStats =
-    createEmptyIngestDbObservationWriteStats();
   let observationsRowsInput = 0;
   let observationsRowsPrepared = 0;
   let observationsRowsDedupedPrewrite = 0;
   let observsRowsPrepared = 0;
   let observsRowsDedupedPrewrite = 0;
-  let observsWritten = 0;
-  let observsReceiptsUpserted = 0;
-  let observsEnqueued = 0;
   const seriesPolled = observationsByTimeseries.size;
   let lastObservedAt: string | null = null;
   let timeseriesLastUpdated = 0;
@@ -3820,51 +3769,24 @@ serve(async (req) => {
     observsRowsPrepared = observsRows.length;
     observsRowsDedupedPrewrite = observationsRowsDedupedPrewrite;
 
-    ingestDbObservationWriteStats = await upsertObservations(
-      observationRows,
-      {
-        shouldStop: runtimeDeadlineReached,
-        remainingRuntimeMs: () => Math.max(0, runtimeDeadline - Date.now()),
-      },
-    );
-    observationsUpserted = ingestDbObservationWriteStats.committed_rows;
+    observationsUpserted = await upsertObservations(observationRows);
     if (observsRows.length) {
-      // The stores are deliberately independent: this ObsAQIDB operation is
-      // not part of a cross-database transaction with IngestDB.
-      try {
-        const observsStats = await writeObservsWithOutbox(
-          rpcRequest,
-          observsRows,
-          (message) => {
-            logLine("WARN", "OpenAQ observs write warning", {
-              connector_id: connector.id,
-              message,
-              rows: observsRows.length,
-            });
-            void logError({
-              severity: "warn",
-              message: "OpenAQ observs dual-write warning",
-              connector_id: connector.id,
-              context: {
-                warning: message,
-                rows: observsRows.length,
-              },
-            });
-          },
-        );
-        observsWritten = observsStats.written;
-        observsReceiptsUpserted = observsStats.receipts_upserted;
-        observsEnqueued = observsStats.enqueued;
-      } catch (error) {
-        logLine("ERROR", "OpenAQ ObsAQIDB write failed after IngestDB commit", {
+      await writeObservsWithOutbox(rpcRequest, observsRows, (message) => {
+        logLine("WARN", "OpenAQ observs write warning", {
           connector_id: connector.id,
-          observations_upserted: observationsUpserted,
-          ingestdb_observation_write: ingestDbObservationWriteStats,
-          cross_database_transaction: false,
-          obsaqidb_write: { status: "failed", message: String(error) },
+          message,
+          rows: observsRows.length,
         });
-        throw error;
-      }
+        void logError({
+          severity: "warn",
+          message: "OpenAQ observs dual-write warning",
+          connector_id: connector.id,
+          context: {
+            warning: message,
+            rows: observsRows.length,
+          },
+        });
+      });
     }
     const timeseriesUpdates: Array<
       { id: number; last_value: number; last_value_at: string }
@@ -4310,16 +4232,11 @@ serve(async (req) => {
     timeseries_updated: timeseriesRows.length,
     timeseries_last_updated: timeseriesLastUpdated,
     observations_upserted: observationsUpserted,
-    ingestdb_observation_write: ingestDbObservationWriteStats,
-    cross_database_transaction: false,
     observations_rows_input: observationsRowsInput,
     observations_rows_prepared: observationsRowsPrepared,
     observations_rows_deduped_prewrite: observationsRowsDedupedPrewrite,
     observs_rows_prepared: observsRowsPrepared,
     observs_rows_deduped_prewrite: observsRowsDedupedPrewrite,
-    observs_written: observsWritten,
-    observs_receipts_upserted: observsReceiptsUpserted,
-    observs_enqueued: observsEnqueued,
     series_polled: seriesPolled,
     last_observed_at: lastObservedAt,
     rate_limit_remaining: rateLimitState.remaining,
@@ -4449,16 +4366,11 @@ serve(async (req) => {
     stations_updated: stationsUpdated,
     timeseries_updated: timeseriesRows.length,
     observations_upserted: observationsUpserted,
-    ingestdb_observation_write: ingestDbObservationWriteStats,
-    cross_database_transaction: false,
     observations_rows_input: observationsRowsInput,
     observations_rows_prepared: observationsRowsPrepared,
     observations_rows_deduped_prewrite: observationsRowsDedupedPrewrite,
     observs_rows_prepared: observsRowsPrepared,
     observs_rows_deduped_prewrite: observsRowsDedupedPrewrite,
-    observs_written: observsWritten,
-    observs_receipts_upserted: observsReceiptsUpserted,
-    observs_enqueued: observsEnqueued,
     series_polled: seriesPolled,
     window_hours: windowHours,
     last_observed_at: lastObservedAt,

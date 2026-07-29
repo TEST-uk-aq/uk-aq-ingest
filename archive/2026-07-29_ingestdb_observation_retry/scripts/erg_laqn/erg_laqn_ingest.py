@@ -37,13 +37,6 @@ from scripts.erg_laqn.erg_laqn_list_stations import (
 )
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
-from scripts.uk_aq_ingestdb_observation_writer import (
-    DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
-    IngestDbObservationWriteError,
-    empty_stats,
-    merge_stats,
-    write_observations,
-)
 
 load_dotenv()
 
@@ -250,7 +243,6 @@ class SupabaseWriter:
         schemas = SupabaseSchemas.from_client(self.client)
         self.core = schemas.core
         self.public = self.client.schema(os.getenv("UK_AQ_PUBLIC_SCHEMA") or "uk_aq_public")
-        self.observation_write_stats = empty_stats()
 
     def upsert_connector(self) -> int:
         row = (
@@ -377,29 +369,12 @@ class SupabaseWriter:
 
     def upsert_observations(self, rows: Iterable[Dict[str, Any]]) -> int:
         payload = list(rows)
-
-        def write_chunk(chunk: List[Dict[str, Any]]) -> None:
-            self.core.table("observations").upsert(
-                list(chunk),
-                on_conflict="connector_id,timeseries_id,observed_at",
-            ).execute()
-
-        try:
-            stats = write_observations(
-                payload,
-                chunk_size=max(1, len(payload)),
-                connector_code=LAQN_CONNECTOR_CODE,
-                write_chunk=write_chunk,
-                logger=LOG,
-                config={
-                    "minimum_attempt_runtime_ms": DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
-                },
-            )
-        except IngestDbObservationWriteError as exc:
-            merge_stats(self.observation_write_stats, exc.stats)
-            raise
-        merge_stats(self.observation_write_stats, stats)
-        return int(stats["committed_rows"])
+        if not payload:
+            return 0
+        self.core.table("observations").upsert(
+            payload, on_conflict="timeseries_id,observed_at"
+        ).execute()
+        return len(payload)
 
     def update_timeseries_last_values(self, rows: Iterable[Dict[str, Any]]) -> int:
         payload = list(rows)
@@ -827,9 +802,6 @@ def main() -> int:
             rows, last_observed, last_value = _parse_observations(
                 payload, timeseries_id, recent_zero_cutoff
             )
-            for observation_row in rows:
-                observation_row["connector_id"] = connector_id
-                observation_row["status"] = None
             if last_observed and last_observed < utc_today_start:
                 LOG.warning(
                     "ERG LAQN observations missing today. station_ref=%s species=%s start_date=%s end_date=%s last_observed_at=%s",
@@ -871,10 +843,6 @@ def main() -> int:
             json.dump(raw_output, handle, indent=2)
 
     LOG.info("Ingested %s observations.", observation_total)
-    LOG.info(
-        "IngestDB observation write stats: %s",
-        json.dumps(writer.observation_write_stats, sort_keys=True),
-    )
     return 0
 
 

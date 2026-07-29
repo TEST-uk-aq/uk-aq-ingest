@@ -8,6 +8,7 @@ on:
       - "workers/uk_aq_blondon_nodes_cloud_run/**"
       - "scripts/blondon_nodes/blondon_nodes_ingest.py"
       - "scripts/uk_aq_supabase.py"
+      - "scripts/uk_aq_ingestdb_observation_writer.py"
       - "scripts/gcp/**"
       - "scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"
       - ".github/workflows/uk_aq_blondon_nodes_cloud_run_deploy.yml"

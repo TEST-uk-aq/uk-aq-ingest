@@ -1,16 +1,19 @@
-# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
-name: Deploy Sensor.Community Cloud Run Service
+name: Deploy OpenAQ Cloud Run Service
 
 on:
   push:
     branches:
       - main
     paths:
-      - "workers/uk_aq_sensorcommunity_cloud_run/**"
-      - "supabase/functions/_shared/ingestdb_observation_writer.mjs"
+      - "workers/uk_aq_openaq_cloud_run/**"
+      - "supabase/functions/ingest_openaq/**"
+      - "supabase/functions/_shared/cache.ts"
+      - "supabase/functions/_shared/fetch_egress_patch.ts"
+      - "supabase/functions/_shared/egress_metrics.ts"
+      - "supabase/functions/_shared/observs_client.ts"
       - "scripts/gcp/**"
       - "scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"
-      - ".github/workflows/uk_aq_scomm_cloud_run_deploy.yml"
+      - ".github/workflows/uk_aq_openaq_cloud_run_deploy.yml"
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy-scomm-service:
+  deploy-openaq-service:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -27,40 +30,83 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
       REPO: ${{ vars.GCP_ARTIFACT_REPO || 'uk-aq' }}
-      SERVICE_NAME: ${{ vars.GCP_SCOMM_JOB_NAME || 'uk-aq-scomm-ingest' }}
-      SCOMM_SERVICE_ACCOUNT: ${{ vars.GCP_SCOMM_JOB_SERVICE_ACCOUNT || '' }}
-      RESOURCE_LABEL: uk-aq-scomm-ingest-service
-      SERVICE_TIMEOUT_SECONDS: '600'
-      SERVICE_CPU: '0.1'
-      SERVICE_MEMORY: 256Mi
-      SERVICE_CONCURRENCY: '1'
-      SERVICE_MAX_INSTANCES: '1'
-      SERVICE_MIN_INSTANCES: '0'
+      SERVICE_NAME: ${{ vars.GCP_OPENAQ_SERVICE_NAME || 'uk-aq-openaq-ingest' }}
+      JOB_SERVICE_ACCOUNT: ${{ vars.GCP_OPENAQ_JOB_SERVICE_ACCOUNT || '' }}
+      SERVICE_TIMEOUT_SECONDS: ${{ vars.GCP_OPENAQ_SERVICE_TIMEOUT_SECONDS || '300' }}
+      SERVICE_CPU: ${{ vars.GCP_OPENAQ_SERVICE_CPU || '0.25' }}
+      SERVICE_MEMORY: ${{ vars.GCP_OPENAQ_SERVICE_MEMORY || '256Mi' }}
+      SERVICE_CONCURRENCY: ${{ vars.GCP_OPENAQ_SERVICE_CONCURRENCY || '1' }}
+      SERVICE_MAX_INSTANCES: ${{ vars.GCP_OPENAQ_SERVICE_MAX_INSTANCES || '1' }}
+      SERVICE_MIN_INSTANCES: ${{ vars.GCP_OPENAQ_SERVICE_MIN_INSTANCES || '0' }}
+      RESOURCE_LABEL: uk-aq-openaq-ingest-service
+      TASKS_ENABLED: ${{ vars.GCP_OPENAQ_TASKS_ENABLED || 'true' }}
+      TASK_QUEUE_ID: ${{ vars.GCP_OPENAQ_TASK_QUEUE_ID || 'uk-aq-openaq-trigger-queue' }}
+      TASK_INVOKER_SERVICE_ACCOUNT: ${{ vars.GCP_OPENAQ_TASK_INVOKER_SERVICE_ACCOUNT || '' }}
+      SCHEDULER_ENABLED: ${{ vars.GCP_OPENAQ_SCHEDULER_ENABLED || 'true' }}
+      SCHEDULER_JOB_NAME: ${{ vars.GCP_OPENAQ_SCHEDULER_JOB_NAME || 'uk-aq-openaq-safety-trigger' }}
+      SCHEDULER_CRON: ${{ vars.GCP_OPENAQ_SCHEDULER_CRON || '*/30 * * * *' }}
+      SCHEDULER_TIMEZONE: ${{ vars.GCP_OPENAQ_SCHEDULER_TIMEZONE || 'Etc/UTC' }}
+      SCHEDULER_MAX_RETRY_ATTEMPTS: ${{ vars.GCP_OPENAQ_SCHEDULER_MAX_RETRY_ATTEMPTS || '0' }}
+      SCHEDULER_SERVICE_ACCOUNT: ${{ vars.GCP_OPENAQ_SCHEDULER_SERVICE_ACCOUNT || '' }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
       UK_AQ_RAW_SCHEMA: ${{ vars.UK_AQ_RAW_SCHEMA || 'uk_aq_raw' }}
       OBS_AQIDB_RPC_SCHEMA: ${{ vars.OBS_AQIDB_RPC_SCHEMA || 'uk_aq_public' }}
-      OBSERVS_WRITE_MODE: ${{ vars.SCOMM_OBSERVS_WRITE_MODE || 'pubsub_only' }}
+      OBSERVS_WRITE_MODE: ${{ vars.OPENAQ_OBSERVS_WRITE_MODE || 'pubsub_only' }}
       GCP_OBSERVS_PUBSUB_TOPIC: ${{ vars.GCP_OBSERVS_PUBSUB_TOPIC || 'uk-aq-observs-observations' }}
       OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE: ${{ vars.OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE || '500' }}
-      SCOMM_COUNTRY: ${{ vars.SCOMM_COUNTRY || 'GB' }}
-      SCOMM_BASE_URL: ${{ vars.SCOMM_BASE_URL || 'https://data.sensor.community' }}
-      SCOMM_SERVICE_REF: ${{ vars.SCOMM_SERVICE_REF || 'sensorcommunity' }}
-      SCOMM_USER_AGENT: ${{ vars.SCOMM_USER_AGENT || 'uk-air-quality-networks' }}
-      SCOMM_INGEST_MET_FIELDS: ${{ vars.SCOMM_INGEST_MET_FIELDS || 'true' }}
-      SCOMM_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.SCOMM_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
+      OPENAQ_BASE_URL: ${{ vars.OPENAQ_BASE_URL || 'https://api.openaq.org/v3' }}
+      OPENAQ_CONNECTOR_CODE: ${{ vars.OPENAQ_CONNECTOR_CODE || 'openaq' }}
+      OPENAQ_SERVICE_REF: ${{ vars.OPENAQ_SERVICE_REF || 'openaq' }}
+      OPENAQ_USER_AGENT: ${{ vars.OPENAQ_USER_AGENT || 'uk-air-quality-networks' }}
+      OPENAQ_BBOX: ${{ vars.OPENAQ_BBOX || '-8.623555,49.863222,1.763337,60.871222' }}
+      OPENAQ_PAGE_LIMIT: ${{ vars.OPENAQ_PAGE_LIMIT || '1000' }}
+      OPENAQ_MAX_PAGES: ${{ vars.OPENAQ_MAX_PAGES || '50' }}
+      OPENAQ_CONCURRENCY: ${{ vars.OPENAQ_CONCURRENCY || '6' }}
+      OPENAQ_MAX_RUNTIME_SECONDS: ${{ vars.OPENAQ_MAX_RUNTIME_SECONDS || '300' }}
+      OPENAQ_RATE_LIMIT_RETRIES: ${{ vars.OPENAQ_RATE_LIMIT_RETRIES || '3' }}
+      OPENAQ_RATE_LIMIT_STOP_THRESHOLD: ${{ vars.OPENAQ_RATE_LIMIT_STOP_THRESHOLD || '5' }}
+      OPENAQ_GAP_REQUESTS_REMAINING_MIN: ${{ vars.OPENAQ_GAP_REQUESTS_REMAINING_MIN || '10' }}
+      OPENAQ_MIN_GAP_STATIONS: ${{ vars.OPENAQ_MIN_GAP_STATIONS || '1' }}
+      OPENAQ_MIN_NON_GAP_STATIONS: ${{ vars.OPENAQ_MIN_NON_GAP_STATIONS || '10' }}
+      OPENAQ_INGEST_STATION_FETCH: ${{ vars.OPENAQ_INGEST_STATION_FETCH || 'false' }}
+      OPENAQ_DEFAULT_WINDOW_HOURS: ${{ vars.OPENAQ_DEFAULT_WINDOW_HOURS || '6' }}
+      OPENAQ_DEFAULT_BATCH_LIMIT: ${{ vars.OPENAQ_DEFAULT_BATCH_LIMIT || '56' }}
+      OPENAQ_MAX_REQUESTS_PER_HOUR: ${{ vars.OPENAQ_MAX_REQUESTS_PER_HOUR || '1900' }}
+      OPENAQ_SHARED_BUDGET_ENFORCE: ${{ vars.OPENAQ_SHARED_BUDGET_ENFORCE || 'true' }}
+      OPENAQ_SHARED_BUDGET_KEY: ${{ vars.OPENAQ_SHARED_BUDGET_KEY || 'openaq' }}
+      OPENAQ_SHARED_BUDGET_CALLER: ${{ vars.OPENAQ_SHARED_BUDGET_CALLER || 'ingest_openaq' }}
+      OPENAQ_SHARED_BUDGET_MINUTE_LIMIT: ${{ vars.OPENAQ_SHARED_BUDGET_MINUTE_LIMIT || '40' }}
+      OPENAQ_SHARED_BUDGET_HOUR_LIMIT: ${{ vars.OPENAQ_SHARED_BUDGET_HOUR_LIMIT || '1500' }}
+      OPENAQ_STALE_LIMIT: ${{ vars.OPENAQ_STALE_LIMIT || '4' }}
+      OPENAQ_TIER1_RETRY_SECONDS: ${{ vars.OPENAQ_TIER1_RETRY_SECONDS || '300' }}
+      OPENAQ_IN_FLIGHT_TIMEOUT_MINUTES: ${{ vars.OPENAQ_IN_FLIGHT_TIMEOUT_MINUTES || '30' }}
+      OPENAQ_CLAIM_TIMEOUT_MINUTES: ${{ vars.OPENAQ_CLAIM_TIMEOUT_MINUTES || '30' }}
+      OPENAQ_TASKS_ENABLED: ${{ vars.GCP_OPENAQ_TASKS_ENABLED || 'true' }}
+      OPENAQ_NEXT_CHECK_MIN_SECONDS: ${{ vars.OPENAQ_NEXT_CHECK_MIN_SECONDS || '60' }}
+      OPENAQ_NEXT_CHECK_PARTIAL_MIN_SECONDS: ${{ vars.OPENAQ_NEXT_CHECK_PARTIAL_MIN_SECONDS || '60' }}
+      OPENAQ_NEXT_CHECK_SKIPPED_MIN_SECONDS: ${{ vars.OPENAQ_NEXT_CHECK_SKIPPED_MIN_SECONDS || '60' }}
+      OPENAQ_RATE_LIMIT_FALLBACK_SECONDS: ${{ vars.OPENAQ_RATE_LIMIT_FALLBACK_SECONDS || '300' }}
+      OPENAQ_FAILURE_RETRY_SECONDS: ${{ vars.OPENAQ_FAILURE_RETRY_SECONDS || '120' }}
+      OPENAQ_AUTH_SAFETY_DISABLE_POLLING: ${{ vars.OPENAQ_AUTH_SAFETY_DISABLE_POLLING || 'true' }}
+      OPENAQ_LAG_STAT: ${{ vars.OPENAQ_LAG_STAT || 'min' }}
+      OPENAQ_TASK_NAME_PREFIX: ${{ vars.OPENAQ_TASK_NAME_PREFIX || 'uk-aq-openaq-next' }}
+      OPENAQ_DROPBOX_UPLOAD_SOURCE: ${{ vars.OPENAQ_DROPBOX_UPLOAD_SOURCE || 'cloud_run' }}
+      OPENAQ_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.OPENAQ_RAW_DROPBOX_ALLOWED_SUPABASE_URL || vars.UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
       UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
       UK_AQ_DROPBOX_ROOT: ${{ vars.UK_AQ_DROPBOX_ROOT }}
-      SCOMM_RAW_DROPBOX_FOLDER: ${{ vars.SCOMM_RAW_DROPBOX_FOLDER || '/connectors/sensorcommunity/raw_data' }}
-      UK_AIR_RAW_DROPBOX_FOLDER: ${{ vars.UK_AIR_RAW_DROPBOX_FOLDER || '/connectors/sensorcommunity/raw_data' }}
       SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
       OBS_AQIDB_SECRET_KEY: ${{ secrets.OBS_AQIDB_SECRET_KEY }}
+      OPENAQ_API_KEY: ${{ secrets.OPENAQ_API_KEY }}
+      SB_UK_AQ_CRON_SECRET: ${{ secrets.SB_UK_AQ_CRON_SECRET }}
       DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
       DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
       DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
       SB_SECRET_KEY_SECRET_NAME: ${{ vars.SB_SECRET_KEY_SECRET_NAME || 'SB_SECRET_KEY' }}
       OBS_AQIDB_SECRET_KEY_SECRET_NAME: ${{ vars.OBS_AQIDB_SECRET_KEY_SECRET_NAME || 'OBS_AQIDB_SECRET_KEY' }}
+      OPENAQ_API_KEY_SECRET_NAME: ${{ vars.OPENAQ_API_KEY_SECRET_NAME || 'OPENAQ_API_KEY' }}
+      SB_UK_AQ_CRON_SECRET_SECRET_NAME: ${{ vars.SB_UK_AQ_CRON_SECRET_SECRET_NAME || 'SB_UK_AQ_CRON_SECRET' }}
       DROPBOX_APP_KEY_SECRET_NAME: ${{ vars.DROPBOX_APP_KEY_SECRET_NAME || 'DROPBOX_APP_KEY' }}
       DROPBOX_APP_SECRET_SECRET_NAME: ${{ vars.DROPBOX_APP_SECRET_SECRET_NAME || 'DROPBOX_APP_SECRET' }}
       DROPBOX_REFRESH_TOKEN_SECRET_NAME: ${{ vars.DROPBOX_REFRESH_TOKEN_SECRET_NAME || 'DROPBOX_REFRESH_TOKEN' }}
@@ -70,7 +116,7 @@ jobs:
       UK_AQ_EDGE_UPSTREAM_SECRET: ${{ secrets.UK_AQ_EDGE_UPSTREAM_SECRET }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      SCHEDULER_D1_JOB_KEY: uk_aq_scomm
+      SCHEDULER_D1_JOB_KEY: uk_aq_openaq_safety
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,13 +127,17 @@ jobs:
             echo "Missing required secret: GCP_PROJECT_ID"
             exit 1
           fi
-          if [ -z "${SCOMM_SERVICE_ACCOUNT:-}" ]; then
+          if [ -z "${JOB_SERVICE_ACCOUNT:-}" ]; then
             echo "Missing required service account setting."
-            echo "Set repo variable: GCP_SCOMM_JOB_SERVICE_ACCOUNT"
+            echo "Set repo variable: GCP_OPENAQ_JOB_SERVICE_ACCOUNT"
             exit 1
           fi
-          if [[ "${SCOMM_SERVICE_ACCOUNT}" == *"-compute@developer.gserviceaccount.com" ]]; then
-            echo "Invalid GCP_SCOMM_JOB_SERVICE_ACCOUNT: default compute service account is not allowed."
+          if [[ "${JOB_SERVICE_ACCOUNT}" == *"-compute@developer.gserviceaccount.com" ]]; then
+            echo "Invalid GCP_OPENAQ_JOB_SERVICE_ACCOUNT: default compute service account is not allowed."
+            exit 1
+          fi
+          if [ -z "${OPENAQ_API_KEY:-}" ]; then
+            echo "Missing required secret: OPENAQ_API_KEY"
             exit 1
           fi
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
@@ -153,13 +203,54 @@ jobs:
         run: |
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-      - name: Build and push Sensor.Community image
+      - name: Build and push OpenAQ image
         id: build
         run: |
-          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/uk-aq-scomm:${GITHUB_SHA::12}"
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/uk-aq-openaq:${GITHUB_SHA::12}"
           echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"
-          docker build -f workers/uk_aq_sensorcommunity_cloud_run/Dockerfile -t "${IMAGE}" .
+          docker build -f workers/uk_aq_openaq_cloud_run/Dockerfile -t "${IMAGE}" .
           docker push "${IMAGE}"
+
+      - name: Ensure Cloud Tasks queue + IAM bindings
+        id: tasks_setup
+        run: |
+          set -euo pipefail
+
+          enabled="$(printf '%s' "${TASKS_ENABLED}" | tr '[:upper:]' '[:lower:]')"
+          if [ "${enabled}" != "true" ] && [ "${enabled}" != "1" ] && [ "${enabled}" != "yes" ]; then
+            echo "Cloud Tasks setup skipped (TASKS_ENABLED=${TASKS_ENABLED})."
+            echo "task_invoker_sa=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          task_invoker_sa="${TASK_INVOKER_SERVICE_ACCOUNT:-${SCHEDULER_SERVICE_ACCOUNT:-${JOB_SERVICE_ACCOUNT}}}"
+          if [ -z "${task_invoker_sa}" ]; then
+            echo "Missing task invoker service account."
+            exit 1
+          fi
+          echo "task_invoker_sa=${task_invoker_sa}" >> "${GITHUB_OUTPUT}"
+          echo "OPENAQ_TASK_INVOKER_SERVICE_ACCOUNT=${task_invoker_sa}" >> "${GITHUB_ENV}"
+
+          if gcloud tasks queues describe "${TASK_QUEUE_ID}" --location "${REGION}" >/dev/null 2>&1; then
+            echo "Cloud Tasks queue exists: ${TASK_QUEUE_ID}"
+          else
+            gcloud tasks queues create "${TASK_QUEUE_ID}" \
+              --location "${REGION}" \
+              --max-dispatches-per-second "1" \
+              --max-concurrent-dispatches "1"
+            echo "Created Cloud Tasks queue: ${TASK_QUEUE_ID}"
+          fi
+
+          gcloud tasks queues add-iam-policy-binding "${TASK_QUEUE_ID}" \
+            --location "${REGION}" \
+            --member "serviceAccount:${JOB_SERVICE_ACCOUNT}" \
+            --role "roles/cloudtasks.enqueuer" >/dev/null
+
+          project_number="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+          cloud_tasks_sa="service-${project_number}@gcp-sa-cloudtasks.iam.gserviceaccount.com"
+          gcloud iam service-accounts add-iam-policy-binding "${task_invoker_sa}" \
+            --member "serviceAccount:${cloud_tasks_sa}" \
+            --role "roles/iam.serviceAccountTokenCreator" >/dev/null
 
       - name: Ensure observs Pub/Sub topic + publisher IAM binding
         run: |
@@ -179,7 +270,7 @@ jobs:
 
           gcloud pubsub topics add-iam-policy-binding "${GCP_OBSERVS_PUBSUB_TOPIC}" \
             --project "${PROJECT_ID}" \
-            --member "serviceAccount:${SCOMM_SERVICE_ACCOUNT}" \
+            --member "serviceAccount:${JOB_SERVICE_ACCOUNT}" \
             --role "roles/pubsub.publisher" >/dev/null
 
       - name: Sync GitHub secrets to GCP Secret Manager
@@ -215,6 +306,8 @@ jobs:
 
           upsert_secret "${SB_SECRET_KEY_SECRET_NAME}" "${SB_SECRET_KEY}" 1
           upsert_secret "UK_AQ_EDGE_UPSTREAM_SECRET" "${UK_AQ_EDGE_UPSTREAM_SECRET}" 1
+          upsert_secret "${OPENAQ_API_KEY_SECRET_NAME}" "${OPENAQ_API_KEY}" 1
+          upsert_secret "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" "${SB_UK_AQ_CRON_SECRET}" 0
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "direct" ]; then
             upsert_secret "${OBS_AQIDB_SECRET_KEY_SECRET_NAME}" "${OBS_AQIDB_SECRET_KEY}" 1
@@ -273,22 +366,59 @@ jobs:
 
           env_updates=()
           add_env SUPABASE_URL
+          add_env UK_AQ_CORE_SCHEMA
+          add_env UK_AQ_RAW_SCHEMA
           add_env OBSERVS_WRITE_MODE
           add_env GCP_OBSERVS_PUBSUB_TOPIC
           add_env OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE
-          add_env UK_AQ_CORE_SCHEMA
-          add_env UK_AQ_RAW_SCHEMA
-          add_env SCOMM_COUNTRY
-          add_env SCOMM_BASE_URL
-          add_env SCOMM_SERVICE_REF
-          add_env SCOMM_USER_AGENT
-          add_env SCOMM_INGEST_MET_FIELDS
-          add_env SCOMM_RAW_DROPBOX_ALLOWED_SUPABASE_URL
+          add_env OPENAQ_BASE_URL
+          add_env OPENAQ_CONNECTOR_CODE
+          add_env OPENAQ_SERVICE_REF
+          add_env OPENAQ_USER_AGENT
+          add_env OPENAQ_BBOX
+          add_env OPENAQ_PAGE_LIMIT
+          add_env OPENAQ_MAX_PAGES
+          add_env OPENAQ_CONCURRENCY
+          add_env OPENAQ_MAX_RUNTIME_SECONDS
+          add_env OPENAQ_RATE_LIMIT_RETRIES
+          add_env OPENAQ_RATE_LIMIT_STOP_THRESHOLD
+          add_env OPENAQ_GAP_REQUESTS_REMAINING_MIN
+          add_env OPENAQ_MIN_GAP_STATIONS
+          add_env OPENAQ_MIN_NON_GAP_STATIONS
+          add_env OPENAQ_INGEST_STATION_FETCH
+          add_env OPENAQ_DEFAULT_WINDOW_HOURS
+          add_env OPENAQ_DEFAULT_BATCH_LIMIT
+          add_env OPENAQ_MAX_REQUESTS_PER_HOUR
+          add_env OPENAQ_SHARED_BUDGET_ENFORCE
+          add_env OPENAQ_SHARED_BUDGET_KEY
+          add_env OPENAQ_SHARED_BUDGET_CALLER
+          add_env OPENAQ_SHARED_BUDGET_MINUTE_LIMIT
+          add_env OPENAQ_SHARED_BUDGET_HOUR_LIMIT
+          add_env OPENAQ_STALE_LIMIT
+          add_env OPENAQ_TIER1_RETRY_SECONDS
+          add_env OPENAQ_IN_FLIGHT_TIMEOUT_MINUTES
+          add_env OPENAQ_CLAIM_TIMEOUT_MINUTES
+          add_env OPENAQ_TASKS_ENABLED
+          add_env OPENAQ_NEXT_CHECK_MIN_SECONDS
+          add_env OPENAQ_NEXT_CHECK_PARTIAL_MIN_SECONDS
+          add_env OPENAQ_NEXT_CHECK_SKIPPED_MIN_SECONDS
+          add_env OPENAQ_RATE_LIMIT_FALLBACK_SECONDS
+          add_env OPENAQ_FAILURE_RETRY_SECONDS
+          add_env OPENAQ_AUTH_SAFETY_DISABLE_POLLING
+          add_env OPENAQ_LAG_STAT
+          add_env OPENAQ_TASK_NAME_PREFIX
+          add_env OPENAQ_DROPBOX_UPLOAD_SOURCE
+          add_env OPENAQ_RAW_DROPBOX_ALLOWED_SUPABASE_URL
           add_env UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL
           add_env UK_AQ_DROPBOX_ROOT
-          add_env SCOMM_RAW_DROPBOX_FOLDER
-          add_env UK_AIR_RAW_DROPBOX_FOLDER
+          add_env OPENAQ_TASK_INVOKER_SERVICE_ACCOUNT
+          env_updates+=("OPENAQ_CLOUD_RUN_TARGET=service")
+          env_updates+=("OPENAQ_CLOUD_RUN_SERVICE_NAME=${SERVICE_NAME}")
+          env_updates+=("OPENAQ_LOCAL_PORT=8000")
           env_updates+=("GCP_PROJECT_ID=${PROJECT_ID}")
+          env_updates+=("OPENAQ_GCP_PROJECT_ID=${PROJECT_ID}")
+          env_updates+=("OPENAQ_GCP_REGION=${REGION}")
+          env_updates+=("OPENAQ_TASK_QUEUE_ID=${TASK_QUEUE_ID}")
           if [ -n "${OBS_AQIDB_SUPABASE_URL:-}" ]; then
             add_env OBS_AQIDB_SUPABASE_URL
             add_env OBS_AQIDB_RPC_SCHEMA
@@ -298,6 +428,10 @@ jobs:
           secret_updates=()
           add_secret_binding "UK_AQ_EDGE_UPSTREAM_SECRET" "UK_AQ_EDGE_UPSTREAM_SECRET" 1
           add_secret_binding "SB_SECRET_KEY" "${SB_SECRET_KEY_SECRET_NAME}" 1
+          add_secret_binding "OPENAQ_API_KEY" "${OPENAQ_API_KEY_SECRET_NAME}" 1
+          if [ -n "${SB_UK_AQ_CRON_SECRET:-}" ]; then
+            add_secret_binding "SB_UK_AQ_CRON_SECRET" "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" 0
+          fi
           if [ "${observs_mode}" = "direct" ]; then
             add_secret_binding "OBS_AQIDB_SECRET_KEY" "${OBS_AQIDB_SECRET_KEY_SECRET_NAME}" 1
           else
@@ -309,7 +443,7 @@ jobs:
             add_secret_binding "DROPBOX_REFRESH_TOKEN" "${DROPBOX_REFRESH_TOKEN_SECRET_NAME}" 0
           fi
 
-          env_file="${RUNNER_TEMP}/uk-aq-scomm-env.yaml"
+          env_file="${RUNNER_TEMP}/uk-aq-openaq-env.yaml"
           : > "${env_file}"
           for kv in "${env_updates[@]}"; do
             key="${kv%%=*}"
@@ -332,7 +466,7 @@ jobs:
             gcloud run deploy "${SERVICE_NAME}"
             --region "${REGION}"
             --image "${{ steps.build.outputs.image }}"
-            --service-account "${SCOMM_SERVICE_ACCOUNT}"
+            --service-account "${JOB_SERVICE_ACCOUNT}"
             --timeout "${SERVICE_TIMEOUT_SECONDS}"
             --cpu "${SERVICE_CPU}"
             --memory "${SERVICE_MEMORY}"
@@ -352,6 +486,14 @@ jobs:
           fi
           "${CMD[@]}"
 
+      - name: Ensure task invoker can call service
+        if: ${{ steps.tasks_setup.outputs.task_invoker_sa != '' }}
+        run: |
+          gcloud run services add-iam-policy-binding "${SERVICE_NAME}" \
+            --region "${REGION}" \
+            --member "serviceAccount:${{ steps.tasks_setup.outputs.task_invoker_sa }}" \
+            --role "roles/run.invoker" >/dev/null
+
       - name: Verify service labels
         run: |
           set -euo pipefail
@@ -365,75 +507,60 @@ jobs:
           fi
           echo "Verified label job_name=${job_name_label}"
 
-      - name: Ensure Cloud Scheduler trigger exists
+      - name: Ensure Cloud Scheduler safety trigger exists
         run: |
           set -euo pipefail
 
-          service_uri="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format='value(status.url)')"
-          scheduler_job_name="uk-aq-scomm-trigger"
-          default_cron='*/2 * * * *'
-          default_timezone='Etc/UTC'
-          max_retry_attempts='0'
-
-          scheduler_exists='false'
-          if gcloud scheduler jobs describe "${scheduler_job_name}" --location "${REGION}" >/dev/null 2>&1; then
-            scheduler_exists='true'
+          enabled="$(printf '%s' "${SCHEDULER_ENABLED}" | tr '[:upper:]' '[:lower:]')"
+          if [ "${enabled}" != "true" ] && [ "${enabled}" != "1" ] && [ "${enabled}" != "yes" ]; then
+            echo "Skipping scheduler trigger management (SCHEDULER_ENABLED=${SCHEDULER_ENABLED})."
+            exit 0
           fi
 
-          scheduler_sa=''
-          if [ "${scheduler_exists}" = 'true' ]; then
-            scheduler_json="$(gcloud scheduler jobs describe "${scheduler_job_name}" --location "${REGION}" --format=json)"
-            scheduler_sa="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); t=d.get("httpTarget",{}); print((t.get("oidcToken") or {}).get("serviceAccountEmail") or (t.get("oauthToken") or {}).get("serviceAccountEmail") or "")' <<<"${scheduler_json}")"
-            current_cron="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(d.get("schedule") or "")' <<<"${scheduler_json}")"
-            current_timezone="$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(d.get("timeZone") or "")' <<<"${scheduler_json}")"
-          else
-            current_cron=''
-            current_timezone=''
+          if [ -z "${SCHEDULER_JOB_NAME:-}" ]; then
+            echo "Missing scheduler job name."
+            exit 1
           fi
-
-          if [ -z "${scheduler_sa}" ]; then
-            scheduler_sa="${SCOMM_SERVICE_ACCOUNT}"
-          fi
-          if [ -z "${scheduler_sa}" ]; then
-            echo "Unable to resolve scheduler service account."
+          if [ -z "${SCHEDULER_CRON:-}" ]; then
+            echo "Missing scheduler cron."
             exit 1
           fi
 
-          cron_expr="${current_cron:-${default_cron}}"
-          timezone_expr="${current_timezone:-${default_timezone}}"
+          scheduler_sa="${SCHEDULER_SERVICE_ACCOUNT:-${JOB_SERVICE_ACCOUNT}}"
+          service_uri="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format='value(status.url)')"
+          safety_run_body='{"trigger_mode":"safety"}'
 
           gcloud run services add-iam-policy-binding "${SERVICE_NAME}" \
             --region "${REGION}" \
             --member "serviceAccount:${scheduler_sa}" \
             --role "roles/run.invoker" >/dev/null
 
-          trigger_body='{"trigger_mode":"safety"}'
-          if [ "${scheduler_exists}" = 'true' ]; then
-            gcloud scheduler jobs update http "${scheduler_job_name}" \
+          if gcloud scheduler jobs describe "${SCHEDULER_JOB_NAME}" --location "${REGION}" >/dev/null 2>&1; then
+            gcloud scheduler jobs update http "${SCHEDULER_JOB_NAME}" \
               --location "${REGION}" \
-              --schedule "${cron_expr}" \
-              --time-zone "${timezone_expr}" \
+              --schedule "${SCHEDULER_CRON}" \
+              --time-zone "${SCHEDULER_TIMEZONE}" \
               --uri "${service_uri}" \
               --http-method POST \
               --update-headers "Content-Type=application/json,X-UK-AQ-Upstream-Auth=${UK_AQ_EDGE_UPSTREAM_SECRET}" \
-              --message-body "${trigger_body}" \
+              --message-body "${safety_run_body}" \
               --oidc-service-account-email "${scheduler_sa}" \
               --oidc-token-audience "${service_uri}" \
-              --max-retry-attempts "${max_retry_attempts}"
-            echo "Updated Cloud Scheduler job: ${scheduler_job_name}"
+              --max-retry-attempts "${SCHEDULER_MAX_RETRY_ATTEMPTS}"
+            echo "Updated Cloud Scheduler job: ${SCHEDULER_JOB_NAME}"
           else
-            gcloud scheduler jobs create http "${scheduler_job_name}" \
+            gcloud scheduler jobs create http "${SCHEDULER_JOB_NAME}" \
               --location "${REGION}" \
-              --schedule "${cron_expr}" \
-              --time-zone "${timezone_expr}" \
+              --schedule "${SCHEDULER_CRON}" \
+              --time-zone "${SCHEDULER_TIMEZONE}" \
               --uri "${service_uri}" \
               --http-method POST \
               --headers "Content-Type=application/json,X-UK-AQ-Upstream-Auth=${UK_AQ_EDGE_UPSTREAM_SECRET}" \
-              --message-body "${trigger_body}" \
+              --message-body "${safety_run_body}" \
               --oidc-service-account-email "${scheduler_sa}" \
               --oidc-token-audience "${service_uri}" \
-              --max-retry-attempts "${max_retry_attempts}"
-            echo "Created Cloud Scheduler job: ${scheduler_job_name}"
+              --max-retry-attempts "${SCHEDULER_MAX_RETRY_ATTEMPTS}"
+            echo "Created Cloud Scheduler job: ${SCHEDULER_JOB_NAME}"
           fi
 
       - name: Reconcile Cloud Run URL in ingest scheduler D1

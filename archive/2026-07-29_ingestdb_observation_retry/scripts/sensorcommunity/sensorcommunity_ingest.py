@@ -64,13 +64,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ingest_helpers import station_coords, station_in_bbox_or_missing_coords
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
-from scripts.uk_aq_ingestdb_observation_writer import (
-    DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
-    IngestDbObservationWriteError,
-    empty_stats,
-    merge_stats,
-    write_observations,
-)
 
 load_dotenv()
 
@@ -783,7 +776,6 @@ class SupabaseWriter:
         self.core = schemas.core
         self.raw = schemas.raw
         self.public = self.client.schema(os.getenv("UK_AQ_PUBLIC_SCHEMA") or "uk_aq_public")
-        self.observation_write_stats = empty_stats()
 
     def upsert_connector(self) -> Tuple[int, bool]:
         row = (
@@ -997,29 +989,12 @@ class SupabaseWriter:
 
     def upsert_observations(self, rows: Iterable[Dict[str, Any]]) -> int:
         payload = list(rows)
-
-        def write_chunk(chunk: List[Dict[str, Any]]) -> None:
-            self.core.table("observations").upsert(
-                list(chunk),
-                on_conflict="connector_id,timeseries_id,observed_at",
-            ).execute()
-
-        try:
-            stats = write_observations(
-                payload,
-                chunk_size=max(1, len(payload)),
-                connector_code=SCOMM_CONNECTOR_CODE,
-                write_chunk=write_chunk,
-                logger=LOG,
-                config={
-                    "minimum_attempt_runtime_ms": DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
-                },
-            )
-        except IngestDbObservationWriteError as exc:
-            merge_stats(self.observation_write_stats, exc.stats)
-            raise
-        merge_stats(self.observation_write_stats, stats)
-        return int(stats["committed_rows"])
+        if not payload:
+            return 0
+        self.core.table("observations").upsert(
+            payload, on_conflict="timeseries_id,observed_at"
+        ).execute()
+        return len(payload)
 
 
 def chunked(values: List[str], size: int) -> Iterable[List[str]]:
@@ -1243,17 +1218,7 @@ def main() -> None:
                 }
             )
 
-        # Metadata must exist before observation rows can reference it. Defer
-        # latest-value state until the authoritative IngestDB rows commit.
-        timeseries_metadata_payload = [
-            {
-                field: field_value
-                for field, field_value in row.items()
-                if field not in {"last_value", "last_value_at"}
-            }
-            for row in timeseries_payload
-        ]
-        writer.upsert_timeseries(timeseries_metadata_payload)
+        writer.upsert_timeseries(timeseries_payload)
         backfilled = writer.backfill_timeseries_phenomena(connector_id, service_ref, phenomenon_ids)
         if backfilled:
             LOG.info("Backfilled phenomenon_id for %s timeseries rows.", backfilled)
@@ -1267,7 +1232,6 @@ def main() -> None:
                 continue
             observation_rows.append(
                 {
-                    "connector_id": connector_id,
                     "timeseries_id": timeseries_id,
                     "observed_at": observed_at.isoformat(),
                     "value": value,
@@ -1276,12 +1240,7 @@ def main() -> None:
             )
 
         inserted = writer.upsert_observations(observation_rows)
-        writer.upsert_timeseries(timeseries_payload)
         LOG.info("Upserted %s observations.", inserted)
-        LOG.info(
-            "IngestDB observation write stats: %s",
-            json.dumps(writer.observation_write_stats, sort_keys=True),
-        )
     except Exception as exc:
         LOG.warning("Unhandled ingest error: %s", exc)
         if error_logger:
@@ -1296,8 +1255,6 @@ def main() -> None:
                 },
                 exc=exc,
             )
-        if isinstance(exc, IngestDbObservationWriteError):
-            raise
     finally:
         if raw_session:
             raw_session.finalize()

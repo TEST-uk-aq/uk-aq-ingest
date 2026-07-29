@@ -52,13 +52,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ingest_helpers import station_coords, station_in_bbox, station_in_bbox_or_missing_coords
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
-from scripts.uk_aq_ingestdb_observation_writer import (
-    DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
-    IngestDbObservationWriteError,
-    empty_stats,
-    merge_stats,
-    write_observations,
-)
 load_dotenv()
 
 DEFAULT_LOG_LEVEL = os.getenv("UK_AIR_LOG_LEVEL", "WARNING").upper()
@@ -865,7 +858,6 @@ class SupabaseWriter:
         self.core = schemas.core
         self.raw = schemas.raw
         self.public = self.client.schema(os.getenv("UK_AQ_PUBLIC_SCHEMA") or "uk_aq_public")
-        self.observation_write_stats = empty_stats()
 
     def upsert_connectors(self, services: Iterable[Dict[str, Any]]) -> Optional[int]:
         return self.get_connector_id()
@@ -1506,26 +1498,23 @@ class SupabaseWriter:
                 observed_points - len(rows),
                 series_id,
             )
-        def write_chunk(chunk: Sequence[Dict[str, Any]]) -> None:
-            self.core.table("observations").upsert(
-                list(chunk), on_conflict="connector_id,timeseries_id,observed_at"
-            ).execute()
-
-        try:
-            stats = write_observations(
-                rows,
-                chunk_size=max(1, len(rows)),
-                connector_code=SOS_CONNECTOR_CODE,
-                write_chunk=write_chunk,
-                logger=LOG,
-                config={
-                    "minimum_attempt_runtime_ms": DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
-                },
-            )
-        except IngestDbObservationWriteError as exc:
-            merge_stats(self.observation_write_stats, exc.stats)
-            raise
-        merge_stats(self.observation_write_stats, stats)
+        if rows:
+            for attempt in range(1, 4):
+                try:
+                    self.core.table("observations").upsert(
+                        rows, on_conflict="connector_id,timeseries_id,observed_at"
+                    ).execute()
+                    break
+                except Exception as exc:
+                    if not _is_transient_postgrest_error(exc) or attempt == 3:
+                        raise
+                    LOG.warning(
+                        "Observation upsert failed (attempt %s/3) for timeseries_id=%s: %s",
+                        attempt,
+                        series_id,
+                        exc,
+                    )
+                    time.sleep(min(30, 2**attempt))
 
     def update_last_value(
         self,
@@ -1997,8 +1986,6 @@ class UkAirIngestor:
                     connector_id=connector_id,
                     timeseries_id=ts_db_id,
                 )
-                if isinstance(exc, IngestDbObservationWriteError):
-                    raise
             _progress_tick(idx, total)
         _progress_done(f"Backfill {year}", total)
         return errors
@@ -2047,8 +2034,6 @@ class UkAirIngestor:
                     connector_id=connector_id,
                     timeseries_id=ts_db_id,
                 )
-                if isinstance(exc, IngestDbObservationWriteError):
-                    raise
             _progress_tick(idx, total)
         _progress_done(f"Refresh recent ({hours}h)", total)
         return errors
@@ -2203,6 +2188,23 @@ def _safe_number(raw: Any) -> Optional[float]:
         return num
     except (ValueError, TypeError):
         return None
+
+
+def _is_transient_postgrest_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    if "json could not be generated" in text:
+        return True
+    if "cloudflare" in text or "internal server error" in text:
+        return True
+    match = re.search(r"code[^0-9]*([0-9]{3})", text)
+    if match:
+        try:
+            code = int(match.group(1))
+        except ValueError:
+            code = 0
+        if 500 <= code <= 599:
+            return True
+    return False
 
 
 def _resolve_uniform_value(values: Iterable[Optional[str]]) -> Optional[str]:
@@ -2985,18 +2987,11 @@ def main() -> None:
             context={"station_like": args.station_like, "region": args.region},
             exc=exc,
         )
-        if isinstance(exc, IngestDbObservationWriteError):
-            raise
     finally:
         if raw_session:
             raw_session.finalize()
         print(f"Stations collected: {stations_count}")
         print(f"Errors: {errors}")
-        print(
-            "IngestDB observation write: "
-            + json.dumps(writer.observation_write_stats, sort_keys=True)
-        )
-        print("Cross-database transaction: false")
 
 
 if __name__ == "__main__":

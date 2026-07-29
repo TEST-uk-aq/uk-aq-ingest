@@ -7,12 +7,6 @@ import {
   writeObservsWithOutbox,
 } from "../_shared/observs_client.ts";
 import {
-  createEmptyIngestDbObservationWriteStats,
-  isIngestDbObservationWriteError,
-  mergeIngestDbObservationWriteStats,
-  writeIngestDbObservations,
-} from "../_shared/ingestdb_observation_writer.mjs";
-import {
   addRuntimeDeadlineFailure,
   asSosFetchFailure,
   boundMessage,
@@ -78,21 +72,6 @@ const DEFAULT_OBSERVS_BUFFER_FLUSH_ROWS = 5000;
 const PAGE_SIZE = 1000;
 const CONCURRENCY_LIMIT = 5;
 const RUNTIME_DEADLINE_TIMESERIES_SAMPLE_LIMIT = 10;
-
-async function postgrestFetch(url: string, init: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("PostgREST request timed out.");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")
   ?? Deno.env.get("SB_SUPABASE_URL")
@@ -191,16 +170,7 @@ async function postgrestRequest<T>(
   body?: unknown,
   prefer?: string,
   schema?: string,
-): Promise<{
-  data: T | null;
-  error: {
-    message: string;
-    code?: string | null;
-    details?: string | null;
-    hint?: string | null;
-    http_status?: number | null;
-  } | null;
-}> {
+): Promise<{ data: T | null; error: { message: string } | null }> {
   if (!REST_BASE_URL || !SUPABASE_PRIVILEGED_KEY) {
     return { data: null, error: { message: "Missing SUPABASE_URL or SB_SECRET_KEY." } };
   }
@@ -210,7 +180,7 @@ async function postgrestRequest<T>(
       url.searchParams.set(key, String(value));
     }
   }
-  const resp = await postgrestFetch(url.toString(), {
+  const resp = await fetch(url.toString(), {
     method,
     headers: postgrestHeaders(prefer, schema),
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -225,21 +195,7 @@ async function postgrestRequest<T>(
       ?? (payload as { error_description?: string })?.error_description
       ?? (payload as { error?: string })?.error
       ?? resp.statusText;
-    const errorPayload = payload && typeof payload === "object"
-      ? payload as Record<string, unknown>
-      : {};
-    return {
-      data: null,
-      error: {
-        message: String(message),
-        code: errorPayload.code == null ? null : String(errorPayload.code),
-        details: errorPayload.details == null
-          ? null
-          : String(errorPayload.details),
-        hint: errorPayload.hint == null ? null : String(errorPayload.hint),
-        http_status: resp.status,
-      },
-    };
+    return { data: null, error: { message: String(message) } };
   }
   return { data: payload as T, error: null };
 }
@@ -324,9 +280,6 @@ serve(async (req) => {
   let status = 200;
   let polled = 0;
   let observationsUpserted = 0;
-  const ingestDbObservationWriteStats =
-    createEmptyIngestDbObservationWriteStats();
-  let ingestDbObservationWriteFailed = false;
   let gateway502Failures = 0;
   let skippedNoLastValueAt = 0;
   let skippedStaleLastValueAt = 0;
@@ -537,7 +490,6 @@ serve(async (req) => {
 
         if (shouldPoll) {
           const checkpointCandidates = requestedTimeseriesIds?.length ? series.slice() : [];
-          const successfullyPolledTimeseriesIds = new Set<number>();
           const beforeRecencyFilter = series.length;
           const withRecentLastValue = series.filter((row) => {
             if (!row.last_value_at) {
@@ -694,34 +646,17 @@ serve(async (req) => {
                   value: point.value,
                   status: point.status,
                 }));
-                const writeStats = await writeIngestDbObservations({
-                  rows: observationRows,
-                  chunkSize: observationRows.length,
-                  connectorCode: SOS_CONNECTOR_CODE,
-                  logger: console,
-                  config: { minimumAttemptRuntimeMs: DEFAULT_TIMEOUT_MS },
-                  runtimeBudget: {
-                    shouldStop,
-                    remainingRuntimeMs: () =>
-                      Math.max(0, runtimeDeadline - Date.now()),
-                  },
-                  writeChunk: async (chunk: Record<string, unknown>[]) => {
-                    const { error } = await postgrestRequest(
-                      "POST",
-                      "observations",
-                      { on_conflict: "connector_id,timeseries_id,observed_at" },
-                      chunk,
-                      "resolution=merge-duplicates,return=minimal",
-                    );
-                    if (error) throw error;
-                  },
-                });
-                mergeIngestDbObservationWriteStats(
-                  ingestDbObservationWriteStats,
-                  writeStats,
+                const { error } = await postgrestRequest(
+                  "POST",
+                  "observations",
+                  { on_conflict: "connector_id,timeseries_id,observed_at" },
+                  observationRows,
+                  "resolution=merge-duplicates,return=minimal",
                 );
-                observationsUpserted =
-                  ingestDbObservationWriteStats.committed_rows;
+                if (error) {
+                  throw new Error(`observations upsert failed for ${row.id}: ${error.message}`);
+                }
+                observationsUpserted += observationRows.length;
                 const observsRows = observationRows.map((point) => {
                   const numericValue = Number(point.value);
                   return {
@@ -743,22 +678,7 @@ serve(async (req) => {
                 connector?.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
               );
               polled += 1;
-              successfullyPolledTimeseriesIds.add(Number(row.id));
             } catch (err) {
-              if (isIngestDbObservationWriteError(err)) {
-                const writeError = err as {
-                  stats?: Record<string, unknown>;
-                };
-                if (writeError.stats) {
-                  mergeIngestDbObservationWriteStats(
-                    ingestDbObservationWriteStats,
-                    writeError.stats,
-                  );
-                }
-                observationsUpserted =
-                  ingestDbObservationWriteStats.committed_rows;
-                ingestDbObservationWriteFailed = true;
-              }
               const failure = asSosFetchFailure(err);
               if (isRuntimeDeadlineFailure(failure)) {
                 addRuntimeDeadlineFailure(
@@ -828,12 +748,9 @@ serve(async (req) => {
             });
           }
 
-          const successfulCheckpointCandidates = checkpointCandidates.filter(
-            (row) => successfullyPolledTimeseriesIds.has(Number(row.id)),
-          );
-          if (successfulCheckpointCandidates.length) {
+          if (checkpointCandidates.length) {
             await upsertSosTimeseriesCheckpoints(
-              successfulCheckpointCandidates.map((row) => ({ id: row.id })),
+              checkpointCandidates.map((row) => ({ id: row.id })),
               now.toISOString(),
               errorLogger,
               connector?.id ?? requestedConnectorId ?? null,
@@ -841,28 +758,26 @@ serve(async (req) => {
             );
           }
 
-          if (!ingestDbObservationWriteFailed) {
-            const { error: pollUpdateError } = await postgrestRequest(
-              "PATCH",
-              "connectors",
-              { id: `eq.${connector.id}` },
-              { last_polled_at: now.toISOString() },
-              "return=minimal",
-            );
-            if (pollUpdateError) {
-              errors.push("connector last_polled_at update failed");
-              await errorLogger.logError({
-                source: "edge",
-                severity: "error",
-                message: "Failed to update connectors.last_polled_at.",
-                context: {
-                  connector_id: connector.id,
-                  error: pollUpdateError.message,
-                },
-                connector_code: connector.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
+          const { error: pollUpdateError } = await postgrestRequest(
+            "PATCH",
+            "connectors",
+            { id: `eq.${connector.id}` },
+            { last_polled_at: now.toISOString() },
+            "return=minimal",
+          );
+          if (pollUpdateError) {
+            errors.push("connector last_polled_at update failed");
+            await errorLogger.logError({
+              source: "edge",
+              severity: "error",
+              message: "Failed to update connectors.last_polled_at.",
+              context: {
                 connector_id: connector.id,
-              });
-            }
+                error: pollUpdateError.message,
+              },
+              connector_code: connector.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
+              connector_id: connector.id,
+            });
           }
 
           const hardGateway502Failure = gateway502Failures > 0 && polled === 0;
@@ -875,8 +790,6 @@ serve(async (req) => {
             connector_id: connector.id,
             series_polled: polled,
             observations_upserted: observationsUpserted,
-            ingestdb_observation_write: ingestDbObservationWriteStats,
-            cross_database_transaction: false,
             observs_written: observsWritten,
             observs_receipts_upserted: observsReceiptsUpserted,
             observs_enqueued: observsEnqueued,

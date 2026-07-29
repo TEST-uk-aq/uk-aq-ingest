@@ -1,5 +1,4 @@
 import { deflateRawSync } from "node:zlib";
-import { writeIngestDbObservations } from "../../supabase/functions/_shared/ingestdb_observation_writer.mjs";
 
 const CONNECTOR_CODE = "sensorcommunity";
 const SCHEDULER_BACKEND_SUPABASE_FUNCTION = "supabase_function";
@@ -1177,28 +1176,26 @@ async function fetchTimeseriesIds(connectorId, serviceRef, timeseriesRefs) {
 }
 
 async function upsertObservations(rows) {
-  return await writeIngestDbObservations({
-    rows,
-    chunkSize: UPSERT_CHUNK_SIZE,
-    connectorCode: CONNECTOR_CODE,
-    logger: console,
-    config: { minimumAttemptRuntimeMs: HTTP_TIMEOUT_MS },
-    writeChunk: async (rowsChunk) => {
-      const response = await postgrestRequest("POST", "observations", {
-        query: { on_conflict: "connector_id,timeseries_id,observed_at" },
-        body: rowsChunk,
-        prefer: "resolution=merge-duplicates,return=minimal",
-      });
-      if (!response.ok) {
-        const error = new Error(
-          `Failed to upsert observations (${response.status}): ${response.text}`,
-        );
-        error.httpStatus = response.status;
-        error.response = response.data;
-        throw error;
-      }
-    },
-  });
+  if (!rows.length) {
+    return 0;
+  }
+
+  let count = 0;
+  for (const rowsChunk of chunk(rows, UPSERT_CHUNK_SIZE)) {
+    const response = await postgrestRequest("POST", "observations", {
+      query: { on_conflict: "connector_id,timeseries_id,observed_at" },
+      body: rowsChunk,
+      prefer: "resolution=merge-duplicates,return=minimal",
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Failed to upsert observations (${response.status}): ${response.text}`,
+      );
+    }
+    count += rowsChunk.length;
+  }
+
+  return count;
 }
 
 function observationValueDedupeToken(value) {
@@ -1875,7 +1872,6 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
       observs_written: 0,
       observs_receipts_upserted: 0,
       observs_enqueued: 0,
-      cross_database_transaction: false,
     };
   }
 
@@ -1921,12 +1917,7 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
     });
   }
 
-  // Create/refresh metadata before observations, but do not advance the
-  // latest-value marker until the authoritative IngestDB write has committed.
-  const timeseriesMetadataPayload = timeseriesPayload.map(
-    ({ last_value: _lastValue, last_value_at: _lastValueAt, ...metadata }) => metadata,
-  );
-  await upsertTimeseries(timeseriesMetadataPayload);
+  await upsertTimeseries(timeseriesPayload);
   const timeseriesIdMap = await fetchTimeseriesIds(
     connectorId,
     SCOMM_SERVICE_REF,
@@ -1962,44 +1953,10 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
   const observsRows = observationRows.map((row) => toObservsObservationRow(row))
     .filter((row) => row !== null);
 
-  // IngestDB and ObsAQIDB are intentionally independent; no cross-database
-  // transaction exists.
-  const [ingestDbResult, observsResult] = await Promise.allSettled([
+  const [observationsUpserted, observsWriteStats] = await Promise.all([
     upsertObservations(observationRows),
     writeObservsWithOutbox(observsRows),
   ]);
-  if (ingestDbResult.status === "rejected") {
-    const error = ingestDbResult.reason instanceof Error
-      ? ingestDbResult.reason
-      : new Error(String(ingestDbResult.reason));
-    error.details = {
-      stage: "ingestdb_observation_write",
-      ingestdb_observation_write: error.stats ?? null,
-      cross_database_transaction: false,
-      obsaqidb_write: observsResult.status === "fulfilled"
-        ? { status: "succeeded", ...observsResult.value }
-        : { status: "failed", message: shortError(observsResult.reason) },
-    };
-    throw error;
-  }
-  await upsertTimeseries(timeseriesPayload);
-  if (observsResult.status === "rejected") {
-    const error = observsResult.reason instanceof Error
-      ? observsResult.reason
-      : new Error(String(observsResult.reason));
-    error.details = {
-      stage: "obsaqidb_write",
-      ingestdb_observation_write: {
-        status: "succeeded",
-        ...ingestDbResult.value,
-      },
-      cross_database_transaction: false,
-      obsaqidb_write: { status: "failed", message: shortError(error) },
-    };
-    throw error;
-  }
-  const ingestDbWriteStats = ingestDbResult.value;
-  const observsWriteStats = observsResult.value;
 
   return {
     run_status: "success",
@@ -2007,9 +1964,7 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
     count: filteredRows.length,
     stations_updated: stationsUpdated,
     timeseries_updated: timeseriesPayload.length,
-    observations_upserted: ingestDbWriteStats.committed_rows,
-    ingestdb_observation_write: ingestDbWriteStats,
-    cross_database_transaction: false,
+    observations_upserted: observationsUpserted,
     observations_rows_input: rawObservationRows.length,
     observations_rows_prepared: observationRows.length,
     observations_rows_deduped_prewrite: observationDedupe.deduped,

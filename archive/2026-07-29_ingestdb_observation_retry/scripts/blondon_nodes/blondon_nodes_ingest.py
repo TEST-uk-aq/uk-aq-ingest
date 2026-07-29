@@ -29,13 +29,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
-from scripts.uk_aq_ingestdb_observation_writer import (
-    DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
-    IngestDbObservationWriteError,
-    empty_stats,
-    merge_stats,
-    write_observations,
-)
 load_dotenv()
 
 LOG = logging.getLogger("blondon_nodes_ingest")
@@ -293,7 +286,6 @@ class SupabaseWriter:
         self.public = self.client.schema(
             os.getenv("UK_AQ_PUBLIC_SCHEMA") or "uk_aq_public"
         )
-        self.observation_write_stats = empty_stats()
 
     def fetch_connector(self) -> Dict[str, Any]:
         resp = self.core.table("connectors").select("id,poll_enabled,poll_window_hours,poll_interval_minutes,poll_timeseries_batch_size").eq("connector_code", CONNECTOR_CODE).limit(1).execute()
@@ -383,39 +375,21 @@ class SupabaseWriter:
         return out
 
     def upsert_observations(self, rows: Sequence[Dict[str, Any]]) -> int:
-        payload = [
-            {
-                "connector_id": row["connector_id"],
-                "timeseries_id": row["timeseries_id"],
-                "observed_at": row["observed_at"],
-                "value": row["value"],
-                "status": row["status"],
-            }
-            for row in rows
-        ]
-
-        def write_chunk(chunk: Sequence[Dict[str, Any]]) -> None:
+        if rows:
             self.core.table("observations").upsert(
-                list(chunk),
+                [
+                    {
+                        "connector_id": r["connector_id"],
+                        "timeseries_id": r["timeseries_id"],
+                        "observed_at": r["observed_at"],
+                        "value": r["value"],
+                        "status": r["status"],
+                    }
+                    for r in rows
+                ],
                 on_conflict="connector_id,timeseries_id,observed_at",
             ).execute()
-
-        try:
-            stats = write_observations(
-                payload,
-                chunk_size=max(1, len(payload)),
-                connector_code=CONNECTOR_CODE,
-                write_chunk=write_chunk,
-                logger=LOG,
-                config={
-                    "minimum_attempt_runtime_ms": DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
-                },
-            )
-        except IngestDbObservationWriteError as exc:
-            merge_stats(self.observation_write_stats, exc.stats)
-            raise
-        merge_stats(self.observation_write_stats, stats)
-        return int(stats["committed_rows"])
+        return len(rows)
 
     def update_timeseries_value_bounds(self, rows: Sequence[Dict[str, Any]]) -> int:
         grouped: Dict[int, List[Dict[str, Any]]] = {}
@@ -628,7 +602,6 @@ def main() -> int:
                 "series_polled": 0,
                 "timeseries_updated": 0,
                 "observations_upserted": 0,
-                "cross_database_transaction": False,
                 "observations_rows_input": 0,
                 "observations_rows_prepared": 0,
                 "observs_rows_prepared": 0,
@@ -682,7 +655,6 @@ def main() -> int:
                 "series_polled": 0,
                 "timeseries_updated": 0,
                 "observations_upserted": 0,
-                "cross_database_transaction": False,
                 "observations_rows_input": 0,
                 "observations_rows_prepared": 0,
                 "observs_rows_prepared": 0,
@@ -820,8 +792,6 @@ def main() -> int:
                 station_errors[sp] = error
                 species_last_error[sp] = error
                 LOG.warning("Failed %s %s: %s", station_ref, sp, exc)
-                if isinstance(exc, IngestDbObservationWriteError):
-                    raise
             if args.sleep_seconds:
                 time.sleep(args.sleep_seconds)
 
@@ -906,9 +876,7 @@ def main() -> int:
         "stations_updated": len(checkpoint_rows) if not args.dry_run else 0,
         "series_polled": api_calls,
         "timeseries_updated": timeseries_updated,
-        "observations_upserted": writer.observation_write_stats["committed_rows"],
-        "ingestdb_observation_write": writer.observation_write_stats,
-        "cross_database_transaction": False,
+        "observations_upserted": observations_upserted,
         "observations_rows_input": observations_input,
         "observations_rows_prepared": observations_input,
         "observs_rows_prepared": observs_rows_prepared,
@@ -932,8 +900,7 @@ def main() -> int:
         "Nodes ingest complete stations=%s species=%s api_calls=%s observations=%s "
         "null_values_skipped=%s empty_series=%s checkpoints=%s "
         "pubsub_observs=%s secondary_errors=%s dry_run=%s",
-        len(stations), len(species), api_calls,
-        writer.observation_write_stats["committed_rows"],
+        len(stations), len(species), api_calls, observations_upserted,
         null_values_skipped, empty_series, len(checkpoint_rows),
         pub_obs, secondary_error_count, args.dry_run,
     )

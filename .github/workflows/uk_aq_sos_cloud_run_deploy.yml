@@ -11,6 +11,7 @@ on:
       - "supabase/functions/_shared/fetch_egress_patch.ts"
       - "supabase/functions/_shared/egress_metrics.ts"
       - "supabase/functions/_shared/observs_client.ts"
+      - "supabase/functions/_shared/ingestdb_observation_writer.mjs"
       - "scripts/gcp/**"
       - "scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"
       - ".github/workflows/uk_aq_sos_cloud_run_deploy.yml"
