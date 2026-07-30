@@ -242,11 +242,17 @@ jobs:
             echo "Created Cloud Tasks queue: ${TASK_QUEUE_ID}"
           fi
 
-          gcloud tasks queues add-iam-policy-binding "${TASK_QUEUE_ID}" \
-            --location "${REGION}" \
-            --member "serviceAccount:${JOB_SERVICE_ACCOUNT}" \
-            --role "roles/cloudtasks.enqueuer" >/dev/null
-
+          for role in \
+            roles/cloudtasks.enqueuer \
+            roles/cloudtasks.viewer \
+            roles/cloudtasks.taskDeleter
+          do
+            gcloud tasks queues add-iam-policy-binding "${TASK_QUEUE_ID}" \
+              --location "${REGION}" \
+              --member "serviceAccount:${JOB_SERVICE_ACCOUNT}" \
+              --role "${role}" >/dev/null
+          done
+          
           project_number="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
           cloud_tasks_sa="service-${project_number}@gcp-sa-cloudtasks.iam.gserviceaccount.com"
           gcloud iam service-accounts add-iam-policy-binding "${task_invoker_sa}" \
