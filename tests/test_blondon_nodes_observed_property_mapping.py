@@ -1,7 +1,11 @@
 from dataclasses import dataclass
 from typing import Any
 
-from scripts.blondon_nodes.blondon_nodes_ingest import SPECIES_CONFIG, SupabaseWriter
+from scripts.blondon_nodes.blondon_nodes_ingest import SupabaseWriter
+from scripts.blondon_nodes.blondon_nodes_reference_data import (
+    SPECIES_CONFIG,
+    build_nodes_timeseries_rows,
+)
 
 
 @dataclass
@@ -65,6 +69,47 @@ def test_species_mapping_contract() -> None:
     assert SPECIES_CONFIG["NO2Index"]["mapping_kind"] == "derived_index"
     assert SPECIES_CONFIG["PM25Index"]["observed_property_code"] == "pm25index"
     assert SPECIES_CONFIG["NO2Index"]["observed_property_code"] == "no2index"
+
+
+def test_shared_builder_constructs_deterministic_complete_timeseries_rows() -> None:
+    phenomenon_ids = {
+        config["source_label"]: index
+        for index, config in enumerate(SPECIES_CONFIG.values(), start=1)
+    }
+    observed_property_ids = {
+        config["source_label"]: index
+        for index, config in enumerate(SPECIES_CONFIG.values(), start=11)
+    }
+    rows = build_nodes_timeseries_rows(
+        [{"id": 42, "station_ref": "BL0001", "station_name": "Example"}],
+        connector_id=7,
+        phenomenon_ids=phenomenon_ids,
+        observed_property_ids=observed_property_ids,
+        service_ref="breathelondon",
+    )
+
+    assert [row["timeseries_ref"] for row in rows] == [
+        "BL0001:PM25",
+        "BL0001:NO2",
+        "BL0001:PM25Index",
+        "BL0001:NO2Index",
+    ]
+    assert rows[0] == {
+        "timeseries_ref": "BL0001:PM25",
+        "label": "Example PM2.5",
+        "uom": "ug.m-3",
+        "station_id": 42,
+        "service_ref": "breathelondon",
+        "connector_id": 7,
+        "phenomenon_id": 1,
+        "observed_property_id": 11,
+        "extras": {
+            "site_code": "BL0001",
+            "species": "PM25",
+            "measurement_kind": "pollutant",
+            "api_units": "ug.m-3",
+        },
+    }
 
 
 def test_upsert_phenomena_uses_central_rpc_and_returns_ids() -> None:

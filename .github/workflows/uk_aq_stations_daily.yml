@@ -274,6 +274,13 @@ jobs:
         run: |
           python3 scripts/blondon_nodes/blondon_nodes_list_stations.py --to-supabase
 
+      - name: Discover Breathe London Nodes timeseries
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 scripts/blondon_nodes/blondon_nodes_discover_timeseries.py
+
       # Script needs updating before LAQN can start polling
       # - name: Sync LAQN stations
       #   env:

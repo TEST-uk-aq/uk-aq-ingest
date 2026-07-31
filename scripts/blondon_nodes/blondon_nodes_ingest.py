@@ -28,7 +28,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
-from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
+from scripts.blondon_nodes.blondon_nodes_reference_data import (
+    DEFAULT_SPECIES,
+    SPECIES_CONFIG,
+    build_nodes_timeseries_rows,
+    upsert_nodes_phenomena,
+)
 from scripts.uk_aq_ingestdb_observation_writer import (
     DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
     IngestDbObservationWriteError,
@@ -47,58 +52,9 @@ logging.getLogger("postgrest").setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logg
 CONNECTOR_CODE = "blondon_nodes"
 SERVICE_REF = os.getenv("BLONDON_NODES_SERVICE_REF", "breathelondon")
 BASE_URL = os.getenv("BLONDON_NODES_BASE_URL", "https://breathe-london-7x54d7qf.ew.gateway.dev").rstrip("/")
-DEFAULT_SPECIES = ("PM25", "NO2", "PM25Index", "NO2Index")
 DEFAULT_BATCH_SIZE = 500
 DEFAULT_OVERLAP_MINUTES = 10
 DEFAULT_SLEEP_SECONDS = 0.1
-
-SPECIES_CONFIG: Dict[str, Dict[str, Any]] = {
-    "PM25": {
-        "label": "PM2.5",
-        "uom": "ug.m-3",
-        "source_label": "breathelondon_nodes:pm2.5",
-        "notation": "PM2.5",
-        "pollutant_label": "pm2.5",
-        "kind": "pollutant",
-        "mapping_kind": "raw_observed_property",
-        "observed_property_code": "pm25",
-        "is_aqi_eligible": True,
-    },
-    "NO2": {
-        "label": "NO2",
-        "uom": "ug.m-3",
-        "source_label": "breathelondon_nodes:no2",
-        "notation": "NO2",
-        "pollutant_label": "no2",
-        "kind": "pollutant",
-        "mapping_kind": "raw_observed_property",
-        "observed_property_code": "no2",
-        "is_aqi_eligible": True,
-    },
-    "PM25Index": {
-        "label": "PM2.5 DAQI",
-        "uom": "DAQI",
-        "source_label": "breathelondon_nodes:pm2.5:daqi",
-        "notation": "PM2.5 DAQI",
-        "pollutant_label": "daqi_pm25",
-        "kind": "daqi_index",
-        "mapping_kind": "derived_index",
-        "observed_property_code": "pm25index",
-        "is_aqi_eligible": False,
-    },
-    "NO2Index": {
-        "label": "NO2 DAQI",
-        "uom": "DAQI",
-        "source_label": "breathelondon_nodes:no2:daqi",
-        "notation": "NO2 DAQI",
-        "pollutant_label": "daqi_no2",
-        "kind": "daqi_index",
-        "mapping_kind": "derived_index",
-        "observed_property_code": "no2index",
-        "is_aqi_eligible": False,
-    },
-}
-
 
 def chunked(values: Sequence[Any], size: int) -> List[Sequence[Any]]:
     return [values[index:index + size] for index in range(0, len(values), size)]
@@ -322,54 +278,8 @@ class SupabaseWriter:
 
     def upsert_phenomena(
         self, connector_id: int, species: Sequence[str]
-    ) -> Tuple[Dict[str, int], Dict[str, Optional[int]]]:
-        rows = [
-            {
-                "connector_id": connector_id,
-                "label": SPECIES_CONFIG[s]["label"],
-                "source_label": SPECIES_CONFIG[s]["source_label"],
-                "notation": SPECIES_CONFIG[s]["notation"],
-                "pollutant_label": SPECIES_CONFIG[s]["pollutant_label"],
-                "source_uom": SPECIES_CONFIG[s]["uom"],
-                "mapping_kind": SPECIES_CONFIG[s]["mapping_kind"],
-                "observed_property_code": SPECIES_CONFIG[s]["observed_property_code"],
-                "is_aqi_eligible": SPECIES_CONFIG[s]["is_aqi_eligible"],
-            }
-            for s in species
-        ]
-        diagnostics_by_source_label = upsert_phenomena_via_rpc(
-            self.public, rows
-        )
-        ids_by_source_label: Dict[str, int] = {
-            source_label: int(diagnostic["phenomenon_id"])
-            for source_label, diagnostic in diagnostics_by_source_label.items()
-        }
-
-        for input_row in rows:
-            source_label = str(input_row["source_label"])
-            diagnostic = diagnostics_by_source_label[source_label]
-            if diagnostic.get("mapping_kind") != input_row["mapping_kind"]:
-                raise RuntimeError(
-                    f"Central phenomena RPC mapping kind mismatch for {source_label}"
-                )
-            if diagnostic.get("observed_property_code") != input_row["observed_property_code"]:
-                raise RuntimeError(
-                    f"Central phenomena RPC observed-property mismatch for {source_label}"
-                )
-            if diagnostic.get("is_aqi_eligible") is not input_row["is_aqi_eligible"]:
-                raise RuntimeError(
-                    f"Central phenomena RPC AQI eligibility mismatch for {source_label}"
-                )
-
-        observed_property_ids = {
-            source_label: (
-                int(diagnostic["observed_property_id"])
-                if diagnostic.get("observed_property_id") is not None
-                else None
-            )
-            for source_label, diagnostic in diagnostics_by_source_label.items()
-        }
-        return ids_by_source_label, observed_property_ids
+    ) -> Tuple[Dict[str, int], Dict[str, int]]:
+        return upsert_nodes_phenomena(self.public, connector_id, species)
 
     def upsert_timeseries(self, rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
         if rows:
@@ -710,13 +620,14 @@ def main() -> int:
         )
     else:
         phenomenon_ids, observed_property_ids = {}, {}
-    ts_rows = []
-    for st in stations:
-        station_ref = str(st["station_ref"])
-        station_name = st.get("station_name") or st.get("label") or station_ref
-        for sp in species:
-            cfg = SPECIES_CONFIG[sp]
-            ts_rows.append({"timeseries_ref": f"{station_ref}:{sp}", "label": f"{station_name} {cfg['label']}", "uom": cfg["uom"], "station_id": int(st["id"]), "service_ref": SERVICE_REF, "connector_id": connector_id, "phenomenon_id": phenomenon_ids.get(cfg["source_label"]), "observed_property_id": observed_property_ids.get(cfg["source_label"]), "extras": {"site_code": station_ref, "species": sp, "measurement_kind": cfg["kind"], "api_units": cfg["uom"]}})
+    ts_rows = build_nodes_timeseries_rows(
+        stations,
+        connector_id=connector_id,
+        phenomenon_ids=phenomenon_ids,
+        observed_property_ids=observed_property_ids,
+        service_ref=SERVICE_REF,
+        species=species,
+    )
     ts_ids = writer.upsert_timeseries(ts_rows) if not args.dry_run else {r["timeseries_ref"]: -i-1 for i, r in enumerate(ts_rows)}
     client = BreatheLondonNodesClient(api_key)
     secondary_errors: List[str] = []
