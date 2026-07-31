@@ -103,6 +103,7 @@ function isValidChildPayload(payload: Record<string, unknown>): boolean {
   }
   if (
     payload.stopped_reason !== undefined &&
+    payload.stopped_reason !== null &&
     !isBoundedString(payload.stopped_reason, 128)
   ) {
     return false;
