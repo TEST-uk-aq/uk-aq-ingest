@@ -43,12 +43,6 @@ jobs:
       TASKS_ENABLED: ${{ vars.GCP_OPENAQ_TASKS_ENABLED || 'true' }}
       TASK_QUEUE_ID: ${{ vars.GCP_OPENAQ_TASK_QUEUE_ID || 'uk-aq-openaq-trigger-queue' }}
       TASK_INVOKER_SERVICE_ACCOUNT: ${{ vars.GCP_OPENAQ_TASK_INVOKER_SERVICE_ACCOUNT || '' }}
-      SCHEDULER_ENABLED: ${{ vars.GCP_OPENAQ_SCHEDULER_ENABLED || 'true' }}
-      SCHEDULER_JOB_NAME: ${{ vars.GCP_OPENAQ_SCHEDULER_JOB_NAME || 'uk-aq-openaq-safety-trigger' }}
-      SCHEDULER_CRON: ${{ vars.GCP_OPENAQ_SCHEDULER_CRON || '*/30 * * * *' }}
-      SCHEDULER_TIMEZONE: ${{ vars.GCP_OPENAQ_SCHEDULER_TIMEZONE || 'Etc/UTC' }}
-      SCHEDULER_MAX_RETRY_ATTEMPTS: ${{ vars.GCP_OPENAQ_SCHEDULER_MAX_RETRY_ATTEMPTS || '0' }}
-      SCHEDULER_SERVICE_ACCOUNT: ${{ vars.GCP_OPENAQ_SCHEDULER_SERVICE_ACCOUNT || '' }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
@@ -224,7 +218,7 @@ jobs:
             exit 0
           fi
 
-          task_invoker_sa="${TASK_INVOKER_SERVICE_ACCOUNT:-${SCHEDULER_SERVICE_ACCOUNT:-${JOB_SERVICE_ACCOUNT}}}"
+          task_invoker_sa="${TASK_INVOKER_SERVICE_ACCOUNT:-${JOB_SERVICE_ACCOUNT}}"
           if [ -z "${task_invoker_sa}" ]; then
             echo "Missing task invoker service account."
             exit 1
@@ -513,62 +507,6 @@ jobs:
             exit 1
           fi
           echo "Verified label job_name=${job_name_label}"
-
-      - name: Ensure Cloud Scheduler safety trigger exists
-        run: |
-          set -euo pipefail
-
-          enabled="$(printf '%s' "${SCHEDULER_ENABLED}" | tr '[:upper:]' '[:lower:]')"
-          if [ "${enabled}" != "true" ] && [ "${enabled}" != "1" ] && [ "${enabled}" != "yes" ]; then
-            echo "Skipping scheduler trigger management (SCHEDULER_ENABLED=${SCHEDULER_ENABLED})."
-            exit 0
-          fi
-
-          if [ -z "${SCHEDULER_JOB_NAME:-}" ]; then
-            echo "Missing scheduler job name."
-            exit 1
-          fi
-          if [ -z "${SCHEDULER_CRON:-}" ]; then
-            echo "Missing scheduler cron."
-            exit 1
-          fi
-
-          scheduler_sa="${SCHEDULER_SERVICE_ACCOUNT:-${JOB_SERVICE_ACCOUNT}}"
-          service_uri="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format='value(status.url)')"
-          safety_run_body='{"trigger_mode":"safety"}'
-
-          gcloud run services add-iam-policy-binding "${SERVICE_NAME}" \
-            --region "${REGION}" \
-            --member "serviceAccount:${scheduler_sa}" \
-            --role "roles/run.invoker" >/dev/null
-
-          if gcloud scheduler jobs describe "${SCHEDULER_JOB_NAME}" --location "${REGION}" >/dev/null 2>&1; then
-            gcloud scheduler jobs update http "${SCHEDULER_JOB_NAME}" \
-              --location "${REGION}" \
-              --schedule "${SCHEDULER_CRON}" \
-              --time-zone "${SCHEDULER_TIMEZONE}" \
-              --uri "${service_uri}" \
-              --http-method POST \
-              --update-headers "Content-Type=application/json,X-UK-AQ-Upstream-Auth=${UK_AQ_EDGE_UPSTREAM_SECRET}" \
-              --message-body "${safety_run_body}" \
-              --oidc-service-account-email "${scheduler_sa}" \
-              --oidc-token-audience "${service_uri}" \
-              --max-retry-attempts "${SCHEDULER_MAX_RETRY_ATTEMPTS}"
-            echo "Updated Cloud Scheduler job: ${SCHEDULER_JOB_NAME}"
-          else
-            gcloud scheduler jobs create http "${SCHEDULER_JOB_NAME}" \
-              --location "${REGION}" \
-              --schedule "${SCHEDULER_CRON}" \
-              --time-zone "${SCHEDULER_TIMEZONE}" \
-              --uri "${service_uri}" \
-              --http-method POST \
-              --headers "Content-Type=application/json,X-UK-AQ-Upstream-Auth=${UK_AQ_EDGE_UPSTREAM_SECRET}" \
-              --message-body "${safety_run_body}" \
-              --oidc-service-account-email "${scheduler_sa}" \
-              --oidc-token-audience "${service_uri}" \
-              --max-retry-attempts "${SCHEDULER_MAX_RETRY_ATTEMPTS}"
-            echo "Created Cloud Scheduler job: ${SCHEDULER_JOB_NAME}"
-          fi
 
       - name: Reconcile Cloud Run URL in ingest scheduler D1
         run: |

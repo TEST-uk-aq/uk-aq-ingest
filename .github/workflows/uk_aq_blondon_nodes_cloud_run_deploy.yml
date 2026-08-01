@@ -38,13 +38,6 @@ jobs:
       SERVICE_CONCURRENCY: ${{ vars.GCP_BLONDON_NODES_SERVICE_CONCURRENCY || '1' }}
       SERVICE_MAX_INSTANCES: ${{ vars.GCP_BLONDON_NODES_SERVICE_MAX_INSTANCES || '1' }}
       SERVICE_MIN_INSTANCES: ${{ vars.GCP_BLONDON_NODES_SERVICE_MIN_INSTANCES || '0' }}
-      SCHEDULER_ENABLED: ${{ vars.GCP_BLONDON_NODES_SCHEDULER_ENABLED || 'true' }}
-      SCHEDULER_JOB_NAME: ${{ vars.GCP_BLONDON_NODES_SCHEDULER_JOB_NAME || 'uk-aq-blondon-nodes-trigger' }}
-      SCHEDULER_CRON: ${{ vars.GCP_BLONDON_NODES_SCHEDULER_CRON || '*/15 * * * *' }}
-      SCHEDULER_TIMEZONE: ${{ vars.GCP_BLONDON_NODES_SCHEDULER_TIMEZONE || 'Etc/UTC' }}
-      SCHEDULER_MAX_RETRY_ATTEMPTS: ${{ vars.GCP_BLONDON_NODES_SCHEDULER_MAX_RETRY_ATTEMPTS || '0' }}
-      SCHEDULER_ATTEMPT_DEADLINE: ${{ vars.GCP_BLONDON_NODES_SCHEDULER_ATTEMPT_DEADLINE || '900s' }}
-      SCHEDULER_SERVICE_ACCOUNT: ${{ vars.GCP_BLONDON_NODES_SCHEDULER_SERVICE_ACCOUNT || '' }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
@@ -401,64 +394,6 @@ jobs:
             exit 1
           fi
           echo "Verified label job_name=${job_name_label}"
-
-      - name: Ensure Cloud Scheduler trigger exists
-        run: |
-          set -euo pipefail
-
-          enabled="$(printf '%s' "${SCHEDULER_ENABLED}" | tr '[:upper:]' '[:lower:]')"
-          if [ "${enabled}" != "true" ] && [ "${enabled}" != "1" ] && [ "${enabled}" != "yes" ]; then
-            echo "Skipping scheduler trigger management (SCHEDULER_ENABLED=${SCHEDULER_ENABLED})."
-            exit 0
-          fi
-
-          if [ -z "${SCHEDULER_JOB_NAME:-}" ]; then
-            echo "Missing scheduler job name."
-            exit 1
-          fi
-          if [ -z "${SCHEDULER_CRON:-}" ]; then
-            echo "Missing scheduler cron."
-            exit 1
-          fi
-
-          scheduler_sa="${SCHEDULER_SERVICE_ACCOUNT:-${BLONDON_NODES_SERVICE_ACCOUNT}}"
-          service_uri="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format='value(status.url)')"
-          scheduler_body='{}'
-
-          gcloud run services add-iam-policy-binding "${SERVICE_NAME}" \
-            --region "${REGION}" \
-            --member "serviceAccount:${scheduler_sa}" \
-            --role "roles/run.invoker" >/dev/null
-
-          if gcloud scheduler jobs describe "${SCHEDULER_JOB_NAME}" --location "${REGION}" >/dev/null 2>&1; then
-            gcloud scheduler jobs update http "${SCHEDULER_JOB_NAME}" \
-              --location "${REGION}" \
-              --schedule "${SCHEDULER_CRON}" \
-              --time-zone "${SCHEDULER_TIMEZONE}" \
-              --uri "${service_uri}" \
-              --http-method POST \
-              --update-headers "Content-Type=application/json,X-UK-AQ-Upstream-Auth=${UK_AQ_EDGE_UPSTREAM_SECRET}" \
-              --message-body "${scheduler_body}" \
-              --oidc-service-account-email "${scheduler_sa}" \
-              --oidc-token-audience "${service_uri}" \
-              --max-retry-attempts "${SCHEDULER_MAX_RETRY_ATTEMPTS}" \
-              --attempt-deadline "${SCHEDULER_ATTEMPT_DEADLINE}"
-            echo "Updated Cloud Scheduler job: ${SCHEDULER_JOB_NAME}"
-          else
-            gcloud scheduler jobs create http "${SCHEDULER_JOB_NAME}" \
-              --location "${REGION}" \
-              --schedule "${SCHEDULER_CRON}" \
-              --time-zone "${SCHEDULER_TIMEZONE}" \
-              --uri "${service_uri}" \
-              --http-method POST \
-              --headers "Content-Type=application/json,X-UK-AQ-Upstream-Auth=${UK_AQ_EDGE_UPSTREAM_SECRET}" \
-              --message-body "${scheduler_body}" \
-              --oidc-service-account-email "${scheduler_sa}" \
-              --oidc-token-audience "${service_uri}" \
-              --max-retry-attempts "${SCHEDULER_MAX_RETRY_ATTEMPTS}" \
-              --attempt-deadline "${SCHEDULER_ATTEMPT_DEADLINE}"
-            echo "Created Cloud Scheduler job: ${SCHEDULER_JOB_NAME}"
-          fi
 
       - name: Reconcile Cloud Run URL in ingest scheduler D1
         run: |
