@@ -46,7 +46,7 @@ For successfully written observations, the ingest updates
 `timeseries.first_value_at`, `timeseries.last_value_at`, and `timeseries.last_value`
 without regressing existing bounds.
 
-The normal Cloud Scheduler request body is `{}`. `trigger_mode=scheduled` is
+The normal Cloudflare scheduler request body is `{}`. `trigger_mode=scheduled` is
 equivalent to `{}`; `trigger_mode=manual` bypasses the poll-interval due check
 but still requires an enabled Cloud Run connector and a successful dispatch
 claim. There is no Nodes `safety` trigger mode.
