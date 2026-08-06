@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
-
-MODULE_PATH = Path("scripts/stations_daily/sync_obs_aqidb_uk_aq_core.py")
-SPEC = importlib.util.spec_from_file_location("sync_obs_aqidb_uk_aq_core", MODULE_PATH)
-assert SPEC is not None and SPEC.loader is not None
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+from scripts.stations_daily.sync_obs_aqidb_uk_aq_core_batching import (
+    delete_keys_in_batches,
+    parse_delete_batch_size,
+)
 
 
 def test_delete_keys_are_split_into_bounded_batches():
     calls = []
     keys = [{"id": value} for value in range(549)]
 
-    deleted = MODULE._delete_keys_in_batches(
+    deleted = delete_keys_in_batches(
         table="stations",
         keys=keys,
         batch_size=50,
@@ -31,7 +28,7 @@ def test_delete_keys_are_split_into_bounded_batches():
 
 def test_delete_batch_count_mismatch_fails_closed():
     try:
-        MODULE._delete_keys_in_batches(
+        delete_keys_in_batches(
             table="stations",
             keys=[{"id": 1}, {"id": 2}],
             batch_size=50,
@@ -45,13 +42,22 @@ def test_delete_batch_count_mismatch_fails_closed():
 
 
 def test_delete_batch_size_validation():
-    assert MODULE._parse_delete_batch_size(None) == 50
-    assert MODULE._parse_delete_batch_size("25") == 25
+    assert parse_delete_batch_size(None) == 50
+    assert parse_delete_batch_size("25") == 25
 
     for raw in ("0", "501", "invalid"):
         try:
-            MODULE._parse_delete_batch_size(raw)
+            parse_delete_batch_size(raw)
         except ValueError:
             pass
         else:
             raise AssertionError(f"Expected invalid batch size to fail: {raw}")
+
+
+def test_active_entry_point_installs_batching_wrapper():
+    source = Path("scripts/stations_daily/sync_obs_aqidb_uk_aq_core.py").read_text(
+        encoding="utf-8"
+    )
+    assert "sync_obs_aqidb_uk_aq_core_legacy.py" in source
+    assert "delete_keys_in_batches" in source
+    assert "_legacy.PostgrestClient.delete_core_keys_via_rpc" in source
