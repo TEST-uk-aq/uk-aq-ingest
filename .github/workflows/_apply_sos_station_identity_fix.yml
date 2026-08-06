@@ -1,5 +1,6 @@
 name: Apply SOS station identity fix
 
+# Trigger after the workflow exists on main.
 on:
   push:
     branches:
