@@ -38,6 +38,9 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install requests python-dotenv supabase pyproj psycopg2-binary
 
+      - name: Adjust guarded patch anchor
+        run: python3 scripts/dev/_fix_sos_patch_anchor.py
+
       - name: Apply guarded source patch
         run: python3 scripts/dev/_apply_sos_station_identity_fix.py
 
@@ -67,6 +70,7 @@ jobs:
           git diff --check
           git rm -- \
             scripts/dev/_apply_sos_station_identity_fix.py \
+            scripts/dev/_fix_sos_patch_anchor.py \
             .github/workflows/_apply_sos_station_identity_fix.yml
           git add -- \
             scripts/sos/sos_ingest.py \
