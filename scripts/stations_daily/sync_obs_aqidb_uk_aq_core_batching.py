@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, Sequence, Type
 
-DEFAULT_DELETE_BATCH_SIZE = 50
+DEFAULT_DELETE_BATCH_SIZE = 25
 MAX_DELETE_BATCH_SIZE = 500
 DELETE_BATCH_SIZE_ENV = "UK_AQ_CORE_MIRROR_DELETE_BATCH_SIZE"
 
