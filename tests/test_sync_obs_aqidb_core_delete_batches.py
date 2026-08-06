@@ -15,14 +15,14 @@ def test_delete_keys_are_split_into_bounded_batches():
     deleted = delete_keys_in_batches(
         table="stations",
         keys=keys,
-        batch_size=50,
+        batch_size=25,
         delete_batch=lambda batch: calls.append(list(batch)) or len(batch),
         error_type=RuntimeError,
     )
 
     assert deleted == 549
-    assert len(calls) == 11
-    assert [len(batch) for batch in calls] == [50] * 10 + [49]
+    assert len(calls) == 22
+    assert [len(batch) for batch in calls] == [25] * 21 + [24]
     assert [row["id"] for batch in calls for row in batch] == list(range(549))
 
 
@@ -31,7 +31,7 @@ def test_delete_batch_count_mismatch_fails_closed():
         delete_keys_in_batches(
             table="stations",
             keys=[{"id": 1}, {"id": 2}],
-            batch_size=50,
+            batch_size=25,
             delete_batch=lambda batch: 1,
             error_type=RuntimeError,
         )
@@ -42,8 +42,8 @@ def test_delete_batch_count_mismatch_fails_closed():
 
 
 def test_delete_batch_size_validation():
-    assert parse_delete_batch_size(None) == 50
-    assert parse_delete_batch_size("25") == 25
+    assert parse_delete_batch_size(None) == 25
+    assert parse_delete_batch_size("50") == 50
 
     for raw in ("0", "501", "invalid"):
         try:
