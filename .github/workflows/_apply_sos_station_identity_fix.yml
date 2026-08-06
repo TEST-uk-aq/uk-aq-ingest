@@ -83,4 +83,4 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "fix: preserve canonical SOS station identity"
-          git push origin HEAD:main
+          git push --force origin HEAD:automation/sos-station-identity-fix
