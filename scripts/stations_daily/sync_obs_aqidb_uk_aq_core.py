@@ -67,10 +67,17 @@ def _batched_delete_core_keys_via_rpc(
     pk_columns: Sequence[str],
     keys: Sequence[Dict[str, Any]],
 ) -> int:
-    batch_size = parse_delete_batch_size()
+    key_rows = list(keys)
+    if not key_rows:
+        return 0
+    try:
+        batch_size = parse_delete_batch_size()
+    except ValueError as exc:
+        raise _legacy.SyncError(str(exc)) from exc
+
     return delete_keys_in_batches(
         table=table,
-        keys=keys,
+        keys=key_rows,
         batch_size=batch_size,
         delete_batch=lambda batch: _original_delete_core_keys_via_rpc(
             self,
