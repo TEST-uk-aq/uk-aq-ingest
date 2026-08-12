@@ -1149,7 +1149,7 @@ async function upsertStations(records, connectorId, serviceRef, overwriteStation
     }
   }
 
-  return { updated: descriptiveRows.length, stationIds };
+  return { seen: rows.length, updated: descriptiveRows.length, stationIds };
 }
 
 async function fetchStationIds(connectorId, serviceRef, stationRefs) {
@@ -2137,7 +2137,8 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
     run_status: "success",
     run_message: "Sensor.Community direct ingest completed via Cloud Run.",
     count: filteredRows.length,
-    stations_updated: stationResult.updated,
+    stations_updated: stationResult.seen,
+    station_metadata_updated: stationResult.updated,
     timeseries_updated: timeseriesPayload.length,
     observations_upserted: ingestDbWriteStats.committed_rows,
     ingestdb_observation_write: ingestDbWriteStats,
@@ -2710,6 +2711,8 @@ async function main() {
     run_status: runStatus,
     response_status: ingestResponse.status,
     interval_minutes: dueCheck.intervalMinutes,
+    stations_seen: payload?.stations_updated ?? null,
+    station_metadata_updated: payload?.station_metadata_updated ?? null,
     observations_upserted: payload?.observations_upserted ?? null,
     observations_rows_input: payload?.observations_rows_input ?? null,
     observations_rows_prepared: payload?.observations_rows_prepared ?? null,
