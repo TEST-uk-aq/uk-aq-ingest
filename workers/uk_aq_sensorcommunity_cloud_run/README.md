@@ -64,7 +64,7 @@ The previous proxy worker (Cloud Run -> Supabase Edge function) is archived at:
 - `SCOMM_SOURCE_RETRIES` (default `3`)
 - `SCOMM_UPSERT_CHUNK_SIZE` (default `500`)
 - `SCOMM_TRIGGER_MODE` (default `manual`; set by service wrapper for observability)
-- `OBSERVS_UPSERT_RPC` (default `uk_aq_rpc_observs_observations_upsert`)
+- `OBSERVS_UPSERT_RPC` (default `uk_aq_rpc_observs_observations_compact_upsert_v1`)
 - `OBSERVS_UPSERT_CHUNK_SIZE` (default `5000`)
 - `OBSERVS_WRITE_MODE` (default `outbox_only`; supports `outbox_only`, `direct`, `pubsub_only`)
 - `GCP_OBSERVS_PUBSUB_TOPIC` (required when `OBSERVS_WRITE_MODE=pubsub_only`)

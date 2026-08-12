@@ -22,7 +22,7 @@ Scheduler triggers the service with an authenticated POST request.
 
 - `UK_AQ_PUBLIC_SCHEMA` (default `uk_aq_public`)
 - `OBS_AQIDB_RPC_SCHEMA` (default `uk_aq_public`)
-- `OBSERVS_UPSERT_RPC` (default `uk_aq_rpc_observs_observations_upsert`)
+- `OBSERVS_UPSERT_RPC` (default `uk_aq_rpc_observs_observations_compact_upsert_v1`)
 - `OBSERVS_UPSERT_CHUNK_SIZE` (default `5000`)
 - `OBSERVS_UPSERT_RPC_RETRIES` (default `3`; retries per observs upsert RPC call for retryable failures)
 - `OBSERVS_UPSERT_RETRY_BASE_MS` (default `1000`; base backoff between observs upsert retries)

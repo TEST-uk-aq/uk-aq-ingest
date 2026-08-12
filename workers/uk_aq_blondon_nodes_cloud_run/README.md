@@ -21,7 +21,7 @@ Observation delivery follows the shared Communities modes:
 
 - `pubsub_only` publishes observation rows (including `RatificationStatus` as
   `status`) to `GCP_OBSERVS_PUBSUB_TOPIC`.
-- `direct` calls `uk_aq_rpc_observs_observations_upsert` on Obs AQI DB.
+- `direct` calls `uk_aq_rpc_observs_observations_compact_upsert_v1` on Obs AQI DB.
 - `outbox_only` enqueues rows through the ingest DB observs outbox.
 
 `OBSERVS_WRITE_MODE` controls only this secondary Observs/obsAQIDB path.

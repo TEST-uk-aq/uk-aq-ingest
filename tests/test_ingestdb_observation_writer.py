@@ -55,11 +55,13 @@ def test_retry_then_success_has_accurate_stats_and_bounded_delay():
         config={"attempts": 3, "retry_base_ms": 100, "retry_max_ms": 1_000},
         sleep_fn=delays.append,
         random_fn=lambda: 0,
+        request_body_bytes=lambda _chunk: 7,
     )
     assert delays == [0.101, 0.201]
     assert stats["committed_rows"] == 3
     assert stats["normal_chunk_size"] == 3
     assert stats["write_requests"] == 3
+    assert stats["request_body_bytes"] == 21
     assert stats["retry_attempts"] == 2
     assert stats["retried_chunks"] == 1
 
@@ -156,7 +158,10 @@ def test_active_python_observation_writers_use_shared_contract_and_canonical_key
     for path in paths:
         source = path.read_text(encoding="utf-8")
         assert "write_observations" in source
-        assert 'on_conflict="connector_id,timeseries_id,observed_at"' in source
+        assert (
+            'on_conflict="connector_id,timeseries_id,observed_at"' in source
+            or "uk_aq_rpc_observations_compact_upsert_v1" in source
+        )
         assert "DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS" in source
 
     sensor_source = paths[1].read_text(encoding="utf-8")

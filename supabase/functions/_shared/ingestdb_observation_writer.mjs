@@ -214,6 +214,7 @@ function createStats(inputRows, normalChunkSize = 0) {
     normal_chunk_size: normalChunkSize,
     committed_rows: 0,
     write_requests: 0,
+    request_body_bytes: 0,
     retry_attempts: 0,
     retried_chunks: 0,
     split_operations: 0,
@@ -242,6 +243,7 @@ export function mergeIngestDbObservationWriteStats(target, addition) {
   );
   target.committed_rows += addition.committed_rows;
   target.write_requests += addition.write_requests;
+  target.request_body_bytes += addition.request_body_bytes ?? 0;
   target.retry_attempts += addition.retry_attempts;
   target.retried_chunks += addition.retried_chunks;
   target.split_operations += addition.split_operations;
@@ -259,6 +261,22 @@ export function mergeIngestDbObservationWriteStats(target, addition) {
 
 export function createEmptyIngestDbObservationWriteStats() {
   return createStats(0);
+}
+
+export function buildCompactObservationRpcArgs(rows) {
+  const args = {
+    timeseries_ids: rows.map((row) => row.timeseries_id),
+    observed_ats: rows.map((row) => row.observed_at),
+    values: rows.map((row) => row.value ?? null),
+  };
+  if (rows.some((row) => row.status !== null && row.status !== undefined)) {
+    args.statuses = rows.map((row) => row.status ?? null);
+  }
+  return args;
+}
+
+export function serializedJsonUtf8Bytes(value) {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
 
 export function isIngestDbObservationWriteError(error) {
@@ -369,6 +387,9 @@ export async function writeIngestDbObservations(options) {
     : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const random = typeof options.random === "function" ? options.random : Math.random;
   const runtimeBudget = options.runtimeBudget ?? null;
+  const requestBodyBytes = typeof options.requestBodyBytes === "function"
+    ? options.requestBodyBytes
+    : null;
   const stats = createStats(rows.length, rows.length ? chunkSize : 0);
 
   const failForBudget = (chunk, splitDepth, originalChunkRows, attempts) => {
@@ -442,6 +463,12 @@ export async function writeIngestDbObservations(options) {
       }
 
       stats.write_requests += 1;
+      if (requestBodyBytes) {
+        const measuredBytes = Number(requestBodyBytes(chunk));
+        if (Number.isFinite(measuredBytes) && measuredBytes >= 0) {
+          stats.request_body_bytes += Math.floor(measuredBytes);
+        }
+      }
       stats.smallest_attempted_chunk = Math.min(
         stats.smallest_attempted_chunk,
         chunk.length,

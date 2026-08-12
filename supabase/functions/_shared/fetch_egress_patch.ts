@@ -183,6 +183,29 @@ async function responseBytes(response: Response): Promise<number | null> {
   }
 }
 
+async function requestBodyBytes(
+  input: Request | URL | string,
+  init?: RequestInit,
+): Promise<number | null> {
+  const body = init?.body;
+  if (typeof body === "string") return new TextEncoder().encode(body).byteLength;
+  if (body instanceof URLSearchParams) {
+    return new TextEncoder().encode(body.toString()).byteLength;
+  }
+  if (body instanceof Blob) return body.size;
+  if (body instanceof ArrayBuffer) return body.byteLength;
+  if (ArrayBuffer.isView(body)) return body.byteLength;
+  if (body !== undefined && body !== null) return null;
+  if (input instanceof Request && input.body) {
+    try {
+      return (await input.clone().arrayBuffer()).byteLength;
+    } catch {
+      return null;
+    }
+  }
+  return 0;
+}
+
 function extractMeta(url: URL, method: string): MetricFields {
   const pathname = url.pathname.replace(/^\/rest\/v1\//, "");
   const select = url.searchParams.get("select");
@@ -263,6 +286,7 @@ function applyPatch(): void {
     const track = Boolean(endpoint) && !shouldSkipBypassHeader(input, init);
     const method = normalizeMethod(input, init);
     const startedAt = track ? Date.now() : 0;
+    const sentBodyBytes = track ? await requestBodyBytes(input, init) : null;
     const response = await nativeFetch(input as RequestInfo | URL, init);
     if (!track || !endpoint || !url) {
       return response;
@@ -279,6 +303,7 @@ function applyPatch(): void {
         fields: {
           ...extractMeta(url, method),
           caller,
+          request_body_bytes: sentBodyBytes,
         },
         sampleRate,
       });

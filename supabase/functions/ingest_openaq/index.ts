@@ -7,9 +7,11 @@ import {
   writeObservsWithOutbox,
 } from "../_shared/observs_client.ts";
 import {
+  buildCompactObservationRpcArgs,
   createEmptyIngestDbObservationWriteStats,
   isIngestDbObservationWriteError,
   mergeIngestDbObservationWriteStats,
+  serializedJsonUtf8Bytes,
   writeIngestDbObservations,
 } from "../_shared/ingestdb_observation_writer.mjs";
 import { writeOpenAqIngestDbObservations } from "./ingestdb_observation_write.mjs";
@@ -2380,8 +2382,12 @@ async function updateTimeseriesLastValues(
   const { data, error } = await rpcRequest<
     Array<{ timeseries_updated: number }>
   >(
-    "uk_aq_rpc_timeseries_last_values_update",
-    { rows },
+    "uk_aq_rpc_timeseries_last_values_compact_update_v1",
+    {
+      timeseries_ids: rows.map((row) => row.id),
+      last_value_ats: rows.map((row) => row.last_value_at),
+      last_values: rows.map((row) => row.last_value),
+    },
   );
   if (error) {
     const message = `timeseries update failed: ${error.message}`;
@@ -2462,12 +2468,14 @@ async function upsertObservations(
     logger: console,
     runtimeBudget,
     config: { minimumAttemptRuntimeMs: DEFAULT_POSTGREST_TIMEOUT_MS },
+    requestBodyBytes: (chunk: Array<Record<string, unknown>>) =>
+      serializedJsonUtf8Bytes(buildCompactObservationRpcArgs(chunk)),
     writeChunk: async (chunk: Array<Record<string, unknown>>) => {
       const { error } = await rpcRequest<
         Array<{ observations_upserted: number }>
       >(
-        "uk_aq_rpc_observations_upsert",
-        { rows: chunk },
+        "uk_aq_rpc_observations_compact_upsert_v1",
+        buildCompactObservationRpcArgs(chunk),
       );
       if (error) throw error;
     },

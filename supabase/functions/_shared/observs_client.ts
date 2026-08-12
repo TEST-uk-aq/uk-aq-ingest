@@ -93,7 +93,7 @@ function normalizeObservsRpcSchema(raw: string): string {
 }
 
 const OBSERVS_UPSERT_RPC = (Deno.env.get("OBSERVS_UPSERT_RPC") ||
-  "uk_aq_rpc_observs_observations_upsert")
+  "uk_aq_rpc_observs_observations_compact_upsert_v1")
   .trim();
 
 const OBSERVS_OUTBOX_FLUSH_LIMIT = parsePositiveInt(
@@ -486,7 +486,9 @@ async function upsertObservsChunk(
   chunk: ObservsObservationRow[],
 ): Promise<number> {
   const { data, error } = await observs.rpc(OBSERVS_UPSERT_RPC, {
-    rows: chunk,
+    timeseries_ids: chunk.map((row) => row.timeseries_id),
+    observed_ats: chunk.map((row) => row.observed_at),
+    values: chunk.map((row) => row.value),
   });
   if (error) {
     throw new Error(error.message || "unknown_observs_upsert_error");

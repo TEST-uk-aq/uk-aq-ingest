@@ -39,6 +39,7 @@ test("normal write commits one logical chunk on its first request", async () => 
     chunkSize: 3,
     connectorCode: "test",
     logger: silentLogger,
+    requestBodyBytes: () => 42,
     writeChunk: async () => calls += 1,
   });
   assert.equal(calls, 1);
@@ -47,6 +48,7 @@ test("normal write commits one logical chunk on its first request", async () => 
     normal_chunk_size: 3,
     committed_rows: 3,
     write_requests: 1,
+    request_body_bytes: 42,
     retry_attempts: 0,
     retried_chunks: 0,
     split_operations: 0,
@@ -440,7 +442,7 @@ test("changed callers preserve canonical upsert, committed accounting, and check
     assert.match(source, /writeIngestDbObservations/);
     assert.match(
       source,
-      /connector_id,timeseries_id,observed_at|uk_aq_rpc_observations_upsert/,
+      /connector_id,timeseries_id,observed_at|uk_aq_rpc_observations_(?:compact_)?upsert/,
     );
   }
   for (const index of [1, 2, 3, 4, 5]) {
@@ -453,11 +455,11 @@ test("changed callers preserve canonical upsert, committed accounting, and check
   assert.match(sources[1], /Promise\.allSettled/);
   assert.match(sources[1], /obsaqidb_write/);
   assert.ok(
-    sources[0].indexOf("upsertTimeseries(timeseriesMetadataPayload)") <
+    sources[0].indexOf("upsertTimeseries(missingTimeseriesMetadata)") <
       sources[0].indexOf("upsertObservations(observationRows"),
   );
   assert.ok(
-    sources[0].indexOf("upsertTimeseries(timeseriesPayload)",
+    sources[0].indexOf("uk_aq_rpc_timeseries_last_values_compact_update_v1",
       sources[0].indexOf("upsertObservations(observationRows")) >
       sources[0].indexOf("upsertObservations(observationRows"),
   );

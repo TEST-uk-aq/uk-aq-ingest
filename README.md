@@ -118,7 +118,7 @@ Use this flow when creating fresh MAIN + HISTORY projects.
    - `OBS_AQIDB_SUPABASE_URL`
    - `OBS_AQIDB_SECRET_KEY`
    - Optional overrides:
-     - `OBSERVS_UPSERT_RPC` (default `uk_aq_rpc_observs_observations_upsert`)
+     - `OBSERVS_UPSERT_RPC` (default `uk_aq_rpc_observs_observations_compact_upsert_v1`)
      - `OBSERVS_OUTBOX_FLUSH_LIMIT` (default `40`)
      - `OBSERVS_UPSERT_CHUNK_SIZE` (default `5000`)
      - `OBSERVS_OUTBOX_CLOUD_RUN_MAX_BATCHES` (Cloud Run outbox batches per run; default `30`)

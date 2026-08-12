@@ -215,6 +215,7 @@ def empty_stats() -> dict[str, Any]:
         "normal_chunk_size": 0,
         "committed_rows": 0,
         "write_requests": 0,
+        "request_body_bytes": 0,
         "retry_attempts": 0,
         "retried_chunks": 0,
         "split_operations": 0,
@@ -235,6 +236,7 @@ def merge_stats(target: dict[str, Any], addition: Mapping[str, Any]) -> dict[str
         "input_rows",
         "committed_rows",
         "write_requests",
+        "request_body_bytes",
         "retry_attempts",
         "retried_chunks",
         "split_operations",
@@ -269,6 +271,7 @@ def write_observations(
     random_fn: Callable[[], float] = random_module.random,
     should_stop: Callable[[], bool] | None = None,
     remaining_runtime_ms: Callable[[], float] | None = None,
+    request_body_bytes: Callable[[Sequence[Mapping[str, Any]]], int] | None = None,
 ) -> dict[str, Any]:
     prepared = list(rows)
     settings = parse_config(config)
@@ -389,6 +392,10 @@ def write_observations(
             elif not has_budget(settings["minimum_attempt_runtime_ms"] + settings["shutdown_buffer_ms"]):
                 raise budget_failure(chunk, depth, original_rows, 0)
             stats["write_requests"] += 1
+            if request_body_bytes is not None:
+                measured_bytes = request_body_bytes(chunk)
+                if measured_bytes >= 0:
+                    stats["request_body_bytes"] += int(measured_bytes)
             size = len(chunk)
             current_min = stats["smallest_attempted_chunk"]
             stats["smallest_attempted_chunk"] = size if not current_min else min(current_min, size)
@@ -443,3 +450,20 @@ def write_observations(
         ordinary_chunk = prepared[offset : offset + chunk_size]
         process(ordinary_chunk, 0, len(ordinary_chunk))
     return stats
+
+
+def build_compact_observation_rpc_args(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "timeseries_ids": [row["timeseries_id"] for row in rows],
+        "observed_ats": [row["observed_at"] for row in rows],
+        "values": [row.get("value") for row in rows],
+    }
+    if any(row.get("status") is not None for row in rows):
+        args["statuses"] = [row.get("status") for row in rows]
+    return args
+
+
+def serialized_json_utf8_bytes(value: Any) -> int:
+    return len(json.dumps(value, separators=(",", ":")).encode("utf-8"))

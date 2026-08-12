@@ -7,9 +7,11 @@ import {
   writeObservsWithOutbox,
 } from "../_shared/observs_client.ts";
 import {
+  buildCompactObservationRpcArgs,
   createEmptyIngestDbObservationWriteStats,
   isIngestDbObservationWriteError,
   mergeIngestDbObservationWriteStats,
+  serializedJsonUtf8Bytes,
   writeIngestDbObservations,
 } from "../_shared/ingestdb_observation_writer.mjs";
 import {
@@ -705,13 +707,16 @@ serve(async (req) => {
                     remainingRuntimeMs: () =>
                       Math.max(0, runtimeDeadline - Date.now()),
                   },
+                  requestBodyBytes: (chunk: Record<string, unknown>[]) =>
+                    serializedJsonUtf8Bytes(buildCompactObservationRpcArgs(chunk)),
                   writeChunk: async (chunk: Record<string, unknown>[]) => {
                     const { error } = await postgrestRequest(
                       "POST",
-                      "observations",
-                      { on_conflict: "connector_id,timeseries_id,observed_at" },
-                      chunk,
-                      "resolution=merge-duplicates,return=minimal",
+                      "rpc/uk_aq_rpc_observations_compact_upsert_v1",
+                      {},
+                      buildCompactObservationRpcArgs(chunk),
+                      undefined,
+                      "uk_aq_public",
                     );
                     if (error) throw error;
                   },
@@ -2178,18 +2183,17 @@ async function upsertLastValue(
     return;
   }
 
-  const payload: Record<string, unknown> = {
-    last_value_at: lastPoint.observed_at,
-  };
-  if (lastPoint.value !== null && lastPoint.value !== undefined) {
-    payload.last_value = lastPoint.value;
-  }
   const { error } = await postgrestRequest(
-    "PATCH",
-    "timeseries",
-    { id: `eq.${seriesId}` },
-    payload,
-    "return=minimal",
+    "POST",
+    "rpc/uk_aq_rpc_timeseries_last_values_compact_update_v1",
+    {},
+    {
+      timeseries_ids: [seriesId],
+      last_values: [lastPoint.value ?? null],
+      last_value_ats: [lastPoint.observed_at],
+    },
+    undefined,
+    "uk_aq_public",
   );
   if (error) {
     console.warn(`timeseries update failed for ${seriesId}: ${error.message}`);

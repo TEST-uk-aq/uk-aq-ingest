@@ -37,8 +37,10 @@ from scripts.blondon_nodes.blondon_nodes_reference_data import (
 from scripts.uk_aq_ingestdb_observation_writer import (
     DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
     IngestDbObservationWriteError,
+    build_compact_observation_rpc_args,
     empty_stats,
     merge_stats,
+    serialized_json_utf8_bytes,
     write_observations,
 )
 load_dotenv()
@@ -223,7 +225,14 @@ class ObservsWriter:
             }
         if self.mode == "direct":
             assert self.direct is not None
-            self.direct.rpc("uk_aq_rpc_observs_observations_upsert", {"rows": payload}).execute()
+            self.direct.rpc(
+                "uk_aq_rpc_observs_observations_compact_upsert_v1",
+                {
+                    "timeseries_ids": [row["timeseries_id"] for row in payload],
+                    "observed_ats": [row["observed_at"] for row in payload],
+                    "values": [row["value"] for row in payload],
+                },
+            ).execute()
             return {
                 "written": len(payload),
                 "enqueued": 0,
@@ -282,14 +291,33 @@ class SupabaseWriter:
         return upsert_nodes_phenomena(self.public, connector_id, species)
 
     def upsert_timeseries(self, rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
-        if rows:
-            self.core.table("timeseries").upsert(list(rows), on_conflict="connector_id,timeseries_ref").execute()
+        if not rows:
+            return {}
         refs = [r["timeseries_ref"] for r in rows]
         out: Dict[str, int] = {}
         for refs_chunk in chunked(refs, 200):
             resp = self.core.table("timeseries").select("id,timeseries_ref").eq("connector_id", rows[0]["connector_id"]).in_("timeseries_ref", refs_chunk).execute()
             for r in resp.data or []:
                 out[str(r["timeseries_ref"])] = int(r["id"])
+        missing_rows = [row for row in rows if row["timeseries_ref"] not in out]
+        if missing_rows:
+            self.core.table("timeseries").upsert(
+                missing_rows, on_conflict="connector_id,timeseries_ref"
+            ).execute()
+            missing_refs = [row["timeseries_ref"] for row in missing_rows]
+            for refs_chunk in chunked(missing_refs, 200):
+                resp = self.core.table("timeseries").select(
+                    "id,timeseries_ref"
+                ).eq("connector_id", rows[0]["connector_id"]).in_(
+                    "timeseries_ref", refs_chunk
+                ).execute()
+                for result_row in resp.data or []:
+                    out[str(result_row["timeseries_ref"])] = int(result_row["id"])
+        unresolved = [ref for ref in refs if ref not in out]
+        if unresolved:
+            raise RuntimeError(
+                f"Missing Nodes timeseries identities after self-repair: {unresolved[:10]}"
+            )
         return out
 
     def upsert_observations(self, rows: Sequence[Dict[str, Any]]) -> int:
@@ -305,9 +333,9 @@ class SupabaseWriter:
         ]
 
         def write_chunk(chunk: Sequence[Dict[str, Any]]) -> None:
-            self.core.table("observations").upsert(
-                list(chunk),
-                on_conflict="connector_id,timeseries_id,observed_at",
+            self.public.rpc(
+                "uk_aq_rpc_observations_compact_upsert_v1",
+                build_compact_observation_rpc_args(chunk),
             ).execute()
 
         try:
@@ -320,6 +348,9 @@ class SupabaseWriter:
                 config={
                     "minimum_attempt_runtime_ms": DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
                 },
+                request_body_bytes=lambda chunk: serialized_json_utf8_bytes(
+                    build_compact_observation_rpc_args(chunk)
+                ),
             )
         except IngestDbObservationWriteError as exc:
             merge_stats(self.observation_write_stats, exc.stats)
@@ -342,7 +373,8 @@ class SupabaseWriter:
             for row in resp.data or []:
                 existing[int(row["id"])] = dict(row)
 
-        updated = 0
+        updated_ids: set[int] = set()
+        latest_rows: List[Dict[str, Any]] = []
         for timeseries_id, timeseries_rows in grouped.items():
             ordered = sorted(
                 timeseries_rows,
@@ -356,25 +388,53 @@ class SupabaseWriter:
             current = existing.get(timeseries_id, {})
             current_first = parse_iso(current.get("first_value_at"))
             current_last = parse_iso(current.get("last_value_at"))
-            patch: Dict[str, Any] = {}
             if earliest_at and (current_first is None or earliest_at < current_first):
-                patch["first_value_at"] = earliest_at.isoformat()
+                self.core.table("timeseries").update(
+                    {"first_value_at": earliest_at.isoformat()}
+                ).eq("id", timeseries_id).execute()
+                updated_ids.add(timeseries_id)
             if latest_at and (current_last is None or latest_at > current_last):
-                patch["last_value_at"] = latest_at.isoformat()
-                patch["last_value"] = latest["value"]
+                latest_rows.append({
+                    "id": timeseries_id,
+                    "last_value_at": latest_at.isoformat(),
+                    "last_value": latest["value"],
+                })
             elif (
                 latest_at
                 and current_last
                 and latest_at == current_last
                 and current.get("last_value") != latest["value"]
             ):
-                patch["last_value"] = latest["value"]
-            if patch:
-                self.core.table("timeseries").update(patch).eq(
-                    "id", timeseries_id
-                ).execute()
-                updated += 1
-        return updated
+                latest_rows.append({
+                    "id": timeseries_id,
+                    "last_value_at": latest_at.isoformat(),
+                    "last_value": latest["value"],
+                })
+        if latest_rows:
+            latest_args = {
+                "timeseries_ids": [row["id"] for row in latest_rows],
+                "last_values": [row["last_value"] for row in latest_rows],
+                "last_value_ats": [row["last_value_at"] for row in latest_rows],
+            }
+            LOG.info(
+                "postgrest_request_metric %s",
+                json.dumps(
+                    {
+                        "metric": "uk_aq_endpoint_egress",
+                        "endpoint": "postgrest:rpc/uk_aq_rpc_timeseries_last_values_compact_update_v1",
+                        "caller": "uk_aq_blondon_nodes_cloud_run",
+                        "request_count": 1,
+                        "request_body_bytes": serialized_json_utf8_bytes(latest_args),
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+            self.public.rpc(
+                "uk_aq_rpc_timeseries_last_values_compact_update_v1",
+                latest_args,
+            ).execute()
+            updated_ids.update(row["id"] for row in latest_rows)
+        return len(updated_ids)
 
     def upsert_station_checkpoints(self, rows: Sequence[Dict[str, Any]]) -> None:
         if rows:

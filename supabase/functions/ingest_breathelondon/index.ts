@@ -7,9 +7,11 @@ import {
   writeObservsWithOutbox,
 } from "../_shared/observs_client.ts";
 import {
+  buildCompactObservationRpcArgs,
   createEmptyIngestDbObservationWriteStats,
   isIngestDbObservationWriteError,
   mergeIngestDbObservationWriteStats,
+  serializedJsonUtf8Bytes,
   writeIngestDbObservations,
 } from "../_shared/ingestdb_observation_writer.mjs";
 
@@ -935,20 +937,6 @@ async function upsertPhenomena(connectorId: string, speciesList: string[]): Prom
   return await fetchPhenomenaIds(connectorId, speciesList);
 }
 
-async function upsertTimeseries(rows: Record<string, unknown>[]): Promise<number> {
-  if (!rows.length) {
-    return 0;
-  }
-  await postgrestRequest(
-    "POST",
-    "timeseries",
-    { on_conflict: "connector_id,service_ref,timeseries_ref" },
-    rows,
-    "resolution=merge-duplicates,return=minimal",
-  );
-  return rows.length;
-}
-
 async function fetchTimeseriesIds(
   connectorId: string,
   serviceRef: string,
@@ -1035,13 +1023,16 @@ async function upsertObservations(
     logger: console,
     runtimeBudget,
     config: { minimumAttemptRuntimeMs: DEFAULT_TIMEOUT_MS },
+    requestBodyBytes: (chunk: Record<string, unknown>[]) =>
+      serializedJsonUtf8Bytes(buildCompactObservationRpcArgs(chunk)),
     writeChunk: async (chunk: Record<string, unknown>[]) => {
       const { error } = await postgrestRequest(
         "POST",
-        "observations",
-        { on_conflict: "connector_id,timeseries_id,observed_at" },
-        chunk,
-        "resolution=merge-duplicates,return=minimal",
+        "rpc/uk_aq_rpc_observations_compact_upsert_v1",
+        {},
+        buildCompactObservationRpcArgs(chunk),
+        undefined,
+        "uk_aq_public",
       );
       if (error) throw error;
     },
@@ -1116,24 +1107,26 @@ async function updateTimeseriesLastValues(
   rows: Array<{ id: number; last_value: number; last_value_at: string }>,
   errors: string[],
 ): Promise<number> {
-  let updated = 0;
-  for (const row of rows) {
-    const { error } = await postgrestRequest(
-      "PATCH",
-      "timeseries",
-      { id: `eq.${row.id}` },
-      { last_value: row.last_value, last_value_at: row.last_value_at },
-      "return=minimal",
-    );
-    if (error) {
-      const message = `timeseries update failed id=${row.id}: ${error.message}`;
-      errors.push(`timeseries update failed id=${row.id}`);
-      console.warn(message);
-      continue;
-    }
-    updated += 1;
+  if (!rows.length) return 0;
+  const { data, error } = await postgrestRequest<Array<{ timeseries_updated: number }>>(
+    "POST",
+    "rpc/uk_aq_rpc_timeseries_last_values_compact_update_v1",
+    {},
+    {
+      timeseries_ids: rows.map((row) => row.id),
+      last_value_ats: rows.map((row) => row.last_value_at),
+      last_values: rows.map((row) => row.last_value),
+    },
+    undefined,
+    "uk_aq_public",
+  );
+  if (error) {
+    const message = `timeseries update failed: ${error.message}`;
+    errors.push(message);
+    console.warn(message);
+    return 0;
   }
-  return updated;
+  return data?.[0]?.timeseries_updated ?? 0;
 }
 
 function extractObservations(
@@ -2137,14 +2130,19 @@ serve(async (req) => {
                   });
                 }
               }
-              if (!dryRun) {
-                await upsertTimeseries(timeseriesRows);
-              }
               const timeseriesIdMap = await fetchTimeseriesIds(
                 connector.id,
                 serviceRef,
                 timeseriesRows.map((row) => String(row.timeseries_ref)),
               );
+              const missingTimeseriesRefs = timeseriesRows
+                .map((row) => String(row.timeseries_ref))
+                .filter((ref) => !timeseriesIdMap[ref]);
+              if (missingTimeseriesRefs.length) {
+                throw new Error(
+                  `Missing Communities timeseries identities: ${missingTimeseriesRefs.slice(0, 10).join(",")}`,
+                );
+              }
 
               const stationIds = Array.from(new Set(Object.values(stationIdMap)));
               const checkpoints = await fetchStationCheckpoints(stationIds);

@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
-import { writeIngestDbObservations } from "../../supabase/functions/_shared/ingestdb_observation_writer.mjs";
+import {
+  buildCompactObservationRpcArgs,
+  serializedJsonUtf8Bytes,
+  writeIngestDbObservations,
+} from "../../supabase/functions/_shared/ingestdb_observation_writer.mjs";
 
 const CONNECTOR_CODE = "sensorcommunity";
 const SCHEDULER_BACKEND_SUPABASE_FUNCTION = "supabase_function";
@@ -55,7 +60,7 @@ const OBS_AQIDB_RPC_SCHEMA = normalizeObservsRpcSchema(
 );
 const OBSERVS_UPSERT_RPC = (
   process.env.OBSERVS_UPSERT_RPC ||
-  "uk_aq_rpc_observs_observations_upsert"
+  "uk_aq_rpc_observs_observations_compact_upsert_v1"
 ).trim();
 const OBSERVS_UPSERT_CHUNK_SIZE = parsePositiveInt(
   process.env.OBSERVS_UPSERT_CHUNK_SIZE,
@@ -507,6 +512,7 @@ async function postgrestRequest(method, path, options = {}) {
     init.body = JSON.stringify(options.body);
   }
 
+  const startedAt = Date.now();
   const response = await fetchWithTimeout(url, init, timeoutMs);
   const text = await response.text();
   let data = null;
@@ -516,6 +522,21 @@ async function postgrestRequest(method, path, options = {}) {
     } catch {
       data = text;
     }
+  }
+
+  if (init.body !== undefined) {
+    console.log(JSON.stringify({
+      metric: "uk_aq_endpoint_egress",
+      endpoint: `postgrest:${path}`,
+      destination: new URL(restBaseUrl).origin,
+      caller: "uk_aq_sensorcommunity_cloud_run",
+      method,
+      status: response.status,
+      duration_ms: Date.now() - startedAt,
+      request_count: 1,
+      request_body_bytes: Buffer.byteLength(init.body, "utf8"),
+      ts: new Date().toISOString(),
+    }));
   }
 
   return {
@@ -789,6 +810,32 @@ function mergeStationRow(existing, candidate) {
   return merged;
 }
 
+function canonicalTextHex(value) {
+  if (typeof value !== "string") return "~";
+  const text = value.replace(/^ +| +$/g, "");
+  return text ? Buffer.from(text, "utf8").toString("hex") : "~";
+}
+
+function canonicalFloat64Hex(value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? float64ToHex(value)
+    : "~";
+}
+
+function stationDescriptiveFingerprint(row, overwriteStationName) {
+  const canonical = [
+    `label=${canonicalTextHex(row.label)}`,
+    overwriteStationName
+      ? `|station_name=${canonicalTextHex(row.station_name)}`
+      : "",
+    `|station_type=${canonicalTextHex(row.station_type)}`,
+    `|station_exposure=${canonicalTextHex(row.station_exposure)}`,
+    `|longitude=${canonicalFloat64Hex(row.longitude)}`,
+    `|latitude=${canonicalFloat64Hex(row.latitude)}`,
+  ].join("");
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
 function buildObservationMap(records) {
   const observationsByTimeseries = new Map();
   const stationRefs = new Set();
@@ -1001,13 +1048,9 @@ async function upsertStations(records, connectorId, serviceRef, overwriteStation
       station_name: normalized.station_name,
       station_type: normalized.station_type,
       station_exposure: normalized.station_exposure,
-      geometry:
-        normalized.longitude !== null && normalized.latitude !== null
-          ? `SRID=4326;POINT(${normalized.longitude} ${normalized.latitude})`
-          : null,
+      longitude: normalized.longitude,
+      latitude: normalized.latitude,
       connector_id: connectorId,
-      last_seen_at: new Date().toISOString(),
-      removed_at: null,
     };
 
     const existing = rowsByRef.get(normalized.station_ref);
@@ -1019,13 +1062,45 @@ async function upsertStations(records, connectorId, serviceRef, overwriteStation
   }
 
   const rows = Array.from(rowsByRef.values());
+  const seenAt = new Date().toISOString();
+  let stateByRef = new Map();
+  try {
+    for (const refsChunk of chunk(rows.map((row) => row.station_ref), 200)) {
+      const response = await mainRpcRequest(
+        "uk_aq_rpc_sensorcommunity_station_states_v1",
+        { connector_id: connectorId, service_ref: String(serviceRef), station_refs: refsChunk },
+      );
+      if (!response.ok || !Array.isArray(response.data)) {
+        throw new Error(`station state resolver failed (${response.status}): ${response.text}`);
+      }
+      for (const state of response.data) {
+        const stationRef = toStringOrNull(state?.station_ref);
+        const stationId = toIntegerOrNull(state?.station_id);
+        const fingerprint = toStringOrNull(state?.descriptive_fingerprint);
+        if (stationRef && stationId !== null && fingerprint) {
+          stateByRef.set(stationRef, { station_id: stationId, descriptive_fingerprint: fingerprint });
+        }
+      }
+    }
+  } catch (error) {
+    stateByRef = new Map();
+    logSummary("station_state_resolver_warning", {
+      message: shortError(error),
+      action: "refresh_all_descriptive_metadata",
+    });
+  }
 
-  if (!overwriteStationName && rows.length) {
-    const stationRefs = rows
+  const changedRows = rows.filter((row) => {
+    const state = stateByRef.get(row.station_ref);
+    return !state || state.descriptive_fingerprint !== stationDescriptiveFingerprint(row, overwriteStationName);
+  });
+
+  if (!overwriteStationName && changedRows.length) {
+    const stationRefs = changedRows
       .map((row) => toStringOrNull(row.station_ref))
       .filter((value) => Boolean(value));
     const existingNames = await fetchStationNames(connectorId, serviceRef, stationRefs);
-    for (const row of rows) {
+    for (const row of changedRows) {
       const stationRef = toStringOrNull(row.station_ref);
       if (!stationRef) {
         continue;
@@ -1037,14 +1112,44 @@ async function upsertStations(records, connectorId, serviceRef, overwriteStation
     }
   }
 
-  await upsertRows(
-    "stations",
-    rows,
-    "connector_id,service_ref,station_ref",
-    UK_AQ_CORE_SCHEMA,
-  );
+  const descriptiveRows = changedRows.map((row) => ({
+    station_ref: row.station_ref,
+    service_ref: row.service_ref,
+    label: row.label,
+    station_name: row.station_name,
+    station_type: row.station_type,
+    station_exposure: row.station_exposure,
+    geometry: row.longitude !== null && row.latitude !== null
+      ? `SRID=4326;POINT(${row.longitude} ${row.latitude})`
+      : null,
+    connector_id: row.connector_id,
+  }));
+  await upsertRows("stations", descriptiveRows, "connector_id,service_ref,station_ref", UK_AQ_CORE_SCHEMA);
 
-  return rows.length;
+  const stationIds = await fetchStationIds(
+    connectorId,
+    serviceRef,
+    rows.map((row) => row.station_ref),
+  );
+  const unresolved = rows.filter((row) => !stationIds[row.station_ref]);
+  if (unresolved.length) {
+    throw new Error(`Missing Sensor.Community station identities after upsert: ${unresolved.slice(0, 10).map((row) => row.station_ref).join(",")}`);
+  }
+  for (const rowsChunk of chunk(rows, UPSERT_CHUNK_SIZE)) {
+    const presenceResponse = await mainRpcRequest(
+      "uk_aq_rpc_sensorcommunity_station_presence_touch_v1",
+      {
+        connector_id: connectorId,
+        station_ids: rowsChunk.map((row) => stationIds[row.station_ref]),
+        seen_ats: rowsChunk.map(() => seenAt),
+      },
+    );
+    if (!presenceResponse.ok) {
+      throw new Error(`Station presence touch failed (${presenceResponse.status}): ${presenceResponse.text}`);
+    }
+  }
+
+  return { updated: descriptiveRows.length, stationIds };
 }
 
 async function fetchStationIds(connectorId, serviceRef, stationRefs) {
@@ -1183,12 +1288,13 @@ async function upsertObservations(rows) {
     connectorCode: CONNECTOR_CODE,
     logger: console,
     config: { minimumAttemptRuntimeMs: HTTP_TIMEOUT_MS },
+    requestBodyBytes: (rowsChunk) =>
+      serializedJsonUtf8Bytes(buildCompactObservationRpcArgs(rowsChunk)),
     writeChunk: async (rowsChunk) => {
-      const response = await postgrestRequest("POST", "observations", {
-        query: { on_conflict: "connector_id,timeseries_id,observed_at" },
-        body: rowsChunk,
-        prefer: "resolution=merge-duplicates,return=minimal",
-      });
+      const response = await mainRpcRequest(
+        "uk_aq_rpc_observations_compact_upsert_v1",
+        buildCompactObservationRpcArgs(rowsChunk),
+      );
       if (!response.ok) {
         const error = new Error(
           `Failed to upsert observations (${response.status}): ${response.text}`,
@@ -1408,7 +1514,13 @@ async function observsUpsertObservations(observsRows) {
     const response = await observsPostgrestRequest(
       "POST",
       `rpc/${OBSERVS_UPSERT_RPC}`,
-      { body: { rows: rowsChunk } },
+      {
+        body: {
+          timeseries_ids: rowsChunk.map((row) => row.timeseries_id),
+          observed_ats: rowsChunk.map((row) => row.observed_at),
+          values: rowsChunk.map((row) => row.value),
+        },
+      },
     );
     if (!response.ok) {
       throw new Error(
@@ -1880,26 +1992,22 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
   }
 
   const phenomenonIds = await upsertPhenomena(connectorId);
-  const stationsUpdated = await upsertStations(
+  const stationResult = await upsertStations(
     filteredRows,
     connectorId,
     SCOMM_SERVICE_REF,
     Boolean(overwriteStationName),
   );
 
-  const { stationRefs, timeseriesRefs, observationsByTimeseries } =
+  const { timeseriesRefs, observationsByTimeseries } =
     buildObservationMap(filteredRows);
-  const stationIdMap = await fetchStationIds(
-    connectorId,
-    SCOMM_SERVICE_REF,
-    stationRefs,
-  );
+  const stationIdMap = stationResult.stationIds;
 
   const timeseriesPayload = [];
   for (const [timeseriesRef, observation] of observationsByTimeseries.entries()) {
     const stationId = stationIdMap[observation.station_ref];
     if (!stationId) {
-      continue;
+      throw new Error(`Missing Sensor.Community station identity: ${observation.station_ref}`);
     }
 
     const valueMeta = Object.values(VALUE_TYPE_MAP).find(
@@ -1921,17 +2029,31 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
     });
   }
 
-  // Create/refresh metadata before observations, but do not advance the
+  // Create missing metadata before observations, but do not advance the
   // latest-value marker until the authoritative IngestDB write has committed.
   const timeseriesMetadataPayload = timeseriesPayload.map(
     ({ last_value: _lastValue, last_value_at: _lastValueAt, ...metadata }) => metadata,
   );
-  await upsertTimeseries(timeseriesMetadataPayload);
-  const timeseriesIdMap = await fetchTimeseriesIds(
+  let timeseriesIdMap = await fetchTimeseriesIds(
     connectorId,
     SCOMM_SERVICE_REF,
     timeseriesRefs,
   );
+  const missingTimeseriesMetadata = timeseriesMetadataPayload.filter(
+    (row) => !timeseriesIdMap[row.timeseries_ref],
+  );
+  if (missingTimeseriesMetadata.length) {
+    await upsertTimeseries(missingTimeseriesMetadata);
+    timeseriesIdMap = await fetchTimeseriesIds(
+      connectorId,
+      SCOMM_SERVICE_REF,
+      timeseriesRefs,
+    );
+  }
+  const unresolvedTimeseries = timeseriesRefs.filter((ref) => !timeseriesIdMap[ref]);
+  if (unresolvedTimeseries.length) {
+    throw new Error(`Missing Sensor.Community timeseries identities after creation: ${unresolvedTimeseries.slice(0, 10).join(",")}`);
+  }
 
   const rawObservationRows = [];
   let lastObservedMs = Number.NEGATIVE_INFINITY;
@@ -1940,7 +2062,7 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
   for (const [timeseriesRef, observation] of observationsByTimeseries.entries()) {
     const timeseriesId = timeseriesIdMap[timeseriesRef];
     if (!timeseriesId) {
-      continue;
+      throw new Error(`Missing Sensor.Community timeseries identity: ${timeseriesRef}`);
     }
 
     rawObservationRows.push({
@@ -1982,7 +2104,17 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
     };
     throw error;
   }
-  await upsertTimeseries(timeseriesPayload);
+  const latestResponse = await mainRpcRequest(
+    "uk_aq_rpc_timeseries_last_values_compact_update_v1",
+    {
+      timeseries_ids: timeseriesPayload.map((row) => timeseriesIdMap[row.timeseries_ref]),
+      last_values: timeseriesPayload.map((row) => row.last_value),
+      last_value_ats: timeseriesPayload.map((row) => row.last_value_at),
+    },
+  );
+  if (!latestResponse.ok) {
+    throw new Error(`Timeseries latest-value update failed (${latestResponse.status}): ${latestResponse.text}`);
+  }
   if (observsResult.status === "rejected") {
     const error = observsResult.reason instanceof Error
       ? observsResult.reason
@@ -2005,7 +2137,7 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
     run_status: "success",
     run_message: "Sensor.Community direct ingest completed via Cloud Run.",
     count: filteredRows.length,
-    stations_updated: stationsUpdated,
+    stations_updated: stationResult.updated,
     timeseries_updated: timeseriesPayload.length,
     observations_upserted: ingestDbWriteStats.committed_rows,
     ingestdb_observation_write: ingestDbWriteStats,
