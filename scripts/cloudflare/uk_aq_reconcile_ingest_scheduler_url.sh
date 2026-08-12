@@ -27,7 +27,7 @@ python3 "${sync_script}" \
   --sql-file /tmp/ingest_scheduler_jobs_sync.sql \
   --json-file /tmp/ingest_scheduler_jobs_expected.json
 
-npx --yes wrangler@4 d1 execute "${database_name}" \
+npx --yes wrangler@4.121.0 d1 execute "${database_name}" \
   --remote \
   --config "${wrangler_config}" \
   --file /tmp/ingest_scheduler_jobs_sync.sql
@@ -51,12 +51,12 @@ Path("/tmp/ingest_scheduler_cloud_run_url.sql").write_text(
 )
 PY
 
-npx --yes wrangler@4 d1 execute "${database_name}" \
+npx --yes wrangler@4.121.0 d1 execute "${database_name}" \
   --remote \
   --config "${wrangler_config}" \
   --file /tmp/ingest_scheduler_cloud_run_url.sql
 
-npx --yes wrangler@4 d1 execute "${database_name}" \
+npx --yes wrangler@4.121.0 d1 execute "${database_name}" \
   --remote \
   --config "${wrangler_config}" \
   --json \
