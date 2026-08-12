@@ -2183,18 +2183,26 @@ async function upsertLastValue(
     return;
   }
 
-  const { error } = await postgrestRequest(
-    "POST",
-    "rpc/uk_aq_rpc_timeseries_last_values_compact_update_v1",
-    {},
-    {
-      timeseries_ids: [seriesId],
-      last_values: [lastPoint.value ?? null],
-      last_value_ats: [lastPoint.observed_at],
-    },
-    undefined,
-    "uk_aq_public",
-  );
+  const { error } = lastPoint.value !== null && lastPoint.value !== undefined
+    ? await postgrestRequest(
+      "POST",
+      "rpc/uk_aq_rpc_timeseries_last_values_compact_update_v1",
+      {},
+      {
+        timeseries_ids: [seriesId],
+        last_values: [lastPoint.value],
+        last_value_ats: [lastPoint.observed_at],
+      },
+      undefined,
+      "uk_aq_public",
+    )
+    : await postgrestRequest(
+      "PATCH",
+      "timeseries",
+      { id: `eq.${seriesId}` },
+      { last_value_at: lastPoint.observed_at },
+      "return=minimal",
+    );
   if (error) {
     console.warn(`timeseries update failed for ${seriesId}: ${error.message}`);
     await errorLogger.logError({

@@ -426,6 +426,23 @@ test("the shared helper is directly importable by the Node runtime", async () =>
   assert.equal(typeof helper.writeIngestDbObservations, "function");
 });
 
+test("SOS null latest values advance only the timestamp", async () => {
+  const source = await readFile(
+    new URL("../supabase/functions/ingest_sos/index.ts", import.meta.url),
+    "utf8",
+  );
+  const upsertLastValue = source.slice(source.indexOf("async function upsertLastValue("));
+  assert.match(
+    upsertLastValue,
+    /lastPoint\.value !== null && lastPoint\.value !== undefined[\s\S]*uk_aq_rpc_timeseries_last_values_compact_update_v1/,
+  );
+  assert.match(
+    upsertLastValue,
+    /: await postgrestRequest\([\s\S]*?"PATCH",[\s\S]*?"timeseries",[\s\S]*?\{ last_value_at: lastPoint\.observed_at \}/,
+  );
+  assert.doesNotMatch(upsertLastValue, /last_values: \[lastPoint\.value \?\? null\]/);
+});
+
 test("changed callers preserve canonical upsert, committed accounting, and checkpoint safety", async () => {
   const callerPaths = [
     "../workers/uk_aq_sensorcommunity_cloud_run/index.mjs",

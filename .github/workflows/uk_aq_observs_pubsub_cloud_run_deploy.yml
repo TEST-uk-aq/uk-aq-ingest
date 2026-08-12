@@ -45,7 +45,7 @@ jobs:
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_PUBLIC_SCHEMA: ${{ vars.UK_AQ_PUBLIC_SCHEMA || 'uk_aq_public' }}
       OBS_AQIDB_RPC_SCHEMA: ${{ vars.OBS_AQIDB_RPC_SCHEMA || 'uk_aq_public' }}
-          OBSERVS_UPSERT_RPC: ${{ vars.OBSERVS_UPSERT_RPC || 'uk_aq_rpc_observs_observations_compact_upsert_v1' }}
+      OBSERVS_UPSERT_RPC: ${{ vars.OBSERVS_UPSERT_RPC || 'uk_aq_rpc_observs_observations_compact_upsert_v1' }}
       OBSERVS_UPSERT_CHUNK_SIZE: ${{ vars.OBSERVS_UPSERT_CHUNK_SIZE || '5000' }}
       OBSERVS_UPSERT_RPC_RETRIES: ${{ vars.OBSERVS_UPSERT_RPC_RETRIES || '3' }}
       OBSERVS_UPSERT_RETRY_BASE_MS: ${{ vars.OBSERVS_UPSERT_RETRY_BASE_MS || '1000' }}
