@@ -100,13 +100,14 @@ jobs:
         working-directory: cloudflare/scheduler
         run: |
           set -euo pipefail
-          npx --yes wrangler@4 d1 migrations apply uk_aq_cron_scheduler_ingest_db --remote
+          npx --yes wrangler@4.121.0 d1 migrations apply uk_aq_cron_scheduler_ingest_db --remote
 
       - name: Deploy worker
         uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
         with:
           apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.121.0"
           workingDirectory: cloudflare/scheduler
           command: deploy
 
@@ -119,12 +120,13 @@ jobs:
             --arg UK_AQ_EDGE_UPSTREAM_SECRET "${UK_AQ_EDGE_UPSTREAM_SECRET}" \
             --arg UK_AQ_SCHEDULER_TRIGGER_SECRET "${UK_AQ_SCHEDULER_TRIGGER_SECRET}" \
             '{UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT: $UK_AQ_GITHUB_WORKFLOW_DISPATCH_PAT, UK_AQ_EDGE_UPSTREAM_SECRET: $UK_AQ_EDGE_UPSTREAM_SECRET, UK_AQ_SCHEDULER_TRIGGER_SECRET: $UK_AQ_SCHEDULER_TRIGGER_SECRET} | with_entries(select(.value != ""))')"
-          printf '%s' "$secrets_json" | npx --yes wrangler@4 secret bulk --name uk-aq-cron-scheduler-ingest
+          printf '%s' "$secrets_json" | npx --yes wrangler@4.121.0 secret bulk --name uk-aq-cron-scheduler-ingest
 
       - name: Redeploy worker
         uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
         with:
           apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.121.0"
           workingDirectory: cloudflare/scheduler
           command: deploy
