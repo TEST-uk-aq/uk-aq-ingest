@@ -27,33 +27,43 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          replacements = {
-              Path("scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"): [
-                  ("npx --yes wrangler@4 ", "npx --yes wrangler@4.121.0 ", 3),
-              ],
-              Path(".github/workflows/uk_aq_cloudflare_scheduler_ingest_config_sync.yml"): [
-                  ("npx --yes wrangler@4 ", "npx --yes wrangler@4.121.0 ", 2),
-              ],
-              Path(".github/workflows/uk_aq_cloudflare_scheduler_ingest_deploy.yml"): [
-                  ("npx --yes wrangler@4 ", "npx --yes wrangler@4.121.0 ", 2),
-                  (
-                      "          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}\n          workingDirectory: cloudflare/scheduler\n          command: deploy",
-                      "          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}\n          wranglerVersion: \"4.121.0\"\n          workingDirectory: cloudflare/scheduler\n          command: deploy",
-                      2,
-                  ),
-              ],
+          npx_replacements = {
+              Path("scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"): 3,
+              Path(".github/workflows/uk_aq_cloudflare_scheduler_ingest_config_sync.yml"): 2,
+              Path(".github/workflows/uk_aq_cloudflare_scheduler_ingest_deploy.yml"): 2,
           }
 
-          for path, path_replacements in replacements.items():
+          for path, expected_count in npx_replacements.items():
               text = path.read_text(encoding="utf-8")
-              for old, new, expected_count in path_replacements:
-                  count = text.count(old)
-                  if count != expected_count:
-                      raise SystemExit(
-                          f"{path}: expected {expected_count} matches for {old!r}, found {count}"
-                      )
-                  text = text.replace(old, new)
-              path.write_text(text, encoding="utf-8")
+              old = "npx --yes wrangler@4 "
+              new = "npx --yes wrangler@4.121.0 "
+              count = text.count(old)
+              if count != expected_count:
+                  raise SystemExit(
+                      f"{path}: expected {expected_count} floating Wrangler calls, found {count}"
+                  )
+              path.write_text(text.replace(old, new), encoding="utf-8")
+
+          deploy_path = Path(".github/workflows/uk_aq_cloudflare_scheduler_ingest_deploy.yml")
+          lines = deploy_path.read_text(encoding="utf-8").splitlines()
+          output = []
+          inside_wrangler_action = False
+          inserted = 0
+          for line in lines:
+              if "uses: cloudflare/wrangler-action@" in line:
+                  inside_wrangler_action = True
+              output.append(line)
+              if inside_wrangler_action and line.strip().startswith("accountId:"):
+                  indent = line[: len(line) - len(line.lstrip())]
+                  output.append(f'{indent}wranglerVersion: "4.121.0"')
+                  inserted += 1
+                  inside_wrangler_action = False
+
+          if inserted != 2:
+              raise SystemExit(
+                  f"Expected to pin 2 wrangler-action steps, inserted {inserted}"
+              )
+          deploy_path.write_text("\n".join(output) + "\n", encoding="utf-8")
           PY
 
       - name: Structural checks
