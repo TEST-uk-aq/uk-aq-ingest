@@ -475,11 +475,65 @@ def write_secondary_rows(
     return stats
 
 
-def build_rows(payload: Sequence[Dict[str, Any]], timeseries_id: int, connector_id: int, station_id: int, species: str) -> Tuple[List[Dict[str, Any]], int, Optional[str], Optional[float]]:
-    rows = []
+def deduplicate_source_rows(
+    rows: Sequence[Dict[str, Any]],
+    station_ref: str,
+    species: str,
+) -> Tuple[List[Dict[str, Any]], int, int]:
+    grouped: Dict[Tuple[int, str], List[Tuple[int, Dict[str, Any]]]] = {}
+    for source_index, row in enumerate(rows):
+        identity = (int(row["timeseries_id"]), str(row["observed_at"]))
+        grouped.setdefault(identity, []).append((source_index, row))
+
+    winners: List[Tuple[int, Dict[str, Any]]] = []
+    duplicate_rows_deduplicated = 0
+    conflicting_duplicate_timestamps = 0
+    for (_timeseries_id, observed_at), candidates in grouped.items():
+        winner_index, winner = candidates[-1]
+        winners.append((winner_index, winner))
+        duplicate_rows_deduplicated += len(candidates) - 1
+        if len(candidates) < 2:
+            continue
+
+        first = candidates[0][1]
+        value_differed = any(
+            candidate[1]["value"] != first["value"] for candidate in candidates[1:]
+        )
+        status_differed = any(
+            candidate[1]["status"] != first["status"] for candidate in candidates[1:]
+        )
+        if value_differed or status_differed:
+            conflicting_duplicate_timestamps += 1
+            LOG.warning(
+                "Nodes source conflicting duplicate timestamp "
+                "station_ref=%s species=%s observed_at=%s "
+                "value_differed=%s status_differed=%s candidate_count=%s",
+                station_ref[:100],
+                species[:50],
+                observed_at[:40],
+                value_differed,
+                status_differed,
+                len(candidates),
+            )
+
+    winners.sort(key=lambda item: item[0])
+    return (
+        [winner for _source_index, winner in winners],
+        duplicate_rows_deduplicated,
+        conflicting_duplicate_timestamps,
+    )
+
+
+def build_rows(
+    payload: Sequence[Dict[str, Any]],
+    timeseries_id: int,
+    connector_id: int,
+    station_id: int,
+    station_ref: str,
+    species: str,
+) -> Tuple[List[Dict[str, Any]], int, Optional[str], Optional[float], int, int]:
+    candidate_rows = []
     nulls = 0
-    last_at: Optional[datetime] = None
-    last_value: Optional[float] = None
     for entry in payload:
         value = coerce_float(entry.get("ScaledValue"))
         if value is None:
@@ -491,10 +545,28 @@ def build_rows(payload: Sequence[Dict[str, Any]], timeseries_id: int, connector_
         status = entry.get("RatificationStatus")
         if status is not None:
             status = str(status).strip() or None
-        rows.append({"connector_id": connector_id, "station_id": station_id, "timeseries_id": timeseries_id, "observed_at": observed.isoformat(), "value": value, "status": status, "metadata": meta, "species": species})
+        candidate_rows.append({"connector_id": connector_id, "station_id": station_id, "timeseries_id": timeseries_id, "observed_at": observed.isoformat(), "value": value, "status": status, "metadata": meta, "species": species})
+
+    rows, duplicate_rows_deduplicated, conflicting_duplicate_timestamps = (
+        deduplicate_source_rows(candidate_rows, station_ref, species)
+    )
+    last_at: Optional[datetime] = None
+    last_value: Optional[float] = None
+    for row in rows:
+        observed = parse_iso(row["observed_at"])
+        if observed is None:
+            continue
         if last_at is None or observed > last_at:
-            last_at = observed; last_value = value
-    return rows, nulls, (last_at.isoformat() if last_at else None), last_value
+            last_at = observed
+            last_value = row["value"]
+    return (
+        rows,
+        nulls,
+        (last_at.isoformat() if last_at else None),
+        last_value,
+        duplicate_rows_deduplicated,
+        conflicting_duplicate_timestamps,
+    )
 
 
 def select_due_stations(
@@ -612,6 +684,8 @@ def main() -> int:
                 "observs_error_count": 0,
                 "observs_error_message": None,
                 "null_values_skipped": 0,
+                "source_duplicate_rows_deduplicated": 0,
+                "source_conflicting_duplicate_timestamps": 0,
                 "empty_series": 0,
                 "checkpoints": 0,
                 "partial": False,
@@ -666,6 +740,8 @@ def main() -> int:
                 "observs_error_count": 0,
                 "observs_error_message": None,
                 "null_values_skipped": 0,
+                "source_duplicate_rows_deduplicated": 0,
+                "source_conflicting_duplicate_timestamps": 0,
                 "empty_series": 0,
                 "checkpoints": 0,
                 "partial": False,
@@ -707,6 +783,8 @@ def main() -> int:
     explicit_start = parse_iso(args.start_time)
     api_calls = observations_input = observations_upserted = 0
     null_values_skipped = empty_series = pub_obs = 0
+    source_duplicate_rows_deduplicated = 0
+    source_conflicting_duplicate_timestamps = 0
     observs_rows_prepared = observs_written = observs_enqueued = 0
     stations_processed = 0
     stopped_reason: Optional[str] = None
@@ -751,8 +829,24 @@ def main() -> int:
                 payload = client.sensor_data(station_ref, sp, start_time, end_time); api_calls += 1
                 if not payload:
                     empty_series += 1
-                rows, nulls, last_at, last_value = build_rows(payload, int(ts_id), connector_id, station_id, sp)
+                (
+                    rows,
+                    nulls,
+                    last_at,
+                    last_value,
+                    duplicate_rows_deduplicated,
+                    conflicting_duplicate_timestamps,
+                ) = build_rows(
+                    payload,
+                    int(ts_id),
+                    connector_id,
+                    station_id,
+                    station_ref,
+                    sp,
+                )
                 null_values_skipped += nulls
+                source_duplicate_rows_deduplicated += duplicate_rows_deduplicated
+                source_conflicting_duplicate_timestamps += conflicting_duplicate_timestamps
                 observations_input += len(rows)
                 if rows and not args.dry_run:
                     rows_chunks = [
@@ -893,6 +987,8 @@ def main() -> int:
         "observs_error_count": secondary_error_count,
         "observs_error_message": secondary_error_message,
         "null_values_skipped": null_values_skipped,
+        "source_duplicate_rows_deduplicated": source_duplicate_rows_deduplicated,
+        "source_conflicting_duplicate_timestamps": source_conflicting_duplicate_timestamps,
         "empty_series": empty_series,
         "checkpoints": len(checkpoint_rows) if not args.dry_run else 0,
         "partial": partial,
