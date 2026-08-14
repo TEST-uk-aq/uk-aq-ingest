@@ -7,6 +7,7 @@ on:
     paths:
       - "workers/uk_aq_blondon_nodes_cloud_run/**"
       - "scripts/blondon_nodes/blondon_nodes_ingest.py"
+      - "scripts/blondon_nodes/blondon_nodes_raw_capture.py"
       - "scripts/blondon_nodes/blondon_nodes_reference_data.py"
       - "scripts/uk_aq_supabase.py"
       - "scripts/uk_aq_ingestdb_observation_writer.py"

@@ -34,6 +34,7 @@ from scripts.blondon_nodes.blondon_nodes_reference_data import (
     build_nodes_timeseries_rows,
     upsert_nodes_phenomena,
 )
+from scripts.blondon_nodes.blondon_nodes_raw_capture import NodesRawCapture
 from scripts.uk_aq_ingestdb_observation_writer import (
     DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
     IngestDbObservationWriteError,
@@ -109,15 +110,29 @@ def parse_species(value: Optional[str]) -> List[str]:
 
 
 class BreatheLondonNodesClient:
-    def __init__(self, api_key: str, base_url: str = BASE_URL, timeout: int = 60, retries: int = 3) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = BASE_URL,
+        timeout: int = 60,
+        retries: int = 3,
+        raw_capture: Optional[NodesRawCapture] = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
+        self.raw_capture = raw_capture
         self.session = requests.Session()
         self.session.headers.update({"X-API-KEY": api_key, "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "uk-air-quality-networks"})
 
     def sensor_data(self, site_code: str, species: str, start_time: datetime, end_time: datetime) -> List[Dict[str, Any]]:
         params = {"SiteCode": site_code, "Species": species, "startTime": iso_z(start_time), "endTime": iso_z(end_time)}
+        raw_params = {
+            "SiteCode": site_code,
+            "Species": species,
+            "StartTime": params["startTime"],
+            "EndTime": params["endTime"],
+        }
         url = f"{self.base_url}/SensorData"
         for attempt in range(1, self.retries + 1):
             try:
@@ -127,9 +142,23 @@ class BreatheLondonNodesClient:
                 resp.raise_for_status()
                 payload = resp.json()
                 if payload is None:
+                    if self.raw_capture:
+                        self.raw_capture.record_response(
+                            "/SensorData",
+                            raw_params,
+                            resp.status_code,
+                            payload,
+                        )
                     return []
                 if not isinstance(payload, list):
                     raise RuntimeError(f"Unexpected /SensorData payload type: {type(payload).__name__}")
+                if self.raw_capture:
+                    self.raw_capture.record_response(
+                        "/SensorData",
+                        raw_params,
+                        resp.status_code,
+                        payload,
+                    )
                 return [row for row in payload if isinstance(row, dict)]
             except requests.RequestException as exc:
                 LOG.warning("Nodes request failed (attempt %s/%s): %s", attempt, self.retries, exc)
@@ -643,8 +672,7 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
+def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
     species = parse_species(args.species)
     if not species:
         raise SystemExit("No valid species selected.")
@@ -656,6 +684,7 @@ def main() -> int:
     connector_id = int(connector["id"])
     if connector.get("poll_enabled") is False and not (args.start_time or args.site_code):
         LOG.info("Connector blondon_nodes poll_enabled=false; exiting normal scheduled run.")
+        raw_capture.finalize_safely()
         emit_run_summary(
             {
                 "ok": True,
@@ -691,6 +720,7 @@ def main() -> int:
                 "partial": False,
                 "stopped_reason": "poll_disabled",
                 "dry_run": args.dry_run,
+                **raw_capture.summary_fields(),
             }
         )
         return 0
@@ -712,6 +742,7 @@ def main() -> int:
         len(all_stations),
     )
     if not stations:
+        raw_capture.finalize_safely()
         emit_run_summary(
             {
                 "ok": True,
@@ -747,6 +778,7 @@ def main() -> int:
                 "partial": False,
                 "stopped_reason": "no_due_stations",
                 "dry_run": args.dry_run,
+                **raw_capture.summary_fields(),
             }
         )
         return 0
@@ -765,7 +797,7 @@ def main() -> int:
         species=species,
     )
     ts_ids = writer.upsert_timeseries(ts_rows) if not args.dry_run else {r["timeseries_ref"]: -i-1 for i, r in enumerate(ts_rows)}
-    client = BreatheLondonNodesClient(api_key)
+    client = BreatheLondonNodesClient(api_key, raw_capture=raw_capture)
     secondary_errors: List[str] = []
     secondary_error_count = 0
     try:
@@ -781,6 +813,21 @@ def main() -> int:
         hours=max(poll_hours, 0.1)
     )
     explicit_start = parse_iso(args.start_time)
+    raw_capture.record_context(
+        {
+            "connector_code": CONNECTOR_CODE,
+            "connector_id": connector_id,
+            "selected_species": species,
+            "selected_station_count": len(stations),
+            "run_end_time": end_time.isoformat(),
+            "explicit_start_time": (
+                explicit_start.isoformat() if explicit_start is not None else None
+            ),
+            "poll_window_hours": poll_hours,
+            "overlap_minutes": args.overlap_minutes,
+            "dry_run": args.dry_run,
+        }
+    )
     api_calls = observations_input = observations_upserted = 0
     null_values_skipped = empty_series = pub_obs = 0
     source_duplicate_rows_deduplicated = 0
@@ -959,6 +1006,7 @@ def main() -> int:
     secondary_error_message = (
         "; ".join(secondary_errors)[:4000] if secondary_errors else None
     )
+    raw_capture.finalize_safely()
     summary = {
         "ok": True,
         "connector_id": connector_id,
@@ -994,6 +1042,7 @@ def main() -> int:
         "partial": partial,
         "stopped_reason": stopped_reason,
         "dry_run": args.dry_run,
+        **raw_capture.summary_fields(),
     }
     LOG.info(
         "Nodes ingest complete stations=%s species=%s api_calls=%s observations=%s "
@@ -1006,6 +1055,15 @@ def main() -> int:
     )
     emit_run_summary(summary)
     return 0
+
+
+def main() -> int:
+    args = parse_args()
+    raw_capture = NodesRawCapture.from_environment()
+    try:
+        return run_ingest(args, raw_capture)
+    finally:
+        raw_capture.finalize_safely()
 
 
 if __name__ == "__main__":
