@@ -206,7 +206,7 @@ jobs:
           docker build -f workers/uk_aq_openaq_cloud_run/Dockerfile -t "${IMAGE}" .
           docker push "${IMAGE}"
 
-      - name: Ensure Cloud Tasks queue + IAM bindings
+      - name: Ensure Cloud Tasks queue + runtime queue IAM
         id: tasks_setup
         run: |
           set -euo pipefail
@@ -247,12 +247,6 @@ jobs:
               --role "${role}" >/dev/null
           done
           
-          project_number="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
-          cloud_tasks_sa="service-${project_number}@gcp-sa-cloudtasks.iam.gserviceaccount.com"
-          gcloud iam service-accounts add-iam-policy-binding "${task_invoker_sa}" \
-            --member "serviceAccount:${cloud_tasks_sa}" \
-            --role "roles/iam.serviceAccountTokenCreator" >/dev/null
-
       - name: Ensure observs Pub/Sub topic + publisher IAM binding
         run: |
           set -euo pipefail
