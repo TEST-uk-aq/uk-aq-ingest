@@ -1,5 +1,0 @@
-Item,Breathe London,ERG LAQN,Sensor.Community,SOS
-Active selection in dispatcher,"uk_aq_core.blondon_communities_select_station_refs(active_only=true)","uk_aq_core.erg_laqn_select_station_refs(active_only=true)","N/A (dispatcher passes country only)","N/A (dispatcher passes timeseries ids/limit)"
-Station active fields,"station_metadata.attributes.enabled or station_metadata.attributes.site_active (truthy) + stations.removed_at is null","stations.removed_at is null","No explicit active; ingest filters by UK bbox unless no_filter","No explicit active; ingest filters by timeseries last_value_at recency"
-Dashboard active count,"enabled/site_active (truthy) + removed_at is null","removed_at is null","removed_at is null","removed_at is null"
-Notes,"active_only default true in dispatcher; active_only forwarded to ingest","Batch size limits station_refs list","Records filtered by bbox; not activity-based","Series selection uses poll window & last_value_at"
