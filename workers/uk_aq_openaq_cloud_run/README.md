@@ -11,8 +11,12 @@ This Cloud Run service runs OpenAQ ingest in Google Cloud using the existing
    with tiered + stale limits derived from connector `batch_size`.
 4. Calls local OpenAQ ingest once with scoped `station_refs`.
 5. Records run status in `connectors` + `uk_aq_ingest_runs` (+ `error_logs` on failure).
-6. Schedules the next run as a one-off Cloud Task at computed due time
-   (fallback to a short delay when no due checkpoint is available).
+6. Loads the earliest due checkpoint through
+   `uk_aq_public.uk_aq_rpc_openaq_earliest_next_due_at`, scoped to the resolved
+   connector, configured service reference, and active stations, then schedules
+   the next run as a one-off Cloud Task. If the scoped lookup fails or has no
+   eligible due checkpoint, the existing minimum-delay scheduling applies; no
+   unscoped checkpoint fallback is used.
 7. Writes observs via shared observs client mode:
    - `OBSERVS_WRITE_MODE=pubsub_only` publishes per-row observs messages to
      Pub/Sub (direct cutover path for this worker).

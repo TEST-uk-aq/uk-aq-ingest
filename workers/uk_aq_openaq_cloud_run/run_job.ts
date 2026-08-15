@@ -544,51 +544,26 @@ async function loadStationRefs(params: {
 async function loadEarliestNextDueAt(
   connectorId: number,
 ): Promise<string | null> {
-  const primary = await postgrestRequest(
-    "GET",
-    "openaq_station_checkpoints",
+  const response = await postgrestRequest(
+    "POST",
+    "rpc/uk_aq_rpc_openaq_earliest_next_due_at",
     {
-      schema: UK_AQ_RAW_SCHEMA,
-      query: {
-        select:
-          "next_due_at,station_id,stations!inner(connector_id,service_ref,removed_at)",
-        "stations.connector_id": `eq.${connectorId}`,
-        "stations.service_ref": `eq.${OPENAQ_SERVICE_REF}`,
-        "stations.removed_at": "is.null",
-        next_due_at: "not.is.null",
-        order: "next_due_at.asc",
-        limit: "1",
+      schema: "uk_aq_public",
+      body: {
+        connector_id: connectorId,
+        service_ref: OPENAQ_SERVICE_REF,
       },
     },
   );
-  if (primary.ok) {
-    const rows = Array.isArray(primary.data) ? primary.data : [];
-    const first = toObject(rows[0]);
-    const nextDueAt = toStringOrNull(first?.next_due_at);
-    if (nextDueAt) {
-      return nextDueAt;
-    }
-  }
-
-  const fallback = await postgrestRequest(
-    "GET",
-    "openaq_station_checkpoints",
-    {
-      schema: UK_AQ_RAW_SCHEMA,
-      query: {
-        select: "next_due_at",
-        next_due_at: "not.is.null",
-        order: "next_due_at.asc",
-        limit: "1",
-      },
-    },
-  );
-  if (!fallback.ok) {
+  if (!response.ok) {
+    const detail = response.text.trim().slice(0, 500);
     throw new Error(
-      `Failed to load OpenAQ next_due_at (${fallback.status}): ${fallback.text}`,
+      `Failed to load scoped OpenAQ next_due_at (${response.status})${
+        detail ? `: ${detail}` : ""
+      }`,
     );
   }
-  const rows = Array.isArray(fallback.data) ? fallback.data : [];
+  const rows = Array.isArray(response.data) ? response.data : [];
   return toStringOrNull(toObject(rows[0])?.next_due_at);
 }
 
