@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Run the Obs AQI core mirror with bounded delete RPC batches."""
+"""Run the Obs AQI core mirror with bounded delete RPC batches.
+
+The wrapper also extends the legacy mirror implementation with the canonical
+`networks` table. IngestDB owns the authoritative network catalogue, including
+stable numeric IDs and mutable display/enablement/priority fields. Networks are
+upserted before connector/station rows and deleted only after dependent rows.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +43,35 @@ def _load_legacy_module():
 
 _legacy = _load_legacy_module()
 _original_delete_core_keys_via_rpc = _legacy.PostgrestClient.delete_core_keys_via_rpc
+
+
+# `networks` predates the generic mirror table set and was originally seeded
+# independently in ObsAQIDB to keep numeric FK identities stable. It is now a
+# normal authoritative mirrored core table. Preserve the source IDs by using the
+# same primary-key mirror semantics as the other reference tables.
+_NETWORKS_TABLE_META = {
+    "pk": ["id"],
+    "columns": [
+        {"column_name": "id", "udt_name": "int8", "is_nullable": "NO", "column_default": None, "ordinal_position": 1},
+        {"column_name": "network_code", "udt_name": "text", "is_nullable": "NO", "column_default": None, "ordinal_position": 2},
+        {"column_name": "display_name", "udt_name": "text", "is_nullable": "NO", "column_default": None, "ordinal_position": 3},
+        {"column_name": "network_type", "udt_name": "text", "is_nullable": "NO", "column_default": None, "ordinal_position": 4},
+        {"column_name": "ingest_enabled", "udt_name": "bool", "is_nullable": "NO", "column_default": "true", "ordinal_position": 5},
+        {"column_name": "public_display_enabled", "udt_name": "bool", "is_nullable": "NO", "column_default": "false", "ordinal_position": 6},
+        {"column_name": "default_priority", "udt_name": "int4", "is_nullable": "NO", "column_default": "100", "ordinal_position": 7},
+        {"column_name": "metadata", "udt_name": "jsonb", "is_nullable": "NO", "column_default": "'{}'::jsonb", "ordinal_position": 8},
+        {"column_name": "created_at", "udt_name": "timestamptz", "is_nullable": "NO", "column_default": "now()", "ordinal_position": 9},
+        {"column_name": "updated_at", "udt_name": "timestamptz", "is_nullable": "NO", "column_default": "now()", "ordinal_position": 10},
+    ],
+}
+
+if "networks" not in _legacy.PRIMARY_TABLES:
+    _legacy.PRIMARY_TABLES.insert(0, "networks")
+if "networks" not in _legacy.SYNC_TABLES:
+    _legacy.SYNC_TABLES.insert(0, "networks")
+if "networks" not in _legacy.DELETE_ORDER:
+    _legacy.DELETE_ORDER.append("networks")
+_legacy.STATIC_SOURCE_TABLE_META["networks"] = _NETWORKS_TABLE_META
 
 
 def _parse_delete_batch_size(raw: str | None = None) -> int:
