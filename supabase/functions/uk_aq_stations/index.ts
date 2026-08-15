@@ -8,7 +8,7 @@ import { parsePublicNetworkFilter } from "../_shared/public_network_filter.ts";
 import { validateWorkerUpstreamAuth } from "../_shared/worker_auth.ts";
 
 const DEFAULT_PAGE_SIZE = 1000;
-const MAX_PAGE_SIZE = 5000;
+const MAX_PAGE_SIZE = 1000;
 const MAX_LIMIT = 20000;
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ??
@@ -122,8 +122,7 @@ serve(async (req) => {
     url.searchParams.get("page_size"),
     MAX_PAGE_SIZE,
     DEFAULT_PAGE_SIZE,
-  ) ??
-    DEFAULT_PAGE_SIZE;
+  ) ?? DEFAULT_PAGE_SIZE;
 
   try {
     const rows = await fetchStations({
@@ -161,25 +160,42 @@ async function fetchStations({
   targetLimit,
   pageSize,
 }: FetchOptions) {
-  const { data, error } = await postgrestRequest<
-    Array<Record<string, unknown>>
-  >(
-    "POST",
-    "rpc/uk_aq_stations_rpc",
-    undefined,
-    UK_AQ_PUBLIC_SCHEMA,
-    {
-      network_code: networkCode,
-      region,
-      station_like: stationLike,
-      limit_rows: targetLimit,
-      page_size: pageSize,
-    },
-  );
-  if (error) {
-    throw new Error(error.message);
+  const requestedLimit = targetLimit ?? pageSize;
+  const rows: Array<Record<string, unknown>> = [];
+  let offsetRows = 0;
+
+  while (rows.length < requestedLimit) {
+    const remaining = requestedLimit - rows.length;
+    const requestPageSize = Math.min(pageSize, remaining, MAX_PAGE_SIZE);
+    const { data, error } = await postgrestRequest<
+      Array<Record<string, unknown>>
+    >(
+      "POST",
+      "rpc/uk_aq_stations_rpc",
+      undefined,
+      UK_AQ_PUBLIC_SCHEMA,
+      {
+        network_code: networkCode,
+        region,
+        station_like: stationLike,
+        limit_rows: requestedLimit,
+        page_size: requestPageSize,
+        offset_rows: offsetRows,
+      },
+    );
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < requestPageSize) {
+      break;
+    }
+    offsetRows += page.length;
   }
-  return data ?? [];
+
+  return rows.slice(0, requestedLimit);
 }
 
 function normalizeText(value: string | null): string | null {
