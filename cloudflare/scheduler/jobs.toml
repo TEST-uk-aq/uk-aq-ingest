@@ -33,12 +33,12 @@ dry_run = false
 notes = "Breathe London Nodes scheduled ingest trigger"
 
 [jobs.uk_aq_openaq_safety]
-enabled = true
+enabled = false
 cron_expr = "*/30 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
-dry_run = false
+dry_run = true
 notes = "OpenAQ safety trigger; service decides whether work is needed"
 
 [jobs.uk_aq_openaq_safety.cloud_run_body]
