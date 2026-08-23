@@ -1,8 +1,13 @@
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
-from supabase import Client, create_client
+from postgrest import SyncPostgrestClient
+from supabase import Client, ClientOptions, create_client
+
+from scripts.uk_aq_service_egress_metrics import (
+    configured_service_egress_metrics,
+)
 
 DEFAULT_CORE_SCHEMA = os.getenv("UK_AQ_CORE_SCHEMA", "uk_aq_core")
 DEFAULT_RAW_SCHEMA = os.getenv("UK_AQ_RAW_SCHEMA", "uk_aq_raw")
@@ -62,14 +67,59 @@ class SupabaseSchemas:
         )
 
 
+class _MeteredPostgrestSupabaseClient:
+    """PostgREST-only Supabase facade using the public shared HTTP client API."""
+
+    def __init__(self, supabase_url: str, supabase_key: str) -> None:
+        collector = configured_service_egress_metrics()
+        if collector is None:
+            raise RuntimeError("Service egress metrics collector is not configured.")
+        self._rest_url = f"{supabase_url.rstrip('/')}/rest/v1"
+        self._http_client = collector.create_httpx_client(supabase_url)
+        default_headers = dict(ClientOptions().headers)
+        self._headers = {
+            **default_headers,
+            "apiKey": supabase_key,
+            "Authorization": f"Bearer {supabase_key}",
+        }
+        self._public = self._schema_client("public")
+
+    def _schema_client(self, schema: str) -> SyncPostgrestClient:
+        return SyncPostgrestClient(
+            self._rest_url,
+            schema=schema,
+            headers=dict(self._headers),
+            http_client=self._http_client,
+        )
+
+    @property
+    def postgrest(self) -> SyncPostgrestClient:
+        return self._public
+
+    def schema(self, schema: str) -> SyncPostgrestClient:
+        return self._schema_client(schema)
+
+    def table(self, name: str):
+        return self._public.table(name)
+
+    def from_(self, name: str):
+        return self._public.from_(name)
+
+    def rpc(self, fn: str, params: Optional[dict] = None):
+        return self._public.rpc(fn, params)
+
+
 def create_supabase_client(
     supabase_url: Optional[str] = None,
     supabase_key: Optional[str] = None,
-) -> Client:
+) -> Any:
     supabase_url = supabase_url or os.getenv("SUPABASE_URL")
     supabase_key = supabase_key or os.getenv("SB_SECRET_KEY") or os.getenv(
         "SUPABASE_KEY"
     )
     if not supabase_url or not supabase_key:
         raise RuntimeError("SUPABASE_URL and SB_SECRET_KEY are required.")
+    collector = configured_service_egress_metrics()
+    if collector is not None and collector.enabled:
+        return _MeteredPostgrestSupabaseClient(supabase_url, supabase_key)
     return create_client(supabase_url, supabase_key)

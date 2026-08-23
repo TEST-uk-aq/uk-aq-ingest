@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import requests
 from dotenv import load_dotenv
-from supabase import Client, create_client
+from supabase import Client
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if PROJECT_ROOT.name == "scripts":
@@ -28,6 +28,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
+from scripts.uk_aq_service_egress_metrics import (
+    configure_service_egress_metrics,
+    flush_service_egress_metrics,
+)
+
+configure_service_egress_metrics("ingest.blondon_nodes")
 from scripts.blondon_nodes.blondon_nodes_reference_data import (
     DEFAULT_SPECIES,
     SPECIES_CONFIG,
@@ -224,7 +230,7 @@ class ObservsWriter:
                 raise RuntimeError(
                     "OBSERVS_WRITE_MODE=direct requires OBS_AQIDB_SUPABASE_URL and OBS_AQIDB_SECRET_KEY"
                 )
-            self.direct = create_client(url, key).schema(
+            self.direct = create_supabase_client(url, key).schema(
                 os.getenv("OBS_AQIDB_RPC_SCHEMA") or "uk_aq_public"
             )
 
@@ -1067,4 +1073,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    finally:
+        flush_service_egress_metrics()

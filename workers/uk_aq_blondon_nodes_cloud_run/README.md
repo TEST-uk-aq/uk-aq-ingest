@@ -9,6 +9,12 @@ service/job split:
 3. The Python ingest writes observations and emits `RUN_SUMMARY_JSON`.
 4. The job updates connector run fields and inserts `uk_aq_ingest_runs`.
 
+When `UK_AQ_SERVICE_EGRESS_METRICS_ENABLED=true`, the Nodes worker measures
+PostgREST responses from clients created through `create_supabase_client()` and
+flushes one best-effort aggregate batch per process. Main ingest traffic is
+labelled `ingestdb`; direct Observs traffic is labelled `obs_aqidb`. The metrics
+RPC uses a separate unmetered client and cannot fail the ingest run.
+
 Required secret:
 - `BLONDON_NODES_API_KEY` (no sensible default; add to `.env`/GitHub secrets/Secret Manager).
 
@@ -16,6 +22,18 @@ Defaults that do not require `.env` rows:
 - `BLONDON_NODES_BASE_URL=https://breathe-london-7x54d7qf.ew.gateway.dev`
 - `BLONDON_NODES_SERVICE_REF=breathelondon`
 - `GCP_OBSERVS_PUBSUB_TOPIC=uk-aq-observs-observations`
+
+Optional service-egress metrics configuration:
+
+- `UK_AQ_SERVICE_EGRESS_METRICS_ENABLED` (default `false`)
+- `UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL` (defaults to
+  `OBS_AQIDB_SUPABASE_URL` in the TEST deployment workflow)
+- `UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA` (default `uk_aq_public`)
+- `UK_AQ_SERVICE_EGRESS_METRICS_RPC` (default
+  `uk_aq_rpc_service_egress_metrics_batch_upsert`)
+- `UKAQ_ENV_NAME` (default `TEST` in this TEST repository)
+- `UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY` (required when enabled; the
+  workflow binds the existing OBS/AQI secret)
 
 Observation delivery follows the shared Communities modes:
 

@@ -3,9 +3,17 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import "../_shared/fetch_egress_patch.ts";
 import { cacheControlHeaders } from "../_shared/cache.ts";
 import {
+  configureObservsPostgrestFetch,
   type ObservsObservationRow,
   writeObservsWithOutbox,
 } from "../_shared/observs_client.ts";
+import {
+  configureServiceEgressMetrics,
+  flushServiceEgressMetrics,
+  recordServiceEgressPostgrestResponse,
+  serviceEgressBypassHeaders,
+  serviceEgressPostgrestFetch,
+} from "../_shared/service_egress_metrics.ts";
 import {
   buildCompactObservationRpcArgs,
   createEmptyIngestDbObservationWriteStats,
@@ -14,6 +22,9 @@ import {
   serializedJsonUtf8Bytes,
   writeIngestDbObservations,
 } from "../_shared/ingestdb_observation_writer.mjs";
+
+configureServiceEgressMetrics("ingest.blondon_communities");
+configureObservsPostgrestFetch(serviceEgressPostgrestFetch);
 
 type PollRequest = {
   api_key?: string;
@@ -246,6 +257,7 @@ function postgrestHeaders(prefer?: string, schema = UK_AQ_CORE_SCHEMA): Record<s
     apikey: SUPABASE_PRIVILEGED_KEY,
     "Content-Type": "application/json",
     "x-ukaq-egress-caller": "ingest_blondon_communities",
+    ...serviceEgressBypassHeaders(),
   };
   if (prefer) {
     headers.Prefer = prefer;
@@ -297,16 +309,31 @@ async function postgrestRequest<T>(
       url.searchParams.set(key, String(value));
     }
   }
+  const startedAt = Date.now();
   const resp = await postgrestFetch(url.toString(), {
     method,
     headers: postgrestHeaders(prefer, schema),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   let payload: unknown = null;
+  let responseText = "";
   if (resp.status !== 204) {
     const contentType = resp.headers.get("content-type") ?? "";
-    payload = contentType.includes("application/json") ? await resp.json() : await resp.text();
+    responseText = await resp.text();
+    payload = contentType.includes("application/json")
+      ? JSON.parse(responseText)
+      : responseText;
   }
+  recordServiceEgressPostgrestResponse({
+    durationMs: Date.now() - startedAt,
+    httpStatus: resp.status,
+    method,
+    responseBytes: new TextEncoder().encode(responseText).byteLength,
+    responseData: payload,
+    routePath: table,
+    sourceUrl: SUPABASE_URL,
+    measurementMethod: "body_utf8",
+  });
   if (!resp.ok) {
     const message = (payload as { message?: string; error_description?: string; error?: string })?.message
       ?? (payload as { error_description?: string })?.error_description
@@ -2576,6 +2603,7 @@ serve(async (req) => {
       station_fetch_enabled: stationFetchEnabled,
     };
   }
+  await flushServiceEgressMetrics();
   return new Response(JSON.stringify(responsePayload), {
     status,
     headers: {

@@ -1,8 +1,16 @@
 import "../../supabase/functions/_shared/fetch_egress_patch.ts";
 import {
+  configureServiceEgressMetrics,
+  flushServiceEgressMetrics,
+  recordServiceEgressPostgrestResponse,
+  serviceEgressBypassHeaders,
+} from "../../supabase/functions/_shared/service_egress_metrics.ts";
+import {
   normalizeDropboxPath,
   uploadErrorLogJsonToDropbox,
 } from "../shared/dropbox_error_log.ts";
+
+configureServiceEgressMetrics("ingest.blondon_communities");
 
 const CONNECTOR_CODE_ERROR =
   "Use connector_code=blondon_communities for Breathe London Communities. network_code/service_ref may remain breathelondon.";
@@ -297,6 +305,7 @@ function postgrestHeaders(
     apikey: SUPABASE_PRIVILEGED_KEY,
     Accept: "application/json",
     "Accept-Profile": schema,
+    ...serviceEgressBypassHeaders(),
   };
   if (write) {
     headers["Content-Type"] = "application/json";
@@ -334,6 +343,7 @@ async function postgrestRequest(
   if (options.prefer) {
     headers.Prefer = options.prefer;
   }
+  const startedAt = Date.now();
   const response = await fetch(withQuery(path, options.query), {
     method,
     headers,
@@ -348,6 +358,16 @@ async function postgrestRequest(
       data = text;
     }
   }
+  recordServiceEgressPostgrestResponse({
+    durationMs: Date.now() - startedAt,
+    httpStatus: response.status,
+    method,
+    responseBytes: new TextEncoder().encode(text).byteLength,
+    responseData: data,
+    routePath: path,
+    sourceUrl: SUPABASE_URL,
+    measurementMethod: "body_utf8",
+  });
   return { ok: response.ok, status: response.status, text, data };
 }
 
@@ -996,8 +1016,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
+let exitCode = 0;
+try {
+  await main();
+} catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   logSummary("failure", { error: message });
-  Deno.exit(1);
-});
+  exitCode = 1;
+} finally {
+  await flushServiceEgressMetrics();
+}
+if (exitCode !== 0) Deno.exit(exitCode);

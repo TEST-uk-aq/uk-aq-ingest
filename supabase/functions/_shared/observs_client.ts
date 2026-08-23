@@ -147,6 +147,14 @@ const OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE = parsePositiveInt(
 );
 
 let observsClientCache: ReturnType<typeof createClient> | null = null;
+let observsFetchOverride: typeof fetch | null = null;
+
+export function configureObservsPostgrestFetch(
+  fetchOverride: typeof fetch | null,
+): void {
+  observsFetchOverride = fetchOverride;
+  observsClientCache = null;
+}
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
   const value = Number(raw ?? "");
@@ -471,6 +479,7 @@ export function createSupabaseObservsClient(): ReturnType<typeof createClient> {
         auth: { persistSession: false, autoRefreshToken: false },
         db: { schema: schema as never },
         global: {
+          ...(observsFetchOverride ? { fetch: observsFetchOverride } : {}),
           headers: {
             "X-Client-Info": "uk-aq-ingest-observs-dualwrite",
           },

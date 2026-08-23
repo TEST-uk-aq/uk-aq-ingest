@@ -22,6 +22,14 @@ It keeps behavior aligned with the Edge function path:
 5. Worker parses response and writes run telemetry into main DB.
 6. Worker exits non-zero if ingest failed.
 
+When `UK_AQ_SERVICE_EGRESS_METRICS_ENABLED=true`, the wrapper and ingest child
+aggregate their explicit PostgREST response measurements under
+`ingest.blondon_communities` and flush best-effort batches to the service-metrics
+RPC. Main traffic is labelled `ingestdb`; direct Observs traffic is labelled
+`obs_aqidb`. Explicit requests bypass the older per-request egress persistence,
+and the batch RPC bypasses both collectors, so traffic is not double-counted or
+recursively measured.
+
 If no station refs are due, the run is recorded as `skipped` (`no_station_refs`)
 and no local ingest call is made.
 
@@ -91,6 +99,15 @@ gcloud run deploy uk-aq-blondon-communities-ingest \
 - `BLONDON_COMMUNITIES_CONNECTOR_CODE` (default `blondon_communities`)
 - `BLONDON_COMMUNITIES_SERVICE_REF` (default `breathelondon`; shared Breathe London service family)
 - `BLONDON_COMMUNITIES_INGEST_SCRIPT_PATH` (default `/app/runtime/ingest_blondon_communities/index.ts`)
+- `UK_AQ_SERVICE_EGRESS_METRICS_ENABLED` (default `false`)
+- `UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL` (defaults to
+  `OBS_AQIDB_SUPABASE_URL` in the TEST deployment workflow)
+- `UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA` (default `uk_aq_public`)
+- `UK_AQ_SERVICE_EGRESS_METRICS_RPC` (default
+  `uk_aq_rpc_service_egress_metrics_batch_upsert`)
+- `UKAQ_ENV_NAME` (default `TEST` in this TEST repository)
+- `UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY` (required when metrics are
+  enabled; the workflow binds the existing OBS/AQI secret)
 
 Any supplied connector code other than `blondon_communities` is rejected. In
 particular, the old connector code `breathelondon` is not accepted as an alias.

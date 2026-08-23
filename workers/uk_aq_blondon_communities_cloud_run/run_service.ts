@@ -1,4 +1,12 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import {
+  configureServiceEgressMetrics,
+  flushServiceEgressMetrics,
+  recordServiceEgressPostgrestResponse,
+  serviceEgressBypassHeaders,
+} from "../../supabase/functions/_shared/service_egress_metrics.ts";
+
+configureServiceEgressMetrics("ingest.blondon_communities");
 
 const PORT = Number(Deno.env.get("PORT") || "8080");
 const RUN_JOB_SCRIPT =
@@ -142,6 +150,7 @@ function postgrestHeaders(write = false): Record<string, string> {
     apikey: SUPABASE_PRIVILEGED_KEY,
     Accept: "application/json",
     "Accept-Profile": UK_AQ_CORE_SCHEMA,
+    ...serviceEgressBypassHeaders(),
   };
   if (write) {
     headers["Content-Type"] = "application/json";
@@ -172,6 +181,7 @@ async function postgrestRequest(
   if (options.prefer) {
     headers.Prefer = options.prefer;
   }
+  const startedAt = Date.now();
   const response = await fetch(url.toString(), {
     method,
     headers,
@@ -186,6 +196,16 @@ async function postgrestRequest(
       data = text;
     }
   }
+  recordServiceEgressPostgrestResponse({
+    durationMs: Date.now() - startedAt,
+    httpStatus: response.status,
+    method,
+    responseBytes: new TextEncoder().encode(text).byteLength,
+    responseData: data,
+    routePath: path,
+    sourceUrl: SUPABASE_URL,
+    measurementMethod: "body_utf8",
+  });
   return { ok: response.ok, status: response.status, text, data };
 }
 
@@ -447,5 +467,6 @@ serve(async (req: Request) => {
     );
   } finally {
     inFlight = false;
+    void flushServiceEgressMetrics();
   }
 }, { port: PORT });

@@ -13,7 +13,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.uk_aq_supabase import SchemaClient, create_supabase_client
+from scripts.uk_aq_service_egress_metrics import (
+    configure_service_egress_metrics,
+    flush_service_egress_metrics,
+)
 from run_service import validated_cli_args
+
+configure_service_egress_metrics("ingest.blondon_nodes")
 
 CONNECTOR_CODE = "blondon_nodes"
 CORE_SCHEMA = os.getenv("UK_AQ_CORE_SCHEMA") or "uk_aq_core"
@@ -346,4 +352,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    finally:
+        flush_service_egress_metrics()
