@@ -28,6 +28,11 @@ This worker runs Sensor.Community ingest directly in Cloud Run Service
 - On rule threshold crossing, inserts a warning row in `uk_aq_raw.error_logs` and (when Dropbox error logging is enabled) uploads alert JSON to:
   - `{UK_AQ_DROPBOX_ROOT}/error_log/YYYY-MM-DD/`
 - Writes run status back to `connectors` and inserts `uk_aq_ingest_runs` row.
+- When `UK_AQ_SERVICE_EGRESS_METRICS_ENABLED=true`, measures the UTF-8 bytes of
+  already-materialised Supabase/PostgREST response bodies, aggregates them by
+  stable service/route/query identity, and performs one best-effort metrics
+  batch upsert at process completion. The metrics write bypasses its own
+  collector and cannot fail the ingest run.
 - Run telemetry keeps `stations_updated` compatible with the dashboard by reporting the number of unique station identities seen/processed in the run. `station_metadata_updated` separately reports how many stations had changed descriptive metadata and therefore required a station metadata write.
 - Inserts `error_logs` row on ingest failure.
 
@@ -82,6 +87,15 @@ The previous proxy worker (Cloud Run -> Supabase Edge function) is archived at:
 - `SCOMM_ALERT_FAILURE_RATE_THRESHOLD` (default `0.5`; must be between `0` and `1`)
 - `SCOMM_ALERT_FAILURE_RATE_MIN_RUNS` (default `3`)
 - `SCOMM_ALERT_RUN_SAMPLE_LIMIT` (default `240`)
+- `UK_AQ_SERVICE_EGRESS_METRICS_ENABLED` (default `false`)
+- `UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL` (defaults to
+  `OBS_AQIDB_SUPABASE_URL`)
+- `UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA` (default `uk_aq_public`)
+- `UK_AQ_SERVICE_EGRESS_METRICS_RPC` (default
+  `uk_aq_rpc_service_egress_metrics_batch_upsert`)
+- `UK_AQ_SERVICE_EGRESS_ENV` (defaults to `UK_AQ_ENV`, then `TEST`)
+- `UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY` (required when metrics are
+  enabled; server-side metrics sink service key)
 
 ## Build image
 

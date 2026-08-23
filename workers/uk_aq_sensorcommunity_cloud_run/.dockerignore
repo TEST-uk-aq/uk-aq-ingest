@@ -1,5 +1,6 @@
 *
 !index.mjs
 !run_service.mjs
+!service_egress_metrics.mjs
 !Dockerfile
 !README.md

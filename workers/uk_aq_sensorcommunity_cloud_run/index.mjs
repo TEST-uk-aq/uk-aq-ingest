@@ -5,6 +5,10 @@ import {
   serializedJsonUtf8Bytes,
   writeIngestDbObservations,
 } from "../../supabase/functions/_shared/ingestdb_observation_writer.mjs";
+import {
+  createServiceEgressMetricsCollector,
+  deriveSupabaseProjectRef,
+} from "./service_egress_metrics.mjs";
 
 const CONNECTOR_CODE = "sensorcommunity";
 const SCHEDULER_BACKEND_SUPABASE_FUNCTION = "supabase_function";
@@ -85,6 +89,36 @@ const OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE = parsePositiveInt(
 const OBSERVS_REST_BASE_URL = OBS_AQIDB_SUPABASE_URL
   ? buildRestBaseUrl(OBS_AQIDB_SUPABASE_URL)
   : "";
+
+const SERVICE_EGRESS_METRICS_ENABLED = parseBool(
+  process.env.UK_AQ_SERVICE_EGRESS_METRICS_ENABLED,
+  false,
+);
+const SERVICE_EGRESS_METRICS_SUPABASE_URL = (
+  process.env.UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL ||
+  OBS_AQIDB_SUPABASE_URL ||
+  ""
+).trim();
+const SERVICE_EGRESS_METRICS_SCHEMA = (
+  process.env.UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA || "uk_aq_public"
+).trim();
+const SERVICE_EGRESS_METRICS_RPC = (
+  process.env.UK_AQ_SERVICE_EGRESS_METRICS_RPC ||
+  "uk_aq_rpc_service_egress_metrics_batch_upsert"
+).trim();
+const SERVICE_EGRESS_METRICS_KEY = (
+  process.env.UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY || ""
+).trim();
+const SERVICE_EGRESS_ENV = (
+  process.env.UK_AQ_SERVICE_EGRESS_ENV ||
+  process.env.UK_AQ_ENV ||
+  "TEST"
+).trim();
+const serviceEgressMetrics = createServiceEgressMetricsCollector({
+  enabled: SERVICE_EGRESS_METRICS_ENABLED,
+  envName: SERVICE_EGRESS_ENV,
+  serviceName: "ingest.sensorcommunity",
+});
 
 const DROPBOX_APP_KEY = (process.env.DROPBOX_APP_KEY || "").trim();
 const DROPBOX_APP_SECRET = (process.env.DROPBOX_APP_SECRET || "").trim();
@@ -482,6 +516,48 @@ function withQuery(restBaseUrl, path, query) {
   return url.toString();
 }
 
+function restOrigin(restBaseUrl) {
+  try {
+    return new URL(restBaseUrl).origin;
+  } catch {
+    return "";
+  }
+}
+
+function postgrestSourceIdentity(restBaseUrl) {
+  const origin = restOrigin(restBaseUrl);
+  if (origin && origin === restOrigin(REST_BASE_URL)) {
+    return {
+      projectRef: deriveSupabaseProjectRef(restBaseUrl),
+      sourceName: "ingestdb",
+    };
+  }
+  if (origin && OBSERVS_REST_BASE_URL && origin === restOrigin(OBSERVS_REST_BASE_URL)) {
+    return {
+      projectRef: deriveSupabaseProjectRef(restBaseUrl),
+      sourceName: "obs_aqidb",
+    };
+  }
+  return {
+    projectRef: deriveSupabaseProjectRef(restBaseUrl),
+    sourceName: "supabase",
+  };
+}
+
+function canonicalPostgrestRoute(path) {
+  const normalized = String(path || "").replace(/^\/+|\/+$/g, "");
+  return normalized.startsWith("rpc/")
+    ? normalized
+    : `table/${normalized}`;
+}
+
+function defaultPostgrestQueryName(method, path) {
+  const normalized = String(path || "").replace(/^\/+|\/+$/g, "");
+  const operation = String(method || "request").toLowerCase();
+  const name = normalized.replace(/^rpc\//, "").replace(/[^a-zA-Z0-9_]+/g, "_");
+  return `${operation}_${name}`;
+}
+
 async function fetchWithTimeout(url, init, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -503,6 +579,9 @@ async function postgrestRequest(method, path, options = {}) {
   if (options.prefer) {
     headers.Prefer = options.prefer;
   }
+  if (options.egressBypass === true) {
+    headers["x-ukaq-egress-bypass"] = "1";
+  }
 
   const init = {
     method,
@@ -522,6 +601,24 @@ async function postgrestRequest(method, path, options = {}) {
     } catch {
       data = text;
     }
+  }
+
+  if (options.egressBypass !== true) {
+    const source = postgrestSourceIdentity(restBaseUrl);
+    serviceEgressMetrics.record({
+      completedAt: new Date(),
+      durationMs: Date.now() - startedAt,
+      httpStatus: response.status,
+      projectRef: source.projectRef,
+      queryName:
+        options.egressQueryName || defaultPostgrestQueryName(method, path),
+      responseData: data,
+      responseOk: response.ok,
+      responseText: text,
+      routeName: canonicalPostgrestRoute(path),
+      sourceName: source.sourceName,
+      windowLabel: options.egressWindowLabel || "",
+    });
   }
 
   if (init.body !== undefined) {
@@ -561,10 +658,11 @@ async function observsPostgrestRequest(method, path, options = {}) {
   });
 }
 
-async function mainRpcRequest(fn, args = {}) {
+async function mainRpcRequest(fn, args = {}, options = {}) {
   return postgrestRequest("POST", `rpc/${fn}`, {
     schema: "uk_aq_public",
     body: args,
+    egressQueryName: options.egressQueryName,
   });
 }
 
@@ -945,6 +1043,7 @@ function evaluateDue(connector, now) {
 
 async function loadConnector() {
   const response = await postgrestRequest("GET", "connectors", {
+    egressQueryName: "load_connector",
     query: {
       select:
         "id,connector_code,poll_enabled,poll_interval_minutes,scheduler_backend,last_polled_at,last_run_start,last_run_end,last_run_status,overwrite_station_name",
@@ -964,6 +1063,7 @@ async function loadConnector() {
 async function claimConnector(runStartedAtIso) {
   const response = await postgrestRequest("POST", "rpc/uk_aq_rpc_dispatch_claim", {
     schema: "uk_aq_public",
+    egressQueryName: "dispatch_claim",
     body: {
       p_connector_code: CONNECTOR_CODE,
       p_run_started_at: runStartedAtIso,
@@ -987,6 +1087,7 @@ async function upsertRows(table, rows, onConflict, schema = UK_AQ_CORE_SCHEMA) {
   for (const rowsChunk of chunk(rows, UPSERT_CHUNK_SIZE)) {
     const response = await postgrestRequest("POST", table, {
       schema,
+      egressQueryName: `upsert_${table}`,
       query: { on_conflict: onConflict },
       body: rowsChunk,
       prefer: "resolution=merge-duplicates,return=minimal",
@@ -1007,6 +1108,7 @@ async function fetchStationNames(connectorId, serviceRef, stationRefs) {
 
   for (const refsChunk of chunk(stationRefs, 200)) {
     const response = await postgrestRequest("GET", "stations", {
+      egressQueryName: "lookup_station_names",
       query: {
         select: "station_ref,station_name",
         connector_id: `eq.${connectorId}`,
@@ -1069,6 +1171,7 @@ async function upsertStations(records, connectorId, serviceRef, overwriteStation
       const response = await mainRpcRequest(
         "uk_aq_rpc_sensorcommunity_station_states_v1",
         { connector_id: connectorId, service_ref: String(serviceRef), station_refs: refsChunk },
+        { egressQueryName: "load_station_state" },
       );
       if (!response.ok || !Array.isArray(response.data)) {
         throw new Error(`station state resolver failed (${response.status}): ${response.text}`);
@@ -1143,6 +1246,7 @@ async function upsertStations(records, connectorId, serviceRef, overwriteStation
         station_ids: rowsChunk.map((row) => stationIds[row.station_ref]),
         seen_ats: rowsChunk.map(() => seenAt),
       },
+      { egressQueryName: "touch_station_presence" },
     );
     if (!presenceResponse.ok) {
       throw new Error(`Station presence touch failed (${presenceResponse.status}): ${presenceResponse.text}`);
@@ -1160,6 +1264,7 @@ async function fetchStationIds(connectorId, serviceRef, stationRefs) {
 
   for (const refsChunk of chunk(stationRefs, 200)) {
     const response = await postgrestRequest("GET", "stations", {
+      egressQueryName: "lookup_station_refs",
       query: {
         select: "id,station_ref",
         connector_id: `eq.${connectorId}`,
@@ -1204,6 +1309,7 @@ async function upsertPhenomena(connectorId) {
 
   const sourceLabels = payload.map((row) => row.source_label);
   const response = await postgrestRequest("GET", "phenomena", {
+    egressQueryName: "lookup_phenomena",
     query: {
       select: "id,source_label",
       connector_id: `eq.${connectorId}`,
@@ -1255,6 +1361,7 @@ async function fetchTimeseriesIds(connectorId, serviceRef, timeseriesRefs) {
 
   for (const refsChunk of chunk(timeseriesRefs, 200)) {
     const response = await postgrestRequest("GET", "timeseries", {
+      egressQueryName: "lookup_timeseries_refs",
       query: {
         select: "id,timeseries_ref",
         connector_id: `eq.${connectorId}`,
@@ -1294,6 +1401,7 @@ async function upsertObservations(rows) {
       const response = await mainRpcRequest(
         "uk_aq_rpc_observations_compact_upsert_v1",
         buildCompactObservationRpcArgs(rowsChunk),
+        { egressQueryName: "compact_observation_upsert" },
       );
       if (!response.ok) {
         const error = new Error(
@@ -1515,6 +1623,7 @@ async function observsUpsertObservations(observsRows) {
       "POST",
       `rpc/${OBSERVS_UPSERT_RPC}`,
       {
+        egressQueryName: "compact_observation_upsert",
         body: {
           timeseries_ids: rowsChunk.map((row) => row.timeseries_id),
           observed_ats: rowsChunk.map((row) => row.observed_at),
@@ -1543,6 +1652,7 @@ async function upsertObservsSyncReceipts(rows) {
   const response = await mainRpcRequest(
     "uk_aq_rpc_observs_sync_receipt_daily_upsert",
     { rows },
+    { egressQueryName: "upsert_observs_sync_receipts" },
   );
   if (!response.ok) {
     throw new Error(
@@ -1561,9 +1671,11 @@ async function enqueueObservsOutbox(observsRows) {
   if (!preparedRows.length) {
     return 0;
   }
-  const response = await mainRpcRequest("uk_aq_rpc_observs_outbox_enqueue", {
-    entries: [{ payload: preparedRows }],
-  });
+  const response = await mainRpcRequest(
+    "uk_aq_rpc_observs_outbox_enqueue",
+    { entries: [{ payload: preparedRows }] },
+    { egressQueryName: "enqueue_observs_outbox" },
+  );
   if (!response.ok) {
     throw new Error(
       `Observs outbox enqueue failed (${response.status}): ${response.text}`,
@@ -2111,6 +2223,7 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
       last_values: timeseriesPayload.map((row) => row.last_value),
       last_value_ats: timeseriesPayload.map((row) => row.last_value_at),
     },
+    { egressQueryName: "update_timeseries_last_values" },
   );
   if (!latestResponse.ok) {
     throw new Error(`Timeseries latest-value update failed (${latestResponse.status}): ${latestResponse.text}`);
@@ -2196,6 +2309,7 @@ async function updateConnectorRun(
   }
 
   const response = await postgrestRequest("PATCH", "connectors", {
+    egressQueryName: "update_connector_run",
     query: { id: `eq.${connectorId}` },
     body: payload,
     prefer: "return=minimal",
@@ -2249,6 +2363,7 @@ async function insertRunRow(
   };
 
   const response = await postgrestRequest("POST", "uk_aq_ingest_runs", {
+    egressQueryName: "insert_ingest_run",
     body: row,
     prefer: "return=minimal",
   });
@@ -2282,6 +2397,7 @@ async function insertErrorLog(connectorId, ingestResponse) {
 
   const response = await postgrestRequest("POST", "error_logs", {
     schema: UK_AQ_RAW_SCHEMA,
+    egressQueryName: "insert_ingest_error",
     body: entry,
     prefer: "return=minimal",
   });
@@ -2296,6 +2412,7 @@ async function insertErrorLog(connectorId, ingestResponse) {
 async function patchErrorLogDropboxPath(errorId, dropboxPath) {
   const response = await postgrestRequest("PATCH", "error_logs", {
     schema: UK_AQ_RAW_SCHEMA,
+    egressQueryName: "patch_ingest_error_dropbox_path",
     query: { id: `eq.${errorId}` },
     body: { dropbox_path: dropboxPath },
     prefer: "return=minimal",
@@ -2329,6 +2446,7 @@ async function insertFailureMonitorAlert(connectorId, alertType, details) {
   };
   const response = await postgrestRequest("POST", "error_logs", {
     schema: UK_AQ_RAW_SCHEMA,
+    egressQueryName: "insert_failure_alert",
     body: row,
     prefer: "return=minimal",
   });
@@ -2443,6 +2561,8 @@ function evaluateFailureRate(rows, now) {
 
 async function loadRecentIngestRunsForAlerts() {
   const response = await postgrestRequest("GET", "uk_aq_ingest_runs", {
+    egressQueryName: "recent_240_runs",
+    egressWindowLabel: "latest_240",
     query: {
       select: "id,run_ended_at,run_status,response_status,created_at",
       connector_code: `eq.${CONNECTOR_CODE}`,
@@ -2558,6 +2678,26 @@ function logSummary(message, details) {
       ...details,
     }),
   );
+}
+
+async function flushServiceEgressMetrics() {
+  try {
+    const result = await serviceEgressMetrics.flush({
+      apiKey: SERVICE_EGRESS_METRICS_KEY,
+      rpcName: SERVICE_EGRESS_METRICS_RPC,
+      schema: SERVICE_EGRESS_METRICS_SCHEMA,
+      supabaseUrl: SERVICE_EGRESS_METRICS_SUPABASE_URL,
+    });
+    if (result.persistedRows > 0) {
+      logSummary("service_egress_metrics_flushed", {
+        aggregate_rows: result.persistedRows,
+      });
+    }
+  } catch {
+    logSummary("service_egress_metrics_flush_warning", {
+      reason: "unexpected_collector_error",
+    });
+  }
 }
 
 async function main() {
@@ -2727,8 +2867,12 @@ async function main() {
   });
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  logSummary("failure", { error: message });
-  process.exitCode = 1;
-});
+main()
+  .catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logSummary("failure", { error: message });
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await flushServiceEgressMetrics();
+  });

@@ -3,6 +3,7 @@
 !workers/uk_aq_sensorcommunity_cloud_run/
 !workers/uk_aq_sensorcommunity_cloud_run/index.mjs
 !workers/uk_aq_sensorcommunity_cloud_run/run_service.mjs
+!workers/uk_aq_sensorcommunity_cloud_run/service_egress_metrics.mjs
 !supabase/
 !supabase/functions/
 !supabase/functions/_shared/
