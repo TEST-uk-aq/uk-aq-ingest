@@ -45,7 +45,7 @@ jobs:
       UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL || vars.OBS_AQIDB_SUPABASE_URL || '' }}
       UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA || 'uk_aq_public' }}
       UK_AQ_SERVICE_EGRESS_METRICS_RPC: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_RPC || 'uk_aq_rpc_service_egress_metrics_batch_upsert' }}
-      UK_AQ_SERVICE_EGRESS_ENV: ${{ vars.UK_AQ_SERVICE_EGRESS_ENV || vars.UK_AQ_ENV || 'TEST' }}
+      UKAQ_ENV_NAME: ${{ vars.UKAQ_ENV_NAME || 'TEST' }}
       OBSERVS_WRITE_MODE: ${{ vars.SCOMM_OBSERVS_WRITE_MODE || 'pubsub_only' }}
       GCP_OBSERVS_PUBSUB_TOPIC: ${{ vars.GCP_OBSERVS_PUBSUB_TOPIC || 'uk-aq-observs-observations' }}
       OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE: ${{ vars.OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE || '500' }}
@@ -305,7 +305,7 @@ jobs:
           add_env UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL
           add_env UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA
           add_env UK_AQ_SERVICE_EGRESS_METRICS_RPC
-          add_env UK_AQ_SERVICE_EGRESS_ENV
+          add_env UKAQ_ENV_NAME
           add_env SCOMM_COUNTRY
           add_env SCOMM_BASE_URL
           add_env SCOMM_SERVICE_REF

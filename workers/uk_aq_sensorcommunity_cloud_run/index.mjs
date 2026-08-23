@@ -109,14 +109,10 @@ const SERVICE_EGRESS_METRICS_RPC = (
 const SERVICE_EGRESS_METRICS_KEY = (
   process.env.UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY || ""
 ).trim();
-const SERVICE_EGRESS_ENV = (
-  process.env.UK_AQ_SERVICE_EGRESS_ENV ||
-  process.env.UK_AQ_ENV ||
-  "TEST"
-).trim();
+const SERVICE_EGRESS_ENV_NAME = (process.env.UKAQ_ENV_NAME || "TEST").trim();
 const serviceEgressMetrics = createServiceEgressMetricsCollector({
   enabled: SERVICE_EGRESS_METRICS_ENABLED,
-  envName: SERVICE_EGRESS_ENV,
+  envName: SERVICE_EGRESS_ENV_NAME,
   serviceName: "ingest.sensorcommunity",
 });
 
