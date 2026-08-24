@@ -1,9 +1,9 @@
-# CIC UK Air Quality Networks
+# UK AQ TEST ingestion
 
 Tools for ingesting UK-AIR SOS data into Supabase.
 
 ## Website
-The static web UI now lives in the `uk-aq` repo (under `CIC Website/uk-aq`).
+The static web UI lives in the sibling `TEST-uk-aq.github.io` repository.
 This repo focuses on ingest, data management, and Supabase Edge Functions.
 
 ## Prerequisites
@@ -98,7 +98,7 @@ Note: `SUPABASE_ACCESS_TOKEN` is only required for deployments (GitHub Actions o
 Use this flow when creating fresh MAIN + HISTORY projects.
 
 1. MAIN DB project:
-   - In the schema repo (`../CIC-Test-UK-AQ-Schema/uk-aq-schema/schemas/ingest_db`), run/paste:
+   - In the schema repo (`../TEST-uk-aq-schema/schemas/ingest_db`), run/paste:
      - `uk_aq_core_schema.sql`
      - `uk_aq_raw_schema.sql`
      - `uk_aq_pop_schema.sql`
@@ -110,7 +110,7 @@ Use this flow when creating fresh MAIN + HISTORY projects.
    - In this repo, run/paste:
      - `supabase/uk_aq_polling_helpers.sql`
 2. HISTORY DB project:
-   - In the schema repo (`../CIC-Test-UK-AQ-Schema/uk-aq-schema/schemas/obs_aqi_db`), run/paste:
+   - In the schema repo (`../TEST-uk-aq-schema/schemas/obs_aqi_db`), run/paste:
      - `uk_aq_obs_aqi_db_schema.sql`
      - `uk_aq_obs_aqi_db_dualwrite_bootstrap.sql`
    - History observations are keyed by `(connector_id, timeseries_id, observed_at)`.

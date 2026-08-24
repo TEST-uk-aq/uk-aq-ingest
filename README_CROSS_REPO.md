@@ -1,7 +1,7 @@
-# Cross-repo map: CIC-test-uk-aq-ingest
+# Cross-repo map: TEST-uk-aq-ingest
 
 ## Main repo
-- `CIC-test-uk-aq-ops` is the main repo for this project and the default starting point for cross-repo tasks.
+- `TEST-uk-aq-ops` is the main repo for this project and the default starting point for cross-repo tasks.
 
 ## Purpose
 This repo houses ingestion, backfill, and connector tooling for UK AQ, plus Supabase Edge Functions that power live polling and API access. It is the operational hub that reads from external data sources and writes to the database defined in the schema repo.
@@ -17,7 +17,7 @@ This repo houses ingestion, backfill, and connector tooling for UK AQ, plus Supa
 
 ## How this repo connects to the others
 - **Schema source**: `uk-aq-schema` provides the SQL DDL (tables, views, functions). Ingest queries here assume those schemas exist.
-- **Ops repo**: `CIC-test-uk-aq-ops` runs Cloud Run operational workers (prune, outbox, maintenance, backfill).
+- **Ops repo**: `TEST-uk-aq-ops` runs Cloud Run operational workers (prune, outbox, maintenance, backfill).
 - **Edge Functions**: owned and deployed from this repo under `supabase/functions/*`.
 - **Change flow**: schema changes in `uk-aq-schema` can require updating ingest SQL, RPCs, or column mappings here.
 

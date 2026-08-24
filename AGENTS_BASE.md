@@ -87,7 +87,7 @@ Only when explicitly requested in the prompt. May run database, deployment, or c
 - Each source code file may be archived at most once per calendar day. If it already has a snapshot in today’s dated archive directory, reuse that snapshot and do not create another copy.
 - Files excluded from archive snapshots rely on Git history and the project’s daily backups.
 - For `/Users/mikehinford/Dropbox/Projects/UK-AQ Website & Network/TEST UK-AQ GH Repos/TEST-uk-aq-schema`, edits are allowed for any file except under `archive/` directories. Archive files are read-only; new in-scope code snapshots may be added under `archive/` but must never be modified once created.
-- The agent has permission to read files under `/Users/mikehinford/Dropbox/Apps/github-uk-air-quality-networks/CIC-Test` (including subdirectories).
+- The agent has permission to read files under `/Users/mikehinford/Dropbox/Apps/github-uk-air-quality-networks/TEST` (including subdirectories).
 - Archive paths are retired for active execution. Active scripts, workers, services, and runner-path defaults must only target non-archive paths, and archive fallbacks must not be used for active runtime code paths.
 
 ## Permissions
