@@ -27,11 +27,13 @@ The repository contains only the code and requirements.
 
 `aqe_probe.py` downloads `AQE_metadata.RData` and discovers the active AQE site IDs. The metadata is refreshed automatically when the local copy is at least 24 hours old.
 
-Each active site ID is assigned deterministically to one of **60 one-minute shards** using a SHA-256 hash of the site ID. When the scheduled probe runs once per minute, the current shard is selected from epoch time. This means every active AQE station is checked once per hour without sending all requests at once.
+The long-term scheduler uses `aqe_probe_runner.py`, which divides all active AQE stations evenly across **60 one-minute slots**. Stations are sorted deterministically by a SHA-256 key derived from the site ID and then distributed round-robin across the 60 slots. With 256 active stations, every minute therefore contains either **4 or 5 stations**, with no empty or overloaded minute.
 
-With 256 active stations this is an average of about **4.3 station GETs per minute**. Requests within a shard are sequential and have a default 2-second pause between them. A single-instance file lock prevents overlapping probe processes.
+The runner persists those balanced slot assignments in the SQLite `stations.shard` column. The assignment remains deterministic for a given active inventory and is recalculated when the inventory changes.
 
-The scheduled wrapper `aqe_probe_runner.py` adds a deliberately small catch-up mechanism for scheduler glitches. After probing the current shard it finds active stations whose last **successful parsed probe** is more than 70 minutes old, or which have never had a successful parsed probe. A station is only eligible for catch-up if it has not been attempted at all in the last 30 minutes. At most **10 extra stations** are retried in any minute.
+Requests within a scheduled group are sequential and have a default 2-second pause between them. A single-instance file lock prevents overlapping probe processes.
+
+The scheduled wrapper also adds a deliberately small catch-up mechanism for scheduler glitches. After probing the current slot it finds active stations whose last **successful parsed probe** is more than 70 minutes old, or which have never had a successful parsed probe. A station is only eligible for catch-up if it has not been attempted at all in the last 30 minutes. At most **10 extra stations** are retried in any minute.
 
 This means a missed minute will normally repair itself once the affected station becomes more than 70 minutes past its last success, while a station that has just failed is left alone for 30 minutes rather than being retried every minute. The cap prevents a large request burst after a longer outage.
 
@@ -42,7 +44,7 @@ The public URL queried is:
 For each check the SQLite database records:
 
 - probe time in UTC;
-- AQE site ID and deterministic shard;
+- AQE site ID and scheduled slot;
 - HTTP status, elapsed time and response bytes;
 - the AQE `last updated` timestamp;
 - whether AQE reports current data or `no current data`;
@@ -51,7 +53,9 @@ For each check the SQLite database records:
 - SHA-256 of the normalised Latest Data table, so content changes can be detected without storing the full page;
 - parse/HTTP errors.
 
-AQE says its displayed monitoring timestamps are **GMT hour ending**, so the displayed clock timestamp is stored as UTC rather than being interpreted as British local time/BST.
+AQE says its displayed monitoring timestamps are **GMT hour ending**, so the displayed clock timestamp is stored as UTC rather than being interpreted as British local time/BST. AQE can also use `24:00` for midnight at the end of a date; the probe normalises that to the following date at `00:00 UTC`.
+
+A page that simply says `Sorry, no current data are available for ...` is treated as a valid `no_current_data` result even when AQE supplies no last-data timestamp. This prevents such stations being mistaken for parser failures and repeatedly retried by catch-up.
 
 Raw HTML is not retained during normal successful probing. A response is saved under the local `failures/` directory only when an HTTP 200 page cannot be parsed, so parser changes can be diagnosed.
 
@@ -84,12 +88,6 @@ First initialise/refresh the AQE metadata and SQLite station inventory:
 "$PROBE_HOME/venv/bin/python" scripts/aqe/aqe_probe.py --metadata-only
 ```
 
-Show the distribution across the 60 shards:
-
-```bash
-"$PROBE_HOME/venv/bin/python" scripts/aqe/aqe_probe.py --inventory
-```
-
 Probe a couple of known stations:
 
 ```bash
@@ -110,13 +108,19 @@ Show a compact database summary afterwards:
 "$PROBE_HOME/venv/bin/python" scripts/aqe/aqe_probe.py --summary
 ```
 
+After the scheduled runner has executed at least once, this shows the persisted balanced 4-or-5-stations-per-minute distribution:
+
+```bash
+"$PROBE_HOME/venv/bin/python" scripts/aqe/aqe_probe.py --inventory
+```
+
 The database will be at:
 
 `~/Library/Application Support/UK AQ/aqe-probe/aqe_probe.sqlite3`
 
 ## Scheduled mode
 
-The long-term scheduler should call the wrapper, not `aqe_probe.py` directly:
+The long-term scheduler calls the wrapper, not `aqe_probe.py` directly:
 
 ```bash
 "$PROBE_HOME/venv/bin/python" scripts/aqe/aqe_probe_runner.py
@@ -124,9 +128,7 @@ The long-term scheduler should call the wrapper, not `aqe_probe.py` directly:
 
 once every 60 seconds.
 
-The wrapper first runs the current one-minute shard, then checks SQLite for overdue stations using the 70-minute successful-probe / 30-minute recent-attempt rules and adds at most 10 catch-up stations.
-
-Set up the MacBook Pro launchd job only after the manual two-site and full-sweep checks have been reviewed. The final LaunchAgent should use the Pro's actual synced repository path rather than hard-coding a path from another machine.
+The wrapper first runs the balanced current-minute slot, then checks SQLite for overdue stations using the 70-minute successful-probe / 30-minute recent-attempt rules and adds at most 10 catch-up stations.
 
 ## Useful options
 
@@ -134,12 +136,12 @@ For `aqe_probe.py`:
 
 - `--site SITE_ID` can be repeated for targeted checks.
 - `--all` checks every active station once.
-- `--shard 0-59` checks a specific shard.
+- `--shard 0-59` checks the currently persisted slot assignment.
 - `--refresh-metadata` forces a fresh AQE metadata download.
 - `--metadata-only` refreshes/synchronises inventory without station GETs.
-- `--inventory` shows active station counts by shard.
+- `--inventory` shows active station counts by persisted slot.
 - `--summary` shows probe count, date range, failures, response bytes and source-age statistics.
-- `--delay` changes the pause between requests in a shard.
+- `--delay` changes the pause between requests in a group.
 - `--timeout` changes the HTTP timeout.
 
 `aqe_probe_runner.py` intentionally has no tuning options for catch-up. The exploratory probe uses fixed, conservative rules: success older than 70 minutes, no attempt within 30 minutes, maximum 10 catch-up stations per run.
