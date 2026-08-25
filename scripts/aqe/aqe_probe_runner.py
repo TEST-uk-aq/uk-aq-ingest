@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-"""Run the AQE cadence probe's current shard plus a small catch-up set.
+"""Run the AQE cadence probe's balanced minute slot plus a small catch-up set.
 
 Normal scheduled behaviour:
-- probe the current one-minute shard;
+- divide all active AQE stations evenly across 60 one-minute slots;
+- probe the current slot, giving 4 or 5 stations per minute with 256 active sites;
 - find active stations whose last successful parse is more than 70 minutes old
   (or which have never succeeded);
 - only retry those stations if they have not been attempted in the last 30 minutes;
 - probe at most 10 catch-up stations in the same minute.
 
-This keeps the probe focused on update cadence/latency while repairing short
-scheduler gaps without creating a burst after a longer outage.
+The slot assignment is deterministic for the current active inventory. Stations
+are ordered by SHA-256 of site ID and then distributed round-robin across the 60
+minute slots. This avoids empty/overloaded minutes while keeping the schedule
+stable unless the active inventory itself changes.
 """
 
 from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import sqlite3
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,6 +33,8 @@ from typing import Iterable
 DEFAULT_DATA_DIR = (
     Path.home() / "Library" / "Application Support" / "UK AQ" / "aqe-probe"
 )
+SLOT_COUNT = 60
+SLOT_SECONDS = 60
 SUCCESS_MAX_AGE_MINUTES = 70
 RECENT_ATTEMPT_MINUTES = 30
 MAX_CATCHUP_STATIONS = 10
@@ -38,6 +45,12 @@ def iso_utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
         "+00:00", "Z"
     )
+
+
+def current_slot(now: float | None = None) -> int:
+    if now is None:
+        now = time.time()
+    return (int(now) // SLOT_SECONDS) % SLOT_COUNT
 
 
 @contextmanager
@@ -58,7 +71,7 @@ def single_instance_lock(path: Path) -> Iterable[None]:
             handle.close()
 
 
-def run_probe(data_dir: Path, site_ids: list[str] | None = None) -> int:
+def run_probe(data_dir: Path, site_ids: list[str]) -> int:
     command = [
         sys.executable,
         str(PROBE_SCRIPT),
@@ -66,11 +79,37 @@ def run_probe(data_dir: Path, site_ids: list[str] | None = None) -> int:
         str(data_dir),
         "--quiet",
     ]
-    for site_id in site_ids or []:
+    for site_id in site_ids:
         command.extend(["--site", site_id])
 
     completed = subprocess.run(command, check=False)
     return int(completed.returncode)
+
+
+def balanced_slot_sites(db_path: Path, slot: int) -> tuple[list[str], int]:
+    if not db_path.exists():
+        return [], 0
+
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        site_ids = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT site_id FROM stations WHERE is_active = 1"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    site_ids.sort(
+        key=lambda site_id: (hashlib.sha256(site_id.encode("utf-8")).digest(), site_id)
+    )
+    selected = [
+        site_id
+        for index, site_id in enumerate(site_ids)
+        if index % SLOT_COUNT == slot
+    ]
+    return selected, len(site_ids)
 
 
 def catchup_sites(db_path: Path, now: datetime) -> list[str]:
@@ -124,7 +163,10 @@ def catchup_sites(db_path: Path, now: datetime) -> list[str]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the AQE current shard and up to 10 overdue catch-up stations."
+        description=(
+            "Run the AQE balanced current-minute slot and up to 10 overdue "
+            "catch-up stations."
+        )
     )
     parser.add_argument(
         "--data-dir",
@@ -142,10 +184,23 @@ def main() -> int:
     runner_lock = data_dir / "aqe_probe_runner.lock"
 
     with single_instance_lock(runner_lock):
-        current_returncode = run_probe(data_dir)
+        slot = current_slot()
+        sites, active_count = balanced_slot_sites(db_path, slot)
+        if active_count == 0:
+            print(
+                "AQE balanced schedule found no active station inventory; "
+                "run aqe_probe.py --metadata-only first."
+            )
+            return 1
+
+        print(
+            f"AQE schedule: slot={slot} stations={len(sites)} "
+            f"active={active_count}"
+        )
+        current_returncode = run_probe(data_dir, sites)
         if current_returncode != 0:
             print(
-                f"Current AQE shard probe exited {current_returncode}; "
+                f"Current AQE slot probe exited {current_returncode}; "
                 "skipping catch-up for this minute."
             )
             return current_returncode
