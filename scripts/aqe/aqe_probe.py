@@ -6,7 +6,7 @@ Purpose:
 - Discover the current active AQE station inventory from AQE_metadata.RData.
 - Poll each active station's public latest-data HTML page once per hour.
 - Spread stations deterministically across 60 one-minute shards.
-- Record source update timestamps and current latest-data table contents in SQLite.
+- Record source update timestamps and a fingerprint of the Latest Data table in SQLite.
 
 This is an observational probe only. It does not write to UK AQ production/test
 ingestion tables and it does not merge AQE stations with stations from other
@@ -21,7 +21,6 @@ import hashlib
 import html
 import json
 import math
-import os
 import re
 import sqlite3
 import sys
