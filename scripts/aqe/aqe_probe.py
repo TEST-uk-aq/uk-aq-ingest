@@ -27,7 +27,7 @@ import sys
 import time
 import warnings
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
@@ -42,7 +42,7 @@ AQE_METADATA_URL = (
     "https://www.airqualityengland.co.uk/assets/openair/R_data/AQE_metadata.RData"
 )
 AQE_LATEST_URL = "https://www.airqualityengland.co.uk/site/latest"
-USER_AGENT = "UK-AQ-AQE-Cadence-Probe/0.1 (+https://ukaq.co.uk/)"
+USER_AGENT = "UK-AQ-AQE-Cadence-Probe/0.2 (+https://ukaq.co.uk/)"
 SHARD_COUNT = 60
 SHARD_SECONDS = 60
 DEFAULT_DELAY_SECONDS = 2.0
@@ -226,6 +226,10 @@ NO_CURRENT_DATA_RE = re.compile(
     r"(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2})",
     re.IGNORECASE,
 )
+NO_CURRENT_DATA_SIMPLE_RE = re.compile(
+    r"Sorry,\s*no current data (?:are )?available(?:\s+for\b[^.<>]*)?[.]?",
+    re.IGNORECASE,
+)
 
 
 def parse_latest_page(
@@ -241,6 +245,11 @@ def parse_latest_page(
     offline_match = NO_CURRENT_DATA_RE.search(plain_text)
     if offline_match:
         source_updated_raw = f"{offline_match.group(1)} {offline_match.group(2)}"
+        source_status = "no_current_data"
+    elif NO_CURRENT_DATA_SIMPLE_RE.search(plain_text):
+        # Some AQE pages report that no current data are available without
+        # providing a last-data timestamp. That is a valid page state, not a
+        # parser failure. There is simply no source age to calculate.
         source_status = "no_current_data"
     else:
         match = SOURCE_UPDATED_RE.search(plain_text)
@@ -280,8 +289,8 @@ def parse_latest_page(
             break
 
     parse_error = None
-    if source_updated_raw is None:
-        parse_error = "source update timestamp not found"
+    if source_updated_raw is None and source_status is None:
+        parse_error = "source update/status not found"
 
     return source_updated_raw, source_status, latest_rows, parse_error
 
@@ -289,9 +298,15 @@ def parse_latest_page(
 def source_timestamp_to_utc(raw: str | None) -> datetime | None:
     if not raw:
         return None
+
     # AQE explicitly presents its observations as GMT hour ending. Treat the
-    # displayed clock time as UTC all year, rather than local BST.
-    value = datetime.strptime(raw, "%d/%m/%Y %H:%M")
+    # displayed clock time as UTC all year, rather than local BST. AQE can use
+    # 24:00 for midnight at the end of a date, which Python's %H parser rejects.
+    date_text, time_text = raw.rsplit(" ", 1)
+    if time_text == "24:00":
+        value = datetime.strptime(date_text, "%d/%m/%Y") + timedelta(days=1)
+    else:
+        value = datetime.strptime(raw, "%d/%m/%Y %H:%M")
     return value.replace(tzinfo=timezone.utc)
 
 
@@ -648,6 +663,8 @@ def probe_station(
                 (probe_at - source_updated_at).total_seconds() / 60.0,
                 2,
             )
+
+        if source_updated_at is not None or source_status == "no_current_data":
             parse_ok = True
 
         if latest_rows:
