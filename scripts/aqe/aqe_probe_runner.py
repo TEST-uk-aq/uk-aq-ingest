@@ -87,6 +87,7 @@ def run_probe(data_dir: Path, site_ids: list[str]) -> int:
 
 
 def balanced_slot_sites(db_path: Path, slot: int) -> tuple[list[str], int]:
+    """Return this minute's balanced sites and persist all slot assignments."""
     if not db_path.exists():
         return [], 0
 
@@ -98,18 +99,31 @@ def balanced_slot_sites(db_path: Path, slot: int) -> tuple[list[str], int]:
                 "SELECT site_id FROM stations WHERE is_active = 1"
             ).fetchall()
         ]
+        site_ids.sort(
+            key=lambda site_id: (
+                hashlib.sha256(site_id.encode("utf-8")).digest(),
+                site_id,
+            )
+        )
+
+        assignments = [
+            (index % SLOT_COUNT, site_id)
+            for index, site_id in enumerate(site_ids)
+        ]
+        conn.executemany(
+            "UPDATE stations SET shard = ? WHERE site_id = ?",
+            assignments,
+        )
+        conn.commit()
+
+        selected = [
+            site_id
+            for index, site_id in enumerate(site_ids)
+            if index % SLOT_COUNT == slot
+        ]
+        return selected, len(site_ids)
     finally:
         conn.close()
-
-    site_ids.sort(
-        key=lambda site_id: (hashlib.sha256(site_id.encode("utf-8")).digest(), site_id)
-    )
-    selected = [
-        site_id
-        for index, site_id in enumerate(site_ids)
-        if index % SLOT_COUNT == slot
-    ]
-    return selected, len(site_ids)
 
 
 def catchup_sites(db_path: Path, now: datetime) -> list[str]:
@@ -204,6 +218,11 @@ def main() -> int:
                 "skipping catch-up for this minute."
             )
             return current_returncode
+
+        # aqe_probe.py may have refreshed AQE metadata during the scheduled run.
+        # Re-apply the balanced assignment so any newly discovered station is
+        # included and the persisted shard column reflects the real schedule.
+        balanced_slot_sites(db_path, slot)
 
         sites = catchup_sites(db_path, datetime.now(timezone.utc))
         if not sites:
