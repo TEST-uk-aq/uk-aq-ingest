@@ -61,7 +61,7 @@ def single_instance_lock(path: Path) -> Iterable[None]:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print(f"Another AQE probe runner already holds {path}; exiting.")
+            print(f"Another AQE probe runner already holds {path}; exiting.", flush=True)
             raise SystemExit(0)
         yield
     finally:
@@ -203,19 +203,22 @@ def main() -> int:
         if active_count == 0:
             print(
                 "AQE balanced schedule found no active station inventory; "
-                "run aqe_probe.py --metadata-only first."
+                "run aqe_probe.py --metadata-only first.",
+                flush=True,
             )
             return 1
 
         print(
             f"AQE schedule: slot={slot} stations={len(sites)} "
-            f"active={active_count}"
+            f"active={active_count}",
+            flush=True,
         )
         current_returncode = run_probe(data_dir, sites)
         if current_returncode != 0:
             print(
                 f"Current AQE slot probe exited {current_returncode}; "
-                "skipping catch-up for this minute."
+                "skipping catch-up for this minute.",
+                flush=True,
             )
             return current_returncode
 
@@ -226,10 +229,13 @@ def main() -> int:
 
         sites = catchup_sites(db_path, datetime.now(timezone.utc))
         if not sites:
-            print("AQE catch-up: 0 overdue stations")
+            print("AQE catch-up: 0 overdue stations", flush=True)
             return 0
 
-        print(f"AQE catch-up: {len(sites)} overdue station(s): {', '.join(sites)}")
+        print(
+            f"AQE catch-up: {len(sites)} overdue station(s): {', '.join(sites)}",
+            flush=True,
+        )
         return run_probe(data_dir, sites)
 
 
