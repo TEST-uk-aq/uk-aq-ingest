@@ -31,6 +31,10 @@ Each active site ID is assigned deterministically to one of **60 one-minute shar
 
 With 256 active stations this is an average of about **4.3 station GETs per minute**. Requests within a shard are sequential and have a default 2-second pause between them. A single-instance file lock prevents overlapping probe processes.
 
+The scheduled wrapper `aqe_probe_runner.py` adds a deliberately small catch-up mechanism for scheduler glitches. After probing the current shard it finds active stations whose last **successful parsed probe** is more than 70 minutes old, or which have never had a successful parsed probe. A station is only eligible for catch-up if it has not been attempted at all in the last 30 minutes. At most **10 extra stations** are retried in any minute.
+
+This means a missed minute will normally repair itself once the affected station becomes more than 70 minutes past its last success, while a station that has just failed is left alone for 30 minutes rather than being retried every minute. The cap prevents a large request burst after a longer outage.
+
 The public URL queried is:
 
 `https://www.airqualityengland.co.uk/site/latest?site_id=<SITE_ID>`
@@ -53,9 +57,11 @@ Raw HTML is not retained during normal successful probing. A response is saved u
 
 ## Expected load and storage
 
-At 256 active sites the schedule makes 6,144 station requests per day. The exact transfer volume depends on the size of the AQE latest pages. The probe records `response_bytes` for every request, so the real daily/monthly network cost can be measured after the first sweep. For illustration, 50 KB per page would be about 307 MB/day; 100 KB per page would be about 614 MB/day.
+At 256 active sites the normal schedule makes 6,144 station requests per day. Catch-up adds only the requests needed to repair missed or unsuccessful checks, capped at 10 extra stations per minute.
 
-The SQLite database stores compact probe metadata and hashes, not successful HTML pages. At 6,144 probe rows/day, SQLite should remain comfortably manageable for a long-running local experiment. Actual database growth should be measured after the first few days rather than assumed.
+The exact transfer volume depends on the size of the AQE latest pages. The probe records `response_bytes` for every request, so the real daily/monthly network cost can be measured after the first sweep. For illustration, 50 KB per page would be about 307 MB/day; 100 KB per page would be about 614 MB/day before any small catch-up overhead.
+
+The SQLite database stores compact probe metadata and hashes, not successful HTML pages. At 6,144 normal probe rows/day, SQLite should remain comfortably manageable for a long-running local experiment. Actual database growth should be measured after the first few days rather than assumed.
 
 ## Set up on the MacBook Pro
 
@@ -110,17 +116,21 @@ The database will be at:
 
 ## Scheduled mode
 
-When the script is run with no `--all`, `--shard` or `--site` option, it automatically selects the current one-minute shard. The intended long-term scheduler therefore calls:
+The long-term scheduler should call the wrapper, not `aqe_probe.py` directly:
 
 ```bash
-"$PROBE_HOME/venv/bin/python" scripts/aqe/aqe_probe.py --quiet
+"$PROBE_HOME/venv/bin/python" scripts/aqe/aqe_probe_runner.py
 ```
 
 once every 60 seconds.
 
+The wrapper first runs the current one-minute shard, then checks SQLite for overdue stations using the 70-minute successful-probe / 30-minute recent-attempt rules and adds at most 10 catch-up stations.
+
 Set up the MacBook Pro launchd job only after the manual two-site and full-sweep checks have been reviewed. The final LaunchAgent should use the Pro's actual synced repository path rather than hard-coding a path from another machine.
 
 ## Useful options
+
+For `aqe_probe.py`:
 
 - `--site SITE_ID` can be repeated for targeted checks.
 - `--all` checks every active station once.
@@ -131,6 +141,8 @@ Set up the MacBook Pro launchd job only after the manual two-site and full-sweep
 - `--summary` shows probe count, date range, failures, response bytes and source-age statistics.
 - `--delay` changes the pause between requests in a shard.
 - `--timeout` changes the HTTP timeout.
+
+`aqe_probe_runner.py` intentionally has no tuning options for catch-up. The exploratory probe uses fixed, conservative rules: success older than 70 minutes, no attempt within 30 minutes, maximum 10 catch-up stations per run.
 
 ## Dependencies
 
