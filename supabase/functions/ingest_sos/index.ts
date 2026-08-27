@@ -7,7 +7,7 @@ import {
   writeObservsWithOutbox,
 } from "../_shared/observs_client.ts";
 import {
-  buildCompactObservationRpcArgs,
+  buildCompactObservationRpcArgsV2,
   createEmptyIngestDbObservationWriteStats,
   isIngestDbObservationWriteError,
   mergeIngestDbObservationWriteStats,
@@ -67,6 +67,7 @@ type ErrorLogEntry = {
 const DEFAULT_BASE_URL = "https://uk-air.defra.gov.uk/sos-ukair/api/v1";
 const DEFAULT_SERVICE_LABEL = "SOS";
 const DEFAULT_CONNECTOR_CODE = "sos";
+const SOS_PRIMARY_ACQUISITION_METHOD = "sos";
 const DEFAULT_WINDOW_HOURS = 6;
 const DEFAULT_MAX_RUNTIME_SECONDS = 120;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -708,13 +709,21 @@ serve(async (req) => {
                       Math.max(0, runtimeDeadline - Date.now()),
                   },
                   requestBodyBytes: (chunk: Record<string, unknown>[]) =>
-                    serializedJsonUtf8Bytes(buildCompactObservationRpcArgs(chunk)),
+                    serializedJsonUtf8Bytes(
+                      buildCompactObservationRpcArgsV2(
+                        chunk,
+                        SOS_PRIMARY_ACQUISITION_METHOD,
+                      ),
+                    ),
                   writeChunk: async (chunk: Record<string, unknown>[]) => {
                     const { error } = await postgrestRequest(
                       "POST",
-                      "rpc/uk_aq_rpc_observations_compact_upsert_v1",
+                      "rpc/uk_aq_rpc_observations_compact_upsert_v2",
                       {},
-                      buildCompactObservationRpcArgs(chunk),
+                      buildCompactObservationRpcArgsV2(
+                        chunk,
+                        SOS_PRIMARY_ACQUISITION_METHOD,
+                      ),
                       undefined,
                       "uk_aq_public",
                     );

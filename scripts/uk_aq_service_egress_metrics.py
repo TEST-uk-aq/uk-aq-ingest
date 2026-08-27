@@ -83,6 +83,8 @@ def _route_and_query(method: str, path: str) -> tuple[str, str]:
             "uk_aq_rpc_phenomena_upsert": "upsert_phenomena",
             "uk_aq_rpc_observations_compact_upsert_v1":
                 "compact_observation_upsert",
+            "uk_aq_rpc_observations_compact_upsert_v2":
+                "compact_observation_upsert",
             "uk_aq_rpc_observs_observations_compact_upsert_v1":
                 "compact_observation_upsert",
             "uk_aq_rpc_observs_outbox_enqueue": "enqueue_observs",

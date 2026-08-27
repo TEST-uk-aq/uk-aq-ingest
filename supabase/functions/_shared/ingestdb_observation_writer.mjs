@@ -275,6 +275,13 @@ export function buildCompactObservationRpcArgs(rows) {
   return args;
 }
 
+export function buildCompactObservationRpcArgsV2(rows, acquisitionMethod) {
+  return {
+    ...buildCompactObservationRpcArgs(rows),
+    acquisition_method: acquisitionMethod,
+  };
+}
+
 export function serializedJsonUtf8Bytes(value) {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
