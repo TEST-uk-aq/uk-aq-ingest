@@ -112,6 +112,48 @@ begin
 end;
 $$;
 
+create or replace function uk_aq_core.sos_record_station_attempts(
+  p_station_ids bigint[],
+  p_attempted_at timestamptz
+)
+returns integer
+language plpgsql
+set search_path = uk_aq_core, uk_aq_raw, public, pg_catalog
+as $$
+declare
+  v_rows integer;
+begin
+  if p_attempted_at is null then
+    raise exception 'p_attempted_at must not be null';
+  end if;
+
+  insert into sos_station_checkpoints as checkpoint (
+    station_id,
+    last_attempted_at,
+    updated_at
+  )
+  select
+    station_id,
+    p_attempted_at,
+    p_attempted_at
+  from unnest(coalesce(p_station_ids, '{}'::bigint[])) as selected(station_id)
+  group by station_id
+  on conflict (station_id) do update
+  set
+    last_attempted_at = greatest(
+      checkpoint.last_attempted_at,
+      excluded.last_attempted_at
+    ),
+    updated_at = greatest(checkpoint.updated_at, excluded.updated_at);
+
+  get diagnostics v_rows = row_count;
+  return v_rows;
+end;
+$$;
+
+revoke all on function uk_aq_core.sos_record_station_attempts(bigint[], timestamptz) from public;
+grant execute on function uk_aq_core.sos_record_station_attempts(bigint[], timestamptz) to service_role;
+
 create or replace function uk_aq_core.sos_select_station_refs(
   batch_limit integer default 100,
   stale_limit integer default 4
@@ -154,6 +196,7 @@ begin
       stn.station_ref,
       sc.next_due_at,
       sc.last_polled_at,
+      sc.last_attempted_at,
       nullif(
         greatest(
           coalesce(sc.last_observed_at, '-infinity'::timestamptz),
@@ -213,6 +256,7 @@ begin
     select
       c.station_id,
       c.station_ref,
+      c.last_attempted_at,
       c.last_observed_at
     from candidates c
     where (c.last_observed_at is null or c.last_observed_at <= now() - interval '24 hours')
@@ -220,7 +264,10 @@ begin
       and not exists (
         select 1 from tiered_limited t where t.station_id = c.station_id
       )
-    order by c.last_observed_at nulls first
+    order by
+      c.last_attempted_at asc nulls first,
+      c.last_observed_at asc nulls first,
+      c.station_id asc
     limit least(
       stale_limit,
       greatest(0, batch_limit - (select count(*) from tiered_limited))
@@ -240,6 +287,9 @@ begin
   return station_refs;
 end;
 $$;
+
+revoke all on function uk_aq_core.sos_select_station_refs(integer, integer) from public;
+grant execute on function uk_aq_core.sos_select_station_refs(integer, integer) to service_role;
 
 -- Dispatch queue helpers (two-stage dispatcher).
 

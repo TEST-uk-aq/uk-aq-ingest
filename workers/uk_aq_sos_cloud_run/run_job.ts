@@ -486,6 +486,42 @@ async function loadTimeseriesRows(
     );
 }
 
+async function recordStationAttempts(
+  timeseriesRows: SelectedTimeseriesRow[],
+  attemptedAtIso: string,
+): Promise<number> {
+  const stationIds = [...new Set(timeseriesRows.map((row) => row.station_id))]
+    .sort((a, b) => a - b);
+  if (!stationIds.length) {
+    return 0;
+  }
+
+  const response = await postgrestRequest(
+    "POST",
+    "rpc/sos_record_station_attempts",
+    {
+      schema: UK_AQ_CORE_SCHEMA,
+      body: {
+        p_station_ids: stationIds,
+        p_attempted_at: attemptedAtIso,
+      },
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Failed to record SOS station attempts (${response.status}): ${response.text}`,
+    );
+  }
+
+  const recorded = toIntegerOrNull(response.data);
+  if (recorded !== stationIds.length) {
+    throw new Error(
+      `SOS station attempt count mismatch: expected ${stationIds.length}, recorded ${recorded}`,
+    );
+  }
+  return recorded;
+}
+
 async function loadSuccessfullyPolledTimeseriesIds(
   timeseriesIds: string[],
   runStartedAtIso: string,
@@ -1323,6 +1359,16 @@ async function main(): Promise<void> {
     }).spawn();
 
     await waitForServer(`http://127.0.0.1:${PORT}/`);
+    const attemptedAtIso = new Date().toISOString();
+    const stationsAttempted = await recordStationAttempts(
+      payloadPlan.timeseriesRows,
+      attemptedAtIso,
+    );
+    logSummary("attempts_recorded", {
+      connector_id: connectorId,
+      stations_attempted: stationsAttempted,
+      attempted_at: attemptedAtIso,
+    });
     ingestResponse = await runIngestOnce(payloadPlan.payload);
 
     const { runStatus, runMessage, payload } = deriveRunSummary(ingestResponse);
