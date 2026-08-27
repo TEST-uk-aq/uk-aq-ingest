@@ -376,6 +376,24 @@ serve(async (req) => {
     count: 0,
     timeseriesSample: [],
   };
+  const logFallbackDiagnostic = (
+    level: "info" | "warn",
+    message: string,
+    context: Record<string, unknown>,
+  ) => {
+    log[level](message, context);
+    const structuredEntry = JSON.stringify({
+      ts: new Date().toISOString(),
+      connector_code: requestedConnectorCode,
+      message,
+      ...context,
+    });
+    if (level === "warn") {
+      console.warn(structuredEntry);
+    } else {
+      console.info(structuredEntry);
+    }
+  };
 
   try {
     if (!SUPABASE_URL || !SUPABASE_PRIVILEGED_KEY) {
@@ -566,15 +584,19 @@ serve(async (req) => {
           if (!probe.ok) {
             if (isUkAirHtmlFallbackProbeFailure(probe.failure)) {
               htmlFallbackProbeFailure = probe.failure;
-              log.warn("UK-AIR SOS upstream probe failed; starting HTML fallback.", {
-                connector_id: connector.id,
-                upstream_status: probe.failure.upstreamStatus,
-                upstream_failure_kind: probe.failure.kind,
-                connector_http_status: connectorHttpStatusForProbe(
-                  probe.failure,
-                ),
-                upstream_error: probe.failure.message,
-              });
+              logFallbackDiagnostic(
+                "warn",
+                "UK-AIR SOS upstream probe failed; starting HTML fallback.",
+                {
+                  connector_id: connector.id,
+                  upstream_status: probe.failure.upstreamStatus,
+                  upstream_failure_kind: probe.failure.kind,
+                  connector_http_status: connectorHttpStatusForProbe(
+                    probe.failure,
+                  ),
+                  upstream_error: probe.failure.message,
+                },
+              );
             } else {
               shouldPoll = false;
               log.warn("UK-AIR SOS probe failure is not eligible for HTML fallback.", {
@@ -920,7 +942,7 @@ serve(async (req) => {
                 siteWork.push(work);
                 workBySite.set(work.siteRef, siteWork);
               }
-              log.info("UK-AIR HTML fallback mapping resolved.", {
+              logFallbackDiagnostic("info", "UK-AIR HTML fallback mapping resolved.", {
                 current_utc_day: currentUtcDay,
                 selected_timeseries: series.length,
                 bridge_rows: bridgeRows.length,
@@ -972,7 +994,7 @@ serve(async (req) => {
                     const ignoredUnselectedSeries = parsed.series.filter(
                       (item) => !selectedCodes.has(item.pollutantCode),
                     ).length;
-                    log.info("UK-AIR HTML fallback page parsed.", {
+                    logFallbackDiagnostic("info", "UK-AIR HTML fallback page parsed.", {
                       site_ref: siteRef,
                       http_status: page.status,
                       duration_ms: page.durationMs,
@@ -1006,7 +1028,7 @@ serve(async (req) => {
                         );
                         continue;
                       }
-                      log.info("UK-AIR HTML fallback series parsed.", {
+                      logFallbackDiagnostic("info", "UK-AIR HTML fallback series parsed.", {
                         site_ref: siteRef,
                         timeseries_id: work.timeseries.id,
                         pollutant_code: work.pollutantCode,
@@ -1098,7 +1120,7 @@ serve(async (req) => {
                           work.timeseries.id,
                           "observation_write_failed",
                         );
-                        log.warn("UK-AIR HTML fallback series write failed.", {
+                        logFallbackDiagnostic("warn", "UK-AIR HTML fallback series write failed.", {
                           site_ref: siteRef,
                           timeseries_id: work.timeseries.id,
                           pollutant_code: work.pollutantCode,
@@ -1148,7 +1170,7 @@ serve(async (req) => {
                         !isRuntimeDeadline,
                       );
                     }
-                    log.warn("UK-AIR HTML fallback site failed.", {
+                    logFallbackDiagnostic("warn", "UK-AIR HTML fallback site failed.", {
                       site_ref: siteRef,
                       affected_timeseries: siteWork.length,
                       duration_ms: Math.max(0, Date.now() - siteStartedAt),
@@ -1188,15 +1210,19 @@ serve(async (req) => {
                   "bridge_lookup_failed",
                 );
               }
-              log.warn("UK-AIR HTML fallback could not resolve bridge mappings.", {
-                current_utc_day: currentUtcDay,
-                selected_timeseries: series.length,
-                error: boundMessage(error),
-              });
+              logFallbackDiagnostic(
+                "warn",
+                "UK-AIR HTML fallback could not resolve bridge mappings.",
+                {
+                  current_utc_day: currentUtcDay,
+                  selected_timeseries: series.length,
+                  error: boundMessage(error),
+                },
+              );
             }
             htmlFallbackIncomplete = successfullyPolledTimeseriesIds.size <
               series.length;
-            log.info("UK-AIR HTML fallback completed.", {
+            logFallbackDiagnostic("info", "UK-AIR HTML fallback completed.", {
               current_utc_day: currentUtcDay,
               selected_timeseries: series.length,
               recovered_timeseries: successfullyPolledTimeseriesIds.size,
