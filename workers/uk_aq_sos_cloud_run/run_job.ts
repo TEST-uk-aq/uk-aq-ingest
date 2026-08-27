@@ -1002,6 +1002,7 @@ async function insertRunRow(
       toIntegerOrNull(payload?.timeseries) ??
       toIntegerOrNull(payload?.timeseries_updated),
     response_status: ingestResponse.status,
+    response_payload: payload,
   };
 
   const response = await postgrestRequest("POST", "uk_aq_ingest_runs", {
