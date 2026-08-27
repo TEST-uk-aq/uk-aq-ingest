@@ -194,9 +194,15 @@ export function isRecognizedSosDependencyFailure(
   if (failureKind === "http") {
     return asInteger(payload.upstream_status) === response.status;
   }
-  return (failureKind === "request_timeout" ||
-    failureKind === "runtime_deadline") &&
-    payload.upstream_status === null && response.status === 503;
+  if (
+    (failureKind === "request_timeout" ||
+      failureKind === "runtime_deadline") &&
+    payload.upstream_status === null && response.status === 503
+  ) {
+    return true;
+  }
+  return failureKind === "network" &&
+    payload.upstream_status === null && response.status === 500;
 }
 
 export function isCompletedSosChildResponse(

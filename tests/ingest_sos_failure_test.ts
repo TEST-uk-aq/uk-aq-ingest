@@ -158,6 +158,38 @@ Deno.test("SOS Cloud Run preserves structured dependency failures without wrappe
       "Actual upstream HTTP status was not preserved through Cloud Run",
     );
   }
+
+  const networkFailure = {
+    ok: false,
+    status: 500,
+    body: {
+      status: "upstream_unavailable",
+      upstream_status: null,
+      upstream_failure_kind: "network",
+      connector_http_status: 500,
+      series_polled: 0,
+      observations_upserted: 0,
+    },
+  };
+  const networkResult = buildSosCloudRunChildResult(
+    networkFailure,
+    "failed",
+    "UK-AIR SOS upstream unavailable: network (connector HTTP 500).",
+  );
+  if (
+    !isRecognizedSosDependencyFailure(networkFailure) ||
+    !isCompletedSosChildResponse(networkFailure) ||
+    !networkResult || networkResult.httpStatus !== 500 ||
+    networkResult.payload.upstream_status !== null ||
+    networkResult.payload.upstream_failure_kind !== "network" ||
+    networkResult.payload.connector_http_status !== 500
+  ) {
+    throw new Error(
+      `Canonical network dependency result was not retained: ${
+        JSON.stringify(networkResult)
+      }`,
+    );
+  }
 });
 
 Deno.test("SOS Cloud Run keeps local failures generic and preserves partial runtime-budget results", () => {
@@ -177,6 +209,35 @@ Deno.test("SOS Cloud Run keeps local failures generic and preserves partial runt
   ) {
     throw new Error(
       "Unknown local failure was incorrectly treated as dependency availability",
+    );
+  }
+
+  const malformedNetworkFailure = {
+    ok: false,
+    status: 500,
+    body: {
+      status: "upstream_unavailable",
+      upstream_status: 500,
+      upstream_failure_kind: "network",
+      connector_http_status: 500,
+    },
+  };
+  const arbitraryHttp500 = {
+    ok: false,
+    status: 500,
+    body: {
+      status: "error",
+      upstream_status: null,
+      upstream_failure_kind: "network",
+      connector_http_status: 500,
+    },
+  };
+  if (
+    isRecognizedSosDependencyFailure(malformedNetworkFailure) ||
+    isRecognizedSosDependencyFailure(arbitraryHttp500)
+  ) {
+    throw new Error(
+      "A non-canonical HTTP 500 was accepted as a network dependency result",
     );
   }
 

@@ -1355,12 +1355,11 @@ async function main(): Promise<void> {
         toStringOrNull(payload?.upstream_failure_kind) !== null;
       let checkpointStationRows = payloadPlan.stationRows;
       if (recoveredFallback) {
-        const successfullyPolledTimeseriesIds = payload?.partial === true
-          ? await loadSuccessfullyPolledTimeseriesIds(
+        const successfullyPolledTimeseriesIds =
+          await loadSuccessfullyPolledTimeseriesIds(
             payloadPlan.timeseriesIds,
             runStartedAtIso,
-          )
-          : new Set(payloadPlan.timeseriesRows.map((row) => row.id));
+          );
         const successfullyPolledStationIds = new Set(
           payloadPlan.timeseriesRows
             .filter((row) => successfullyPolledTimeseriesIds.has(row.id))
