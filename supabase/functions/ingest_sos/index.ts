@@ -37,6 +37,7 @@ import {
   UK_AIR_HTML_BRIDGE_POLLUTANT_CODES,
   UkAirHtmlParseError,
 } from "./uk_aq_html_parser.ts";
+import { recordSosObservationChanges } from "./run_metrics.ts";
 
 type PollRequest = {
   connector_id?: string;
@@ -349,6 +350,7 @@ serve(async (req) => {
   let status = 200;
   let polled = 0;
   let observationsUpserted = 0;
+  const changedTimeseriesIds = new Set<number>();
   const ingestDbObservationWriteStats =
     createEmptyIngestDbObservationWriteStats();
   let ingestDbObservationWriteFailed = false;
@@ -789,7 +791,9 @@ serve(async (req) => {
                   buildCompactObservationRpcArgsV2(chunk, acquisitionMethod),
                 ),
               writeChunk: async (chunk: Record<string, unknown>[]) => {
-                const { error } = await postgrestRequest(
+                const { data, error } = await postgrestRequest<
+                  Array<{ observations_upserted: number }>
+                >(
                   "POST",
                   "rpc/uk_aq_rpc_observations_compact_upsert_v2",
                   {},
@@ -798,13 +802,17 @@ serve(async (req) => {
                   "uk_aq_public",
                 );
                 if (error) throw error;
+                observationsUpserted += recordSosObservationChanges(
+                  data,
+                  timeseriesId,
+                  changedTimeseriesIds,
+                );
               },
             });
             mergeIngestDbObservationWriteStats(
               ingestDbObservationWriteStats,
               writeStats,
             );
-            observationsUpserted = ingestDbObservationWriteStats.committed_rows;
             const observsRows = observationRows.map((point) => {
               const numericValue = Number(point.value);
               return {
@@ -863,8 +871,6 @@ serve(async (req) => {
                         writeError.stats,
                       );
                     }
-                    observationsUpserted =
-                      ingestDbObservationWriteStats.committed_rows;
                     ingestDbObservationWriteFailed = true;
                   }
                   const failure = asSosFetchFailure(err);
@@ -1098,8 +1104,6 @@ serve(async (req) => {
                               writeError.stats,
                             );
                           }
-                          observationsUpserted =
-                            ingestDbObservationWriteStats.committed_rows;
                           ingestDbObservationWriteFailed = true;
                         }
                         const failure = asSosFetchFailure(error);
@@ -1228,6 +1232,7 @@ serve(async (req) => {
               recovered_timeseries: successfullyPolledTimeseriesIds.size,
               failed_timeseries: fallbackFailedTimeseriesIds.size,
               observations_upserted: observationsUpserted,
+              timeseries_updated: changedTimeseriesIds.size,
               outcome: successfullyPolledTimeseriesIds.size === 0
                 ? "unrecovered"
                 : htmlFallbackIncomplete
@@ -1330,6 +1335,7 @@ serve(async (req) => {
               connector_id: connector.id,
               series_polled: polled,
               observations_upserted: observationsUpserted,
+              timeseries_updated: changedTimeseriesIds.size,
               ingestdb_observation_write: ingestDbObservationWriteStats,
               cross_database_transaction: false,
               observs_written: observsWritten,
@@ -1384,6 +1390,7 @@ serve(async (req) => {
       connector_id: connector?.id ?? requestedConnectorId ?? null,
       series_polled: polled,
       observations_upserted: observationsUpserted,
+      timeseries_updated: changedTimeseriesIds.size,
       errors: errors.length,
     });
     if (errors.length) {

@@ -14,6 +14,57 @@ import {
   isRecognizedSosDependencyFailure,
   isSosCloudRunChildResult,
 } from "../workers/uk_aq_sos_cloud_run/result_contract.ts";
+import { recordSosObservationChanges } from "../supabase/functions/ingest_sos/run_metrics.ts";
+
+Deno.test("SOS run metrics use actual v2 RPC changes and distinct timeseries", () => {
+  const changedTimeseriesIds = new Set<number>();
+  let observationsUpserted = 0;
+
+  observationsUpserted += recordSosObservationChanges(
+    [{ observations_upserted: 32 }],
+    101,
+    changedTimeseriesIds,
+  );
+  observationsUpserted += recordSosObservationChanges(
+    [{ observations_upserted: 0 }],
+    102,
+    changedTimeseriesIds,
+  );
+  observationsUpserted += recordSosObservationChanges(
+    [{ observations_upserted: 13 }],
+    101,
+    changedTimeseriesIds,
+  );
+
+  if (observationsUpserted !== 45 || changedTimeseriesIds.size !== 1) {
+    throw new Error(
+      `Unexpected SOS change metrics: observations=${observationsUpserted}, timeseries=${changedTimeseriesIds.size}`,
+    );
+  }
+});
+
+Deno.test("SOS run metrics reject malformed v2 RPC results", () => {
+  for (
+    const payload of [
+      null,
+      [],
+      [{ observations_upserted: -1 }],
+      [{ observations_upserted: "invalid" }],
+    ]
+  ) {
+    let rejected = false;
+    try {
+      recordSosObservationChanges(payload, 101, new Set<number>());
+    } catch {
+      rejected = true;
+    }
+    if (!rejected) {
+      throw new Error(
+        `Malformed result was accepted: ${JSON.stringify(payload)}`,
+      );
+    }
+  }
+});
 
 Deno.test("SOS probe maps timeout failures without an upstream response to 503", () => {
   for (const kind of ["request_timeout", "runtime_deadline"] as const) {
