@@ -10,8 +10,6 @@ COPY workers/shared/dropbox_error_log.ts /app/workers/shared/dropbox_error_log.t
 # Reuse existing SOS ingest implementation + shared helpers.
 COPY supabase/functions/ingest_sos/index.ts /app/runtime/ingest_sos/index.ts
 COPY supabase/functions/ingest_sos/failure.ts /app/runtime/ingest_sos/failure.ts
-COPY supabase/functions/ingest_sos/uk_aq_html_fallback.ts /app/runtime/ingest_sos/uk_aq_html_fallback.ts
-COPY supabase/functions/ingest_sos/uk_aq_html_parser.ts /app/runtime/ingest_sos/uk_aq_html_parser.ts
 COPY supabase/functions/_shared/cache.ts /app/runtime/_shared/cache.ts
 COPY supabase/functions/_shared/fetch_egress_patch.ts /app/runtime/_shared/fetch_egress_patch.ts
 COPY supabase/functions/_shared/egress_metrics.ts /app/runtime/_shared/egress_metrics.ts

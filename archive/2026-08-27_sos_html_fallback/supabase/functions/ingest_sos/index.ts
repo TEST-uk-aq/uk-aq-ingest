@@ -25,18 +25,6 @@ import {
   type RuntimeDeadlineFailureSummary,
   SosFetchFailure,
 } from "./failure.ts";
-import {
-  fetchUkAirHtmlPage,
-  isUkAirHtmlFallbackProbeFailure,
-  resolveUkAirHtmlMappings,
-  type UkAirHtmlBridgeRow,
-  type UkAirHtmlMappedWork,
-} from "./uk_aq_html_fallback.ts";
-import {
-  parseUkAirHtmlChart,
-  UK_AIR_HTML_BRIDGE_POLLUTANT_CODES,
-  UkAirHtmlParseError,
-} from "./uk_aq_html_parser.ts";
 
 type PollRequest = {
   connector_id?: string;
@@ -76,20 +64,10 @@ type ErrorLogEntry = {
   timeseries_id?: string | number | null;
 };
 
-type SosTimeseriesRow = {
-  id: number;
-  timeseries_ref: string | null;
-  service_ref: string | null;
-  phenomenon_id: string | null;
-  last_value_at: string | null;
-  uom: string | null;
-};
-
 const DEFAULT_BASE_URL = "https://uk-air.defra.gov.uk/sos-ukair/api/v1";
 const DEFAULT_SERVICE_LABEL = "SOS";
 const DEFAULT_CONNECTOR_CODE = "sos";
 const SOS_PRIMARY_ACQUISITION_METHOD = "sos";
-const SOS_HTML_FALLBACK_ACQUISITION_METHOD = "ukair_html";
 const DEFAULT_WINDOW_HOURS = 6;
 const DEFAULT_MAX_RUNTIME_SECONDS = 120;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -493,53 +471,6 @@ serve(async (req) => {
         const baseUrl = (connector.service_url || SOS_BASE_URL).replace(/\/$/, "");
         const now = new Date();
         const windowStart = new Date(now.getTime() - pollWindow * 60 * 60 * 1000);
-        const connectorForRun = connector;
-        let htmlFallbackProbeFailure: SosFetchFailure | null = null;
-
-        const recordUnrecoveredProbeFailure = async (
-          failure: SosFetchFailure,
-        ) => {
-          const upstreamStatus = failure.upstreamStatus;
-          const connectorHttpStatus = connectorHttpStatusForProbe(failure);
-          errors.push(`upstream_probe_failed:${upstreamStatus ?? "unknown"}`);
-          log.warn("UK-AIR SOS upstream probe failure was not recovered.", {
-            connector_id: connectorForRun.id,
-            upstream_status: upstreamStatus,
-            upstream_failure_kind: failure.kind,
-            connector_http_status: connectorHttpStatus,
-            upstream_error: failure.message,
-          });
-          await errorLogger.logError({
-            source: "edge",
-            severity: "error",
-            message: "UK-AIR SOS upstream probe failure was not recovered.",
-            context: {
-              connector_id: connectorForRun.id,
-              upstream_status: upstreamStatus,
-              upstream_failure_kind: failure.kind,
-              connector_http_status: connectorHttpStatus,
-              upstream_error: failure.message,
-            },
-            connector_code: connectorForRun.connector_code ??
-              requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-            connector_id: connectorForRun.id,
-          });
-          status = connectorHttpStatus;
-          responsePayload = {
-            status: "upstream_unavailable",
-            run_message: upstreamStatus === 502
-              ? "HTTP 502 Gateway Failure"
-              : "Upstream unavailable",
-            connector_id: connectorForRun.id,
-            series_polled: 0,
-            observations_upserted: 0,
-            errors,
-            upstream_status: upstreamStatus,
-            upstream_failure_kind: failure.kind,
-            connector_http_status: connectorHttpStatus,
-            upstream_error: failure.message,
-          };
-        };
 
         let series = await loadTimeseries(connector.id);
         if (requestedTimeseriesIds?.length) {
@@ -564,37 +495,52 @@ serve(async (req) => {
         if (shouldPoll) {
           const probe = await probeSosUpstream(baseUrl, rawRecorder, runtimeDeadline);
           if (!probe.ok) {
-            if (isUkAirHtmlFallbackProbeFailure(probe.failure)) {
-              htmlFallbackProbeFailure = probe.failure;
-              log.warn("UK-AIR SOS upstream probe failed; starting HTML fallback.", {
+            shouldPoll = false;
+            const upstreamStatus = probe.failure.upstreamStatus;
+            const connectorHttpStatus = connectorHttpStatusForProbe(probe.failure);
+            errors.push(`upstream_probe_failed:${upstreamStatus ?? "unknown"}`);
+            log.warn("UK-AIR SOS upstream probe failed; skipping poll.", {
+              connector_id: connector.id,
+              upstream_status: upstreamStatus,
+              upstream_failure_kind: probe.failure.kind,
+              connector_http_status: connectorHttpStatus,
+              upstream_error: probe.failure.message,
+            });
+            await errorLogger.logError({
+              source: "edge",
+              severity: "error",
+              message: "UK-AIR SOS upstream probe failed; skipping poll.",
+              context: {
                 connector_id: connector.id,
-                upstream_status: probe.failure.upstreamStatus,
+                upstream_status: upstreamStatus,
                 upstream_failure_kind: probe.failure.kind,
-                connector_http_status: connectorHttpStatusForProbe(
-                  probe.failure,
-                ),
+                connector_http_status: connectorHttpStatus,
                 upstream_error: probe.failure.message,
-              });
-            } else {
-              shouldPoll = false;
-              log.warn("UK-AIR SOS probe failure is not eligible for HTML fallback.", {
-                connector_id: connector.id,
-                upstream_status: probe.failure.upstreamStatus,
-                upstream_failure_kind: probe.failure.kind,
-                connector_http_status: connectorHttpStatusForProbe(
-                  probe.failure,
-                ),
-                upstream_error: probe.failure.message,
-              });
-              await recordUnrecoveredProbeFailure(probe.failure);
-            }
+              },
+              connector_code: connector.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
+              connector_id: connector.id,
+            });
+            status = connectorHttpStatus;
+            responsePayload = {
+              status: "upstream_unavailable",
+              run_message: upstreamStatus === 502
+                ? "HTTP 502 Gateway Failure"
+                : "Upstream unavailable",
+              connector_id: connector.id,
+              series_polled: 0,
+              observations_upserted: 0,
+              errors,
+              upstream_status: upstreamStatus,
+              upstream_failure_kind: probe.failure.kind,
+              connector_http_status: connectorHttpStatus,
+              upstream_error: probe.failure.message,
+            };
           }
         }
 
         if (shouldPoll) {
           const checkpointCandidates = requestedTimeseriesIds?.length ? series.slice() : [];
           const successfullyPolledTimeseriesIds = new Set<number>();
-          let htmlFallbackIncomplete = false;
           const beforeRecencyFilter = series.length;
           const withRecentLastValue = series.filter((row) => {
             if (!row.last_value_at) {
@@ -710,505 +656,159 @@ serve(async (req) => {
             });
           }
 
-          const writeObservationPoints = async (
-            timeseriesId: number,
-            points: Array<{
-              observed_at: string;
-              value: number | null;
-              status: string | null;
-            }>,
-            acquisitionMethod: string,
-          ) => {
-            if (!points.length) return;
-            const connectorIdForObs = connector?.id ??
-              requestedConnectorId ?? null;
-            if (connectorIdForObs == null) {
-              throw new Error(
-                "observations upsert failed: connector_id is required",
+          timeBudgetHit = await runPool(series, CONCURRENCY_LIMIT, async (row) => {
+            if (shouldStop()) {
+              return;
+            }
+            try {
+              const sourceId = row.timeseries_ref || String(row.id);
+              const data = await fetchJson(
+                baseUrl,
+                `/timeseries/${encodeURIComponent(sourceId)}/getData`,
+                { timespan, format: "tvp" },
+                rawRecorder,
+                { deadlineMs: runtimeDeadline },
               );
-            }
-            let droppedDuplicates = 0;
-            const deduped = new Map<string, {
-              observed_at: string;
-              value: number | null;
-              status: string | null;
-            }>();
-            for (const point of points) {
-              if (deduped.has(point.observed_at)) droppedDuplicates += 1;
-              deduped.set(point.observed_at, point);
-            }
-            if (droppedDuplicates) {
-              console.warn("Dropping duplicate observations", {
-                timeseries_id: timeseriesId,
-                dropped: droppedDuplicates,
-                total: points.length,
-              });
-            }
-            const observationRows = Array.from(deduped.values()).map((point) => ({
-              connector_id: connectorIdForObs,
-              timeseries_id: timeseriesId,
-              observed_at: point.observed_at,
-              value: point.value,
-              status: point.status,
-            }));
-            const writeStats = await writeIngestDbObservations({
-              rows: observationRows,
-              chunkSize: observationRows.length,
-              connectorCode: SOS_CONNECTOR_CODE,
-              logger: console,
-              config: { minimumAttemptRuntimeMs: DEFAULT_TIMEOUT_MS },
-              runtimeBudget: {
-                shouldStop,
-                remainingRuntimeMs: () =>
-                  Math.max(0, runtimeDeadline - Date.now()),
-              },
-              requestBodyBytes: (chunk: Record<string, unknown>[]) =>
-                serializedJsonUtf8Bytes(
-                  buildCompactObservationRpcArgsV2(chunk, acquisitionMethod),
-                ),
-              writeChunk: async (chunk: Record<string, unknown>[]) => {
-                const { error } = await postgrestRequest(
-                  "POST",
-                  "rpc/uk_aq_rpc_observations_compact_upsert_v2",
-                  {},
-                  buildCompactObservationRpcArgsV2(chunk, acquisitionMethod),
-                  undefined,
-                  "uk_aq_public",
-                );
-                if (error) throw error;
-              },
-            });
-            mergeIngestDbObservationWriteStats(
-              ingestDbObservationWriteStats,
-              writeStats,
-            );
-            observationsUpserted = ingestDbObservationWriteStats.committed_rows;
-            const observsRows = observationRows.map((point) => {
-              const numericValue = Number(point.value);
-              return {
-                connector_id: Number(point.connector_id),
-                timeseries_id: Number(point.timeseries_id),
-                observed_at: String(point.observed_at),
-                value: Number.isFinite(numericValue) ? numericValue : null,
-                status: point.status == null ? null : String(point.status),
-              } satisfies ObservsObservationRow;
-            });
-            observsRowsPending.push(...observsRows);
-          };
-
-          if (!htmlFallbackProbeFailure) {
-            timeBudgetHit = await runPool(
-              series,
-              CONCURRENCY_LIMIT,
-              async (row) => {
-                if (shouldStop()) {
-                  return;
+              const points = parseDatapoints(data?.values, row.id);
+              if (points.length) {
+                const connectorIdForObs = connector?.id ?? requestedConnectorId ?? null;
+                if (connectorIdForObs == null) {
+                  throw new Error("observations upsert failed: connector_id is required");
                 }
-                try {
-                  const sourceId = row.timeseries_ref || String(row.id);
-                  const data = await fetchJson(
-                    baseUrl,
-                    `/timeseries/${encodeURIComponent(sourceId)}/getData`,
-                    { timespan, format: "tvp" },
-                    rawRecorder,
-                    { deadlineMs: runtimeDeadline },
-                  );
-                  const points = parseDatapoints(data?.values, row.id);
-                  await writeObservationPoints(
-                    row.id,
-                    points,
-                    SOS_PRIMARY_ACQUISITION_METHOD,
-                  );
-                  await upsertLastValue(
-                    row.id,
-                    data,
-                    points,
-                    errorLogger,
-                    connector?.id ?? requestedConnectorId ?? null,
-                    connector?.connector_code ??
-                      requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-                  );
-                  polled += 1;
-                  successfullyPolledTimeseriesIds.add(Number(row.id));
-                } catch (err) {
-                  if (isIngestDbObservationWriteError(err)) {
-                    const writeError = err as {
-                      stats?: Record<string, unknown>;
-                    };
-                    if (writeError.stats) {
-                      mergeIngestDbObservationWriteStats(
-                        ingestDbObservationWriteStats,
-                        writeError.stats,
-                      );
-                    }
-                    observationsUpserted =
-                      ingestDbObservationWriteStats.committed_rows;
-                    ingestDbObservationWriteFailed = true;
+                let droppedDuplicates = 0;
+                const deduped = new Map<string, { observed_at: string; value: number | null; status: string | null }>();
+                for (const point of points) {
+                  if (deduped.has(point.observed_at)) {
+                    droppedDuplicates += 1;
                   }
-                  const failure = asSosFetchFailure(err);
-                  if (isRuntimeDeadlineFailure(failure)) {
-                    addRuntimeDeadlineFailure(
-                      runtimeDeadlineFailures,
-                      row.id,
-                      RUNTIME_DEADLINE_TIMESERIES_SAMPLE_LIMIT,
-                    );
-                    return;
-                  }
-                  if (failure.upstreamStatus === 502) {
-                    gateway502Failures += 1;
-                  }
-                  if (isIndividuallyReportedTimeseriesFailure(failure)) {
-                    individualTimeseriesErrorCount += 1;
-                  }
-                  errors.push(`${row.id}: upsert_failed`);
-                  console.warn(`Poll failed for ${row.id}: ${failure.message}`);
-                  await errorLogger.logError({
-                    source: "edge",
-                    severity: "error",
-                    message: `Poll failed for timeseries ${row.id}.`,
-                    stack: err instanceof Error ? err.stack : undefined,
-                    context: {
-                      timeseries_ref: row.timeseries_ref,
-                      timespan,
-                      connector_id: connector?.id ?? requestedConnectorId ?? null,
-                      upstream_status: failure.upstreamStatus,
-                      upstream_failure_kind: failure.kind,
-                      upstream_error: failure.message,
-                    },
-                    connector_code: connector?.connector_code ??
-                      requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-                    connector_id: connector?.id ?? requestedConnectorId ?? null,
+                  deduped.set(point.observed_at, point);
+                }
+                if (droppedDuplicates) {
+                  console.warn("Dropping duplicate observations", {
                     timeseries_id: row.id,
+                    dropped: droppedDuplicates,
+                    total: points.length,
                   });
                 }
-              },
-              shouldStop,
-            );
-          } else {
-            const currentUtcDay = new Date().toISOString().slice(0, 10);
-            const fallbackFailedTimeseriesIds = new Set<number>();
-            const recordFallbackTimeseriesFailure = (
-              timeseriesId: number,
-              reason: string,
-              individual = true,
-            ) => {
-              if (fallbackFailedTimeseriesIds.has(timeseriesId)) return;
-              fallbackFailedTimeseriesIds.add(timeseriesId);
-              errors.push(`${timeseriesId}:html_fallback_${reason}`);
-              if (individual) individualTimeseriesErrorCount += 1;
-            };
-
-            try {
-              const bridgeRows = await loadUkAirHtmlBridgeRows(currentUtcDay);
-              const mapping = resolveUkAirHtmlMappings(series, bridgeRows);
-              for (const id of mapping.unmappedTimeseriesIds) {
-                recordFallbackTimeseriesFailure(id, "unmapped");
-              }
-              for (const id of mapping.ambiguousTimeseriesIds) {
-                recordFallbackTimeseriesFailure(id, "ambiguous_mapping");
-              }
-              for (const id of mapping.coWriteDisabledTimeseriesIds) {
-                recordFallbackTimeseriesFailure(id, "co_write_disabled");
-              }
-              for (const id of mapping.unsafeUnitTimeseriesIds) {
-                recordFallbackTimeseriesFailure(id, "unsafe_unit");
-              }
-
-              const workBySite = new Map<string, UkAirHtmlMappedWork[]>();
-              for (const work of mapping.mappedWork) {
-                const siteWork = workBySite.get(work.siteRef) ?? [];
-                siteWork.push(work);
-                workBySite.set(work.siteRef, siteWork);
-              }
-              log.info("UK-AIR HTML fallback mapping resolved.", {
-                current_utc_day: currentUtcDay,
-                selected_timeseries: series.length,
-                bridge_rows: bridgeRows.length,
-                mapped_timeseries: mapping.mappedWork.length,
-                unmapped_timeseries: mapping.unmappedTimeseriesIds.length,
-                ambiguous_timeseries: mapping.ambiguousTimeseriesIds.length,
-                co_write_disabled_timeseries:
-                  mapping.coWriteDisabledTimeseriesIds.length,
-                unsafe_unit_timeseries: mapping.unsafeUnitTimeseriesIds.length,
-                selected_sites: workBySite.size,
-                unmapped_sample: mapping.unmappedTimeseriesIds.slice(0, 10),
-                ambiguous_sample: mapping.ambiguousTimeseriesIds.slice(0, 10),
-                co_write_disabled_sample:
-                  mapping.coWriteDisabledTimeseriesIds.slice(0, 10),
-                unsafe_unit_sample:
-                  mapping.unsafeUnitTimeseriesIds.slice(0, 10),
-              });
-
-              const siteEntries = Array.from(workBySite.entries());
-              timeBudgetHit = await runPool(
-                siteEntries,
-                CONCURRENCY_LIMIT,
-                async ([siteRef, siteWork]) => {
-                  if (shouldStop()) return;
-                  const siteStartedAt = Date.now();
-                  try {
-                    const page = await fetchUkAirHtmlPage(
-                      siteRef,
-                      runtimeDeadline,
+                const observationRows = Array.from(deduped.values()).map((point) => ({
+                  connector_id: connectorIdForObs,
+                  timeseries_id: row.id,
+                  observed_at: point.observed_at,
+                  value: point.value,
+                  status: point.status,
+                }));
+                const writeStats = await writeIngestDbObservations({
+                  rows: observationRows,
+                  chunkSize: observationRows.length,
+                  connectorCode: SOS_CONNECTOR_CODE,
+                  logger: console,
+                  config: { minimumAttemptRuntimeMs: DEFAULT_TIMEOUT_MS },
+                  runtimeBudget: {
+                    shouldStop,
+                    remainingRuntimeMs: () =>
+                      Math.max(0, runtimeDeadline - Date.now()),
+                  },
+                  requestBodyBytes: (chunk: Record<string, unknown>[]) =>
+                    serializedJsonUtf8Bytes(
+                      buildCompactObservationRpcArgsV2(
+                        chunk,
+                        SOS_PRIMARY_ACQUISITION_METHOD,
+                      ),
+                    ),
+                  writeChunk: async (chunk: Record<string, unknown>[]) => {
+                    const { error } = await postgrestRequest(
+                      "POST",
+                      "rpc/uk_aq_rpc_observations_compact_upsert_v2",
+                      {},
+                      buildCompactObservationRpcArgsV2(
+                        chunk,
+                        SOS_PRIMARY_ACQUISITION_METHOD,
+                      ),
+                      undefined,
+                      "uk_aq_public",
                     );
-                    const parsed = parseUkAirHtmlChart(
-                      page.html,
-                      currentUtcDay,
-                      Date.now(),
-                    );
-                    const ambiguousPageCodes = new Set(
-                      parsed.ambiguousPollutantCodes,
-                    );
-                    const parsedByPollutant = new Map(
-                      parsed.series
-                        .filter((item) =>
-                          !ambiguousPageCodes.has(item.pollutantCode)
-                        )
-                        .map((item) => [item.pollutantCode, item] as const),
-                    );
-                    const selectedCodes = new Set(
-                      siteWork.map((work) => work.pollutantCode),
-                    );
-                    const ignoredUnselectedSeries = parsed.series.filter(
-                      (item) => !selectedCodes.has(item.pollutantCode),
-                    ).length;
-                    log.info("UK-AIR HTML fallback page parsed.", {
-                      site_ref: siteRef,
-                      http_status: page.status,
-                      duration_ms: page.durationMs,
-                      chart_found: true,
-                      chart_invocations: parsed.chartInvocationCount,
-                      chart_candidates: parsed.chartCandidateCount,
-                      selected_series: siteWork.length,
-                      recognised_series: parsed.series.length,
-                      ignored_unselected_series: ignoredUnselectedSeries,
-                      unknown_series: parsed.unknownSeriesNames.slice(0, 10),
-                      rejected_series: parsed.rejectedSeriesCount,
-                      ambiguous_series_codes:
-                        parsed.ambiguousPollutantCodes.slice(0, 10),
-                    });
-
-                    for (const work of siteWork) {
-                      if (ambiguousPageCodes.has(work.pollutantCode)) {
-                        recordFallbackTimeseriesFailure(
-                          work.timeseries.id,
-                          "ambiguous_page_series",
-                        );
-                        continue;
-                      }
-                      const htmlSeries = parsedByPollutant.get(
-                        work.pollutantCode,
-                      );
-                      if (!htmlSeries) {
-                        recordFallbackTimeseriesFailure(
-                          work.timeseries.id,
-                          "series_missing",
-                        );
-                        continue;
-                      }
-                      log.info("UK-AIR HTML fallback series parsed.", {
-                        site_ref: siteRef,
-                        timeseries_id: work.timeseries.id,
-                        pollutant_code: work.pollutantCode,
-                        html_series: htmlSeries.htmlSeriesName,
-                        destination_unit: work.timeseries.uom,
-                        total_points: htmlSeries.totalPointCount,
-                        valid_points: htmlSeries.points.length,
-                        null_points: htmlSeries.nullPointCount,
-                        rejected_points: htmlSeries.rejectedPointCount,
-                        future_points: htmlSeries.futurePointCount,
-                        out_of_day_points: htmlSeries.outOfDayPointCount,
-                        newest_eligible_timestamp:
-                          htmlSeries.newestEligibleTimestamp,
-                      });
-                      if (!htmlSeries.writeEnabled || !htmlSeries.points.length) {
-                        recordFallbackTimeseriesFailure(
-                          work.timeseries.id,
-                          htmlSeries.writeEnabled
-                            ? "no_eligible_points"
-                            : "write_disabled",
-                        );
-                        continue;
-                      }
-                      const observationPoints = htmlSeries.points.map((point) => ({
-                        observed_at: point.observed_at,
-                        value: point.value,
-                        status: null,
-                      }));
-                      try {
-                        await writeObservationPoints(
-                          work.timeseries.id,
-                          observationPoints,
-                          SOS_HTML_FALLBACK_ACQUISITION_METHOD,
-                        );
-                        const existingLastValueAt = work.timeseries.last_value_at
-                          ? Date.parse(work.timeseries.last_value_at)
-                          : Number.NaN;
-                        const newestPointAt = Date.parse(
-                          observationPoints[observationPoints.length - 1]
-                            .observed_at,
-                        );
-                        const latestPoints = Number.isFinite(existingLastValueAt) &&
-                            newestPointAt <= existingLastValueAt
-                          ? []
-                          : observationPoints;
-                        await upsertLastValue(
-                          work.timeseries.id,
-                          {},
-                          latestPoints,
-                          errorLogger,
-                          connector?.id ?? requestedConnectorId ?? null,
-                          connector?.connector_code ??
-                            requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-                        );
-                        polled += 1;
-                        successfullyPolledTimeseriesIds.add(
-                          work.timeseries.id,
-                        );
-                      } catch (error) {
-                        if (isIngestDbObservationWriteError(error)) {
-                          const writeError = error as {
-                            stats?: Record<string, unknown>;
-                          };
-                          if (writeError.stats) {
-                            mergeIngestDbObservationWriteStats(
-                              ingestDbObservationWriteStats,
-                              writeError.stats,
-                            );
-                          }
-                          observationsUpserted =
-                            ingestDbObservationWriteStats.committed_rows;
-                          ingestDbObservationWriteFailed = true;
-                        }
-                        const failure = asSosFetchFailure(error);
-                        if (isRuntimeDeadlineFailure(failure)) {
-                          addRuntimeDeadlineFailure(
-                            runtimeDeadlineFailures,
-                            work.timeseries.id,
-                            RUNTIME_DEADLINE_TIMESERIES_SAMPLE_LIMIT,
-                          );
-                          recordFallbackTimeseriesFailure(
-                            work.timeseries.id,
-                            "runtime_deadline",
-                            false,
-                          );
-                          continue;
-                        }
-                        recordFallbackTimeseriesFailure(
-                          work.timeseries.id,
-                          "observation_write_failed",
-                        );
-                        log.warn("UK-AIR HTML fallback series write failed.", {
-                          site_ref: siteRef,
-                          timeseries_id: work.timeseries.id,
-                          pollutant_code: work.pollutantCode,
-                          error: boundMessage(error),
-                        });
-                        await errorLogger.logError({
-                          source: "edge",
-                          severity: "error",
-                          message:
-                            "UK-AIR HTML fallback observation write failed.",
-                          stack: error instanceof Error
-                            ? error.stack
-                            : undefined,
-                          context: {
-                            site_ref: siteRef,
-                            pollutant_code: work.pollutantCode,
-                            timeseries_id: work.timeseries.id,
-                            error: boundMessage(error),
-                          },
-                          connector_code: connector?.connector_code ??
-                            requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-                          connector_id: connector?.id ??
-                            requestedConnectorId ?? null,
-                          timeseries_id: work.timeseries.id,
-                        });
-                      }
-                    }
-                  } catch (error) {
-                    const failure = asSosFetchFailure(error);
-                    const parserCode = error instanceof UkAirHtmlParseError
-                      ? error.code
-                      : null;
-                    const isRuntimeDeadline = isRuntimeDeadlineFailure(failure);
-                    for (const work of siteWork) {
-                      if (isRuntimeDeadline) {
-                        addRuntimeDeadlineFailure(
-                          runtimeDeadlineFailures,
-                          work.timeseries.id,
-                          RUNTIME_DEADLINE_TIMESERIES_SAMPLE_LIMIT,
-                        );
-                      }
-                      recordFallbackTimeseriesFailure(
-                        work.timeseries.id,
-                        parserCode ?? (isRuntimeDeadline
-                          ? "runtime_deadline"
-                          : "site_failed"),
-                        !isRuntimeDeadline,
-                      );
-                    }
-                    log.warn("UK-AIR HTML fallback site failed.", {
-                      site_ref: siteRef,
-                      affected_timeseries: siteWork.length,
-                      duration_ms: Math.max(0, Date.now() - siteStartedAt),
-                      chart_found: parserCode === "chart_not_found" ? false : null,
-                      parser_error: parserCode,
-                      upstream_status: failure.upstreamStatus,
-                      failure_kind: failure.kind,
-                      error: boundMessage(error),
-                    });
-                    if (!isRuntimeDeadline) {
-                      await errorLogger.logError({
-                        source: "edge",
-                        severity: "error",
-                        message: "UK-AIR HTML fallback site failed.",
-                        context: {
-                          site_ref: siteRef,
-                          affected_timeseries: siteWork.length,
-                          parser_error: parserCode,
-                          upstream_status: failure.upstreamStatus,
-                          failure_kind: failure.kind,
-                          error: boundMessage(error),
-                        },
-                        connector_code: connector?.connector_code ??
-                          requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-                        connector_id: connector?.id ??
-                          requestedConnectorId ?? null,
-                      });
-                    }
-                  }
-                },
-                shouldStop,
-              );
-            } catch (error) {
-              for (const row of series) {
-                recordFallbackTimeseriesFailure(
-                  row.id,
-                  "bridge_lookup_failed",
+                    if (error) throw error;
+                  },
+                });
+                mergeIngestDbObservationWriteStats(
+                  ingestDbObservationWriteStats,
+                  writeStats,
                 );
+                observationsUpserted =
+                  ingestDbObservationWriteStats.committed_rows;
+                const observsRows = observationRows.map((point) => {
+                  const numericValue = Number(point.value);
+                  return {
+                    connector_id: Number(point.connector_id),
+                    timeseries_id: Number(point.timeseries_id),
+                    observed_at: String(point.observed_at),
+                    value: Number.isFinite(numericValue) ? numericValue : null,
+                    status: point.status == null ? null : String(point.status),
+                  } satisfies ObservsObservationRow;
+                });
+                observsRowsPending.push(...observsRows);
               }
-              log.warn("UK-AIR HTML fallback could not resolve bridge mappings.", {
-                current_utc_day: currentUtcDay,
-                selected_timeseries: series.length,
-                error: boundMessage(error),
+              await upsertLastValue(
+                row.id,
+                data,
+                points,
+                errorLogger,
+                connector?.id ?? requestedConnectorId ?? null,
+                connector?.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
+              );
+              polled += 1;
+              successfullyPolledTimeseriesIds.add(Number(row.id));
+            } catch (err) {
+              if (isIngestDbObservationWriteError(err)) {
+                const writeError = err as {
+                  stats?: Record<string, unknown>;
+                };
+                if (writeError.stats) {
+                  mergeIngestDbObservationWriteStats(
+                    ingestDbObservationWriteStats,
+                    writeError.stats,
+                  );
+                }
+                observationsUpserted =
+                  ingestDbObservationWriteStats.committed_rows;
+                ingestDbObservationWriteFailed = true;
+              }
+              const failure = asSosFetchFailure(err);
+              if (isRuntimeDeadlineFailure(failure)) {
+                addRuntimeDeadlineFailure(
+                  runtimeDeadlineFailures,
+                  row.id,
+                  RUNTIME_DEADLINE_TIMESERIES_SAMPLE_LIMIT,
+                );
+                return;
+              }
+              if (failure.upstreamStatus === 502) {
+                gateway502Failures += 1;
+              }
+              if (isIndividuallyReportedTimeseriesFailure(failure)) {
+                individualTimeseriesErrorCount += 1;
+              }
+              errors.push(`${row.id}: upsert_failed`);
+              console.warn(`Poll failed for ${row.id}: ${failure.message}`);
+              await errorLogger.logError({
+                source: "edge",
+                severity: "error",
+                message: `Poll failed for timeseries ${row.id}.`,
+                stack: err instanceof Error ? err.stack : undefined,
+                context: {
+                  timeseries_ref: row.timeseries_ref,
+                  timespan,
+                  connector_id: connector?.id ?? requestedConnectorId ?? null,
+                  upstream_status: failure.upstreamStatus,
+                  upstream_failure_kind: failure.kind,
+                  upstream_error: failure.message,
+                },
+                connector_code: connector?.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
+                connector_id: connector?.id ?? requestedConnectorId ?? null,
+                timeseries_id: row.id,
               });
             }
-            htmlFallbackIncomplete = successfullyPolledTimeseriesIds.size <
-              series.length;
-            log.info("UK-AIR HTML fallback completed.", {
-              current_utc_day: currentUtcDay,
-              selected_timeseries: series.length,
-              recovered_timeseries: successfullyPolledTimeseriesIds.size,
-              failed_timeseries: fallbackFailedTimeseriesIds.size,
-              observations_upserted: observationsUpserted,
-              outcome: successfullyPolledTimeseriesIds.size === 0
-                ? "unrecovered"
-                : htmlFallbackIncomplete
-                ? "partial"
-                : "recovered",
-            });
-          }
+          }, shouldStop);
 
           const runtimeBudgetExceeded = runtimeBudgetStopObserved(
             timeBudgetHit,
@@ -1242,95 +842,67 @@ serve(async (req) => {
             });
           }
 
-          const htmlFallbackUnrecovered = Boolean(
-            htmlFallbackProbeFailure &&
-              successfullyPolledTimeseriesIds.size === 0 &&
-              observationsUpserted === 0,
+          const successfulCheckpointCandidates = checkpointCandidates.filter(
+            (row) => successfullyPolledTimeseriesIds.has(Number(row.id)),
           );
-          if (htmlFallbackUnrecovered && htmlFallbackProbeFailure) {
-            await recordUnrecoveredProbeFailure(htmlFallbackProbeFailure);
-          } else {
-            const successfulCheckpointCandidates = checkpointCandidates.filter(
-              (row) => successfullyPolledTimeseriesIds.has(Number(row.id)),
+          if (successfulCheckpointCandidates.length) {
+            await upsertSosTimeseriesCheckpoints(
+              successfulCheckpointCandidates.map((row) => ({ id: row.id })),
+              now.toISOString(),
+              errorLogger,
+              connector?.id ?? requestedConnectorId ?? null,
+              connector?.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
             );
-            if (successfulCheckpointCandidates.length) {
-              await upsertSosTimeseriesCheckpoints(
-                successfulCheckpointCandidates.map((row) => ({ id: row.id })),
-                now.toISOString(),
-                errorLogger,
-                connector?.id ?? requestedConnectorId ?? null,
-                connector?.connector_code ??
-                  requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-              );
-            }
-
-            if (!ingestDbObservationWriteFailed) {
-              const { error: pollUpdateError } = await postgrestRequest(
-                "PATCH",
-                "connectors",
-                { id: `eq.${connector.id}` },
-                { last_polled_at: now.toISOString() },
-                "return=minimal",
-              );
-              if (pollUpdateError) {
-                errors.push("connector last_polled_at update failed");
-                await errorLogger.logError({
-                  source: "edge",
-                  severity: "error",
-                  message: "Failed to update connectors.last_polled_at.",
-                  context: {
-                    connector_id: connector.id,
-                    error: pollUpdateError.message,
-                  },
-                  connector_code: connector.connector_code ??
-                    requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-                  connector_id: connector.id,
-                });
-              }
-            }
-
-            const hardGateway502Failure = gateway502Failures > 0 && polled === 0;
-            const partial = runtimeBudgetExceeded || htmlFallbackIncomplete;
-            status = hardGateway502Failure ? 502 : errors.length ? 207 : 200;
-            responsePayload = {
-              status: hardGateway502Failure ? "gateway_failure" : "ok",
-              run_message: hardGateway502Failure
-                ? "HTTP 502 Gateway Failure"
-                : htmlFallbackProbeFailure
-                ? htmlFallbackIncomplete
-                  ? "UK-AIR HTML fallback partially recovered SOS probe failure"
-                  : "UK-AIR HTML fallback recovered SOS probe failure"
-                : null,
-              connector_id: connector.id,
-              series_polled: polled,
-              observations_upserted: observationsUpserted,
-              ingestdb_observation_write: ingestDbObservationWriteStats,
-              cross_database_transaction: false,
-              observs_written: observsWritten,
-              observs_receipts_upserted: observsReceiptsUpserted,
-              observs_enqueued: observsEnqueued,
-              observs_flushes: observsFlushes,
-              http_502_failures: gateway502Failures,
-              errors,
-              individual_error_count: individualTimeseriesErrorCount,
-              runtime_deadline_failure_count: runtimeDeadlineFailures.count,
-              runtime_deadline_timeseries_sample:
-                runtimeDeadlineFailures.timeseriesSample,
-              partial,
-              stopped_reason: runtimeBudgetExceeded
-                ? "runtime_budget_exceeded"
-                : null,
-              ...(htmlFallbackProbeFailure
-                ? {
-                  upstream_status: htmlFallbackProbeFailure.upstreamStatus,
-                  upstream_failure_kind: htmlFallbackProbeFailure.kind,
-                  connector_http_status: connectorHttpStatusForProbe(
-                    htmlFallbackProbeFailure,
-                  ),
-                }
-                : {}),
-            };
           }
+
+          if (!ingestDbObservationWriteFailed) {
+            const { error: pollUpdateError } = await postgrestRequest(
+              "PATCH",
+              "connectors",
+              { id: `eq.${connector.id}` },
+              { last_polled_at: now.toISOString() },
+              "return=minimal",
+            );
+            if (pollUpdateError) {
+              errors.push("connector last_polled_at update failed");
+              await errorLogger.logError({
+                source: "edge",
+                severity: "error",
+                message: "Failed to update connectors.last_polled_at.",
+                context: {
+                  connector_id: connector.id,
+                  error: pollUpdateError.message,
+                },
+                connector_code: connector.connector_code ?? requestedConnectorCode ?? SOS_CONNECTOR_CODE,
+                connector_id: connector.id,
+              });
+            }
+          }
+
+          const hardGateway502Failure = gateway502Failures > 0 && polled === 0;
+          status = hardGateway502Failure ? 502 : errors.length ? 207 : 200;
+          responsePayload = {
+            status: hardGateway502Failure ? "gateway_failure" : "ok",
+            run_message: hardGateway502Failure
+              ? "HTTP 502 Gateway Failure"
+              : null,
+            connector_id: connector.id,
+            series_polled: polled,
+            observations_upserted: observationsUpserted,
+            ingestdb_observation_write: ingestDbObservationWriteStats,
+            cross_database_transaction: false,
+            observs_written: observsWritten,
+            observs_receipts_upserted: observsReceiptsUpserted,
+            observs_enqueued: observsEnqueued,
+            observs_flushes: observsFlushes,
+            http_502_failures: gateway502Failures,
+            errors,
+            individual_error_count: individualTimeseriesErrorCount,
+            runtime_deadline_failure_count: runtimeDeadlineFailures.count,
+            runtime_deadline_timeseries_sample: runtimeDeadlineFailures.timeseriesSample,
+            partial: runtimeBudgetExceeded,
+            stopped_reason: runtimeBudgetExceeded ? "runtime_budget_exceeded" : null,
+          };
         }
       }
     }
@@ -2226,21 +1798,37 @@ async function loadConnector(
 
 async function loadTimeseries(
   connectorId: string,
-): Promise<SosTimeseriesRow[]> {
-  const rows: SosTimeseriesRow[] = [];
+): Promise<Array<{
+  id: number;
+  timeseries_ref: string | null;
+  service_ref: string | null;
+  phenomenon_id: string | null;
+  last_value_at: string | null;
+}>> {
+  const rows: Array<{
+    id: number;
+    timeseries_ref: string | null;
+    service_ref: string | null;
+    phenomenon_id: string | null;
+    last_value_at: string | null;
+  }> = [];
   let offset = 0;
   while (true) {
-    const { data, error } = await postgrestRequest<SosTimeseriesRow[]>(
-      "GET",
-      "timeseries",
-      {
-        select: "id,timeseries_ref,service_ref,phenomenon_id,last_value_at,uom",
-        connector_id: `eq.${connectorId}`,
-        ended_at: "is.null",
-        limit: String(PAGE_SIZE),
-        offset: String(offset),
-      },
-    );
+    const { data, error } = await postgrestRequest<
+      Array<{
+        id: number;
+        timeseries_ref: string | null;
+        service_ref: string | null;
+        phenomenon_id: string | null;
+        last_value_at: string | null;
+      }>
+    >("GET", "timeseries", {
+      select: "id,timeseries_ref,service_ref,phenomenon_id,last_value_at",
+      connector_id: `eq.${connectorId}`,
+      ended_at: "is.null",
+      limit: String(PAGE_SIZE),
+      offset: String(offset),
+    });
     if (error) {
       throw new Error(`Failed to load timeseries: ${error.message}`);
     }
@@ -2253,7 +1841,6 @@ async function loadTimeseries(
       service_ref: row.service_ref ? String(row.service_ref) : null,
       phenomenon_id: row.phenomenon_id ? String(row.phenomenon_id) : null,
       last_value_at: row.last_value_at ? String(row.last_value_at) : null,
-      uom: row.uom ? String(row.uom) : null,
     })));
     if (data.length < PAGE_SIZE) {
       break;
@@ -2450,27 +2037,6 @@ async function probeSosUpstream(
       failure: asSosFetchFailure(err),
     };
   }
-}
-
-async function loadUkAirHtmlBridgeRows(
-  currentUtcDay: string,
-): Promise<UkAirHtmlBridgeRow[]> {
-  const { data, error } = await postgrestRequest<UkAirHtmlBridgeRow[]>(
-    "POST",
-    "rpc/uk_aq_rpc_sos_uk_air_flat_file_mappings",
-    {},
-    {
-      p_from_day: currentUtcDay,
-      p_to_day: currentUtcDay,
-      p_pollutant_codes: [...UK_AIR_HTML_BRIDGE_POLLUTANT_CODES],
-    },
-    undefined,
-    "uk_aq_public",
-  );
-  if (error) {
-    throw new Error(`UK-AIR HTML bridge lookup failed: ${error.message}`);
-  }
-  return Array.isArray(data) ? data : [];
 }
 
 let emptySeriesLogs = 0;

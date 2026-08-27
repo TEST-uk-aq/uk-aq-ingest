@@ -122,11 +122,6 @@ type StationRow = {
   station_ref: string;
 };
 
-type SelectedTimeseriesRow = {
-  id: number;
-  station_id: number;
-};
-
 type StationCheckpointRow = {
   station_id: number;
   next_due_at: string | null;
@@ -456,7 +451,7 @@ async function loadTimeseriesRows(
   connectorId: number,
   stationIds: number[],
   timeseriesLimit: number,
-): Promise<SelectedTimeseriesRow[]> {
+): Promise<Array<{ id: number; station_id: number }>> {
   if (!stationIds.length || timeseriesLimit <= 0) {
     return [];
   }
@@ -481,59 +476,9 @@ async function loadTimeseriesRows(
       id: toIntegerOrNull(toObject(row)?.id),
       station_id: toIntegerOrNull(toObject(row)?.station_id),
     }))
-    .filter((row): row is SelectedTimeseriesRow =>
+    .filter((row): row is { id: number; station_id: number } =>
       row.id !== null && row.station_id !== null
     );
-}
-
-async function loadSuccessfullyPolledTimeseriesIds(
-  timeseriesIds: string[],
-  runStartedAtIso: string,
-): Promise<Set<number>> {
-  const successfullyPolled = new Set<number>();
-  if (!timeseriesIds.length) return successfullyPolled;
-
-  const runStartedAtMs = Date.parse(runStartedAtIso);
-  let offset = 0;
-  const limit = 1000;
-  while (true) {
-    const response = await postgrestRequest(
-      "GET",
-      "sos_timeseries_checkpoints",
-      {
-        schema: UK_AQ_RAW_SCHEMA,
-        query: {
-          select: "timeseries_id,last_polled_at",
-          timeseries_id: postgrestIn(timeseriesIds),
-          last_polled_at: `gte.${runStartedAtIso}`,
-          order: "timeseries_id.asc",
-          limit: String(limit),
-          offset: String(offset),
-        },
-      },
-    );
-    if (!response.ok) {
-      throw new Error(
-        `Failed to load SOS timeseries checkpoints (${response.status}): ${response.text}`,
-      );
-    }
-    const rows = Array.isArray(response.data) ? response.data : [];
-    for (const row of rows) {
-      const record = toObject(row);
-      const timeseriesId = toIntegerOrNull(record?.timeseries_id);
-      const lastPolledAt = toStringOrNull(record?.last_polled_at);
-      if (
-        timeseriesId !== null && lastPolledAt &&
-        Number.isFinite(runStartedAtMs) &&
-        Date.parse(lastPolledAt) >= runStartedAtMs
-      ) {
-        successfullyPolled.add(timeseriesId);
-      }
-    }
-    if (rows.length < limit) break;
-    offset += limit;
-  }
-  return successfullyPolled;
 }
 
 async function fetchMaxTimeseriesLastValueAt(
@@ -793,7 +738,6 @@ async function buildIngestPayload(
   staleLimit: number;
   timeseriesLimit: number;
   stationRows: StationRow[];
-  timeseriesRows: SelectedTimeseriesRow[];
   timeseriesIds: string[];
 }> {
   const payload: Record<string, unknown> = {
@@ -830,7 +774,6 @@ async function buildIngestPayload(
     staleLimit,
     timeseriesLimit,
     stationRows,
-    timeseriesRows,
     timeseriesIds,
   };
 }
@@ -1351,27 +1294,8 @@ async function main(): Promise<void> {
       const checkpointByStation = await loadStationCheckpointRows(
         payloadPlan.stationRows.map((row) => row.id),
       );
-      const recoveredFallback =
-        toStringOrNull(payload?.upstream_failure_kind) !== null;
-      let checkpointStationRows = payloadPlan.stationRows;
-      if (recoveredFallback) {
-        const successfullyPolledTimeseriesIds = payload?.partial === true
-          ? await loadSuccessfullyPolledTimeseriesIds(
-            payloadPlan.timeseriesIds,
-            runStartedAtIso,
-          )
-          : new Set(payloadPlan.timeseriesRows.map((row) => row.id));
-        const successfullyPolledStationIds = new Set(
-          payloadPlan.timeseriesRows
-            .filter((row) => successfullyPolledTimeseriesIds.has(row.id))
-            .map((row) => row.station_id),
-        );
-        checkpointStationRows = payloadPlan.stationRows.filter((station) =>
-          successfullyPolledStationIds.has(station.id)
-        );
-      }
       const checkpointRows = buildStationCheckpointRows(
-        checkpointStationRows,
+        payloadPlan.stationRows,
         latestByStation,
         checkpointByStation,
         checkpointNow,
