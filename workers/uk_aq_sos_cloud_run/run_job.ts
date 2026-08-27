@@ -18,6 +18,10 @@ import {
   type SosSelectedTimeseriesDispatchRow,
   type SosSelectedWorkPlan,
 } from "../../supabase/functions/ingest_sos/selected_work.ts";
+import {
+  type PostgrestResponse,
+  requestWithTransientJwtFutureRetry,
+} from "./postgrest_auth_retry.ts";
 
 const CONNECTOR_CODE =
   (Deno.env.get("SOS_CONNECTOR_CODE") || "sos").trim();
@@ -363,29 +367,48 @@ async function postgrestRequest(
     query?: Record<string, string>;
     body?: unknown;
     prefer?: string;
+    transientJwtFutureRetry?: {
+      operation: string;
+    };
   } = {},
-): Promise<{ ok: boolean; status: number; text: string; data: unknown }> {
+): Promise<PostgrestResponse> {
   const schema = options.schema || UK_AQ_CORE_SCHEMA;
   const write = method !== "GET";
   const headers = postgrestHeaders(schema, write);
   if (options.prefer) {
     headers.Prefer = options.prefer;
   }
-  const response = await fetch(withQuery(path, options.query), {
-    method,
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
-  const text = await response.text();
-  let data: unknown = null;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = text;
+  const url = withQuery(path, options.query);
+  const body = options.body === undefined
+    ? undefined
+    : JSON.stringify(options.body);
+  const request = async (): Promise<PostgrestResponse> => {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body,
+    });
+    const text = await response.text();
+    let data: unknown = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
     }
+    return { ok: response.ok, status: response.status, text, data };
+  };
+
+  if (!options.transientJwtFutureRetry) {
+    return await request();
   }
-  return { ok: response.ok, status: response.status, text, data };
+  return await requestWithTransientJwtFutureRetry(request, {
+    operation: options.transientJwtFutureRetry.operation,
+    target: `${method} ${path}`,
+    logRetry: (details) =>
+      logSummary("postgrest_transient_jwt_future_retry", details),
+  });
 }
 
 async function loadSelectedWork(params: {
@@ -406,6 +429,9 @@ async function loadSelectedWork(params: {
         p_pollutant_codes: [...UK_AIR_HTML_BRIDGE_POLLUTANT_CODES],
       },
       schema: UK_AQ_PUBLIC_SCHEMA,
+      transientJwtFutureRetry: {
+        operation: "load_sos_selected_work",
+      },
     },
   );
   if (!response.ok) {
@@ -876,6 +902,9 @@ async function loadConnector(): Promise<ConnectorConfig | null> {
         "id,connector_code,poll_enabled,poll_interval_minutes,poll_window_hours,poll_timeseries_batch_size,scheduler_backend,last_polled_at,last_run_start,last_run_end,last_run_status",
       connector_code: `eq.${CONNECTOR_CODE}`,
       limit: "1",
+    },
+    transientJwtFutureRetry: {
+      operation: "load_connector",
     },
   });
   if (!response.ok) {
