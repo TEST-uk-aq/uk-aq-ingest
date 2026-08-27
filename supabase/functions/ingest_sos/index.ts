@@ -38,6 +38,10 @@ import {
   UkAirHtmlParseError,
 } from "./uk_aq_html_parser.ts";
 import { recordSosObservationChanges } from "./run_metrics.ts";
+import {
+  readSosCompactChildPayload,
+  type SosSelectedTimeseriesMetadata,
+} from "./selected_work.ts";
 
 type PollRequest = {
   connector_id?: string;
@@ -47,6 +51,9 @@ type PollRequest = {
   pollutants?: string[] | string;
   timeseries_ids?: string[] | string;
   timeseries_limit?: number;
+  selected_timeseries?: unknown;
+  uk_air_html_bridge_rows?: unknown;
+  uk_air_html_bridge_day_utc?: unknown;
 };
 
 type ConnectorRow = {
@@ -77,14 +84,7 @@ type ErrorLogEntry = {
   timeseries_id?: string | number | null;
 };
 
-type SosTimeseriesRow = {
-  id: number;
-  timeseries_ref: string | null;
-  service_ref: string | null;
-  phenomenon_id: string | null;
-  last_value_at: string | null;
-  uom: string | null;
-};
+type SosTimeseriesRow = SosSelectedTimeseriesMetadata;
 
 const DEFAULT_BASE_URL = "https://uk-air.defra.gov.uk/sos-ukair/api/v1";
 const DEFAULT_SERVICE_LABEL = "SOS";
@@ -421,6 +421,10 @@ serve(async (req) => {
           accepted_ids: requestedTimeseriesIds?.length ?? 0,
         });
       }
+      const compactSelectedWork = readSosCompactChildPayload(
+        payload ?? {},
+        requestedTimeseriesIds,
+      );
 
       log.info("Poll request", {
         connector_id: requestedConnectorId ?? null,
@@ -430,6 +434,7 @@ serve(async (req) => {
         pollutants: requestedPollutants?.length ?? null,
         timeseries_ids: requestedTimeseriesIds?.length ?? null,
         timeseries_limit: requestedLimit ?? null,
+        selected_metadata_transport: compactSelectedWork ? "compact" : "legacy",
       });
 
       connector = await loadConnector(
@@ -561,8 +566,10 @@ serve(async (req) => {
           };
         };
 
-        let series = await loadTimeseries(connector.id);
-        if (requestedTimeseriesIds?.length) {
+        let series = compactSelectedWork
+          ? compactSelectedWork.selectedTimeseries.slice()
+          : await loadTimeseries(connector.id);
+        if (!compactSelectedWork && requestedTimeseriesIds?.length) {
           const requestedSet = new Set(requestedTimeseriesIds);
           series = series.filter((row) => requestedSet.has(row.id));
         }
@@ -927,7 +934,17 @@ serve(async (req) => {
             };
 
             try {
-              const bridgeRows = await loadUkAirHtmlBridgeRows(currentUtcDay);
+              if (
+                compactSelectedWork &&
+                compactSelectedWork.bridgeDayUtc !== currentUtcDay
+              ) {
+                throw new Error(
+                  `SOS compact HTML bridge day ${compactSelectedWork.bridgeDayUtc} does not match current UTC day ${currentUtcDay}.`,
+                );
+              }
+              const bridgeRows: UkAirHtmlBridgeRow[] = compactSelectedWork
+                ? compactSelectedWork.bridgeRows
+                : await loadUkAirHtmlBridgeRows(currentUtcDay);
               const mapping = resolveUkAirHtmlMappings(series, bridgeRows);
               for (const id of mapping.unmappedTimeseriesIds) {
                 recordFallbackTimeseriesFailure(id, "unmapped");

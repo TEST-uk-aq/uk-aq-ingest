@@ -11,6 +11,13 @@ import {
   isRecognizedSosDependencyFailure,
   type SosCloudRunChildResult,
 } from "./result_contract.ts";
+import { UK_AIR_HTML_BRIDGE_POLLUTANT_CODES } from "../../supabase/functions/ingest_sos/uk_aq_html_parser.ts";
+import {
+  normalizeSosSelectedWorkRpcResponse,
+  type SosSelectedStationRow,
+  type SosSelectedTimeseriesDispatchRow,
+  type SosSelectedWorkPlan,
+} from "../../supabase/functions/ingest_sos/selected_work.ts";
 
 const CONNECTOR_CODE =
   (Deno.env.get("SOS_CONNECTOR_CODE") || "sos").trim();
@@ -63,6 +70,7 @@ const UK_AQ_CORE_SCHEMA = (Deno.env.get("UK_AQ_CORE_SCHEMA") || "uk_aq_core")
   .trim();
 const UK_AQ_RAW_SCHEMA = (Deno.env.get("UK_AQ_RAW_SCHEMA") || "uk_aq_raw")
   .trim();
+const UK_AQ_PUBLIC_SCHEMA = "uk_aq_public";
 const REST_BASE_URL = `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1`;
 const UK_AQ_DROPBOX_ROOT = normalizeDropboxPath(
   Deno.env.get("UK_AQ_DROPBOX_ROOT") ?? "",
@@ -117,15 +125,8 @@ type DispatchClaimRow = {
   last_run_end: unknown;
 };
 
-type StationRow = {
-  id: number;
-  station_ref: string;
-};
-
-type SelectedTimeseriesRow = {
-  id: number;
-  station_id: number;
-};
+type StationRow = SosSelectedStationRow;
+type SelectedTimeseriesRow = SosSelectedTimeseriesDispatchRow;
 
 type StationCheckpointRow = {
   station_id: number;
@@ -387,103 +388,32 @@ async function postgrestRequest(
   return { ok: response.ok, status: response.status, text, data };
 }
 
-async function loadStationRefs(params: {
+async function loadSelectedWork(params: {
   batchLimit: number;
-  staleLimit?: number;
-}): Promise<string[]> {
-  const body: Record<string, unknown> = {
-    batch_limit: Math.max(1, Math.trunc(params.batchLimit)),
-  };
-  if (
-    params.staleLimit !== undefined &&
-    Number.isFinite(params.staleLimit) &&
-    params.staleLimit > 0
-  ) {
-    body.stale_limit = Math.trunc(params.staleLimit);
-  }
+  staleLimit: number;
+  timeseriesLimit: number;
+  dayUtc: string;
+}): Promise<SosSelectedWorkPlan> {
   const response = await postgrestRequest(
     "POST",
-    "rpc/sos_select_station_refs",
+    "rpc/uk_aq_rpc_sos_selected_work_v1",
     {
-      body,
-      schema: UK_AQ_CORE_SCHEMA,
+      body: {
+        p_batch_limit: Math.max(1, Math.trunc(params.batchLimit)),
+        p_stale_limit: Math.max(0, Math.trunc(params.staleLimit)),
+        p_timeseries_limit: Math.max(1, Math.trunc(params.timeseriesLimit)),
+        p_day_utc: params.dayUtc,
+        p_pollutant_codes: [...UK_AIR_HTML_BRIDGE_POLLUTANT_CODES],
+      },
+      schema: UK_AQ_PUBLIC_SCHEMA,
     },
   );
   if (!response.ok) {
     throw new Error(
-      `Failed to load SOS station refs (${response.status}): ${response.text}`,
+      `Failed to load SOS selected work (${response.status}): ${response.text}`,
     );
   }
-  if (!Array.isArray(response.data)) {
-    return [];
-  }
-  return response.data
-    .map((value) => toStringOrNull(value))
-    .filter((value): value is string => Boolean(value));
-}
-
-async function loadStationRows(
-  connectorId: number,
-  stationRefs: string[],
-): Promise<StationRow[]> {
-  if (!stationRefs.length) {
-    return [];
-  }
-  const response = await postgrestRequest("GET", "stations", {
-    query: {
-      select: "id,station_ref",
-      connector_id: `eq.${connectorId}`,
-      station_ref: postgrestIn(stationRefs),
-      removed_at: "is.null",
-      limit: "1000",
-    },
-  });
-  if (!response.ok) {
-    throw new Error(
-      `Failed to load SOS station rows (${response.status}): ${response.text}`,
-    );
-  }
-  const rows = Array.isArray(response.data) ? response.data : [];
-  return rows
-    .map((row) => ({
-      id: toIntegerOrNull(toObject(row)?.id),
-      station_ref: toStringOrNull(toObject(row)?.station_ref),
-    }))
-    .filter((row): row is StationRow => row.id !== null && row.station_ref !== null);
-}
-
-async function loadTimeseriesRows(
-  connectorId: number,
-  stationIds: number[],
-  timeseriesLimit: number,
-): Promise<SelectedTimeseriesRow[]> {
-  if (!stationIds.length || timeseriesLimit <= 0) {
-    return [];
-  }
-  const response = await postgrestRequest("GET", "timeseries", {
-    query: {
-      select: "id,station_id,last_value_at",
-      connector_id: `eq.${connectorId}`,
-      station_id: postgrestIn(stationIds),
-      ended_at: "is.null",
-      order: "last_value_at.asc.nullsfirst,id.asc",
-      limit: String(timeseriesLimit),
-    },
-  });
-  if (!response.ok) {
-    throw new Error(
-      `Failed to load SOS timeseries rows (${response.status}): ${response.text}`,
-    );
-  }
-  const rows = Array.isArray(response.data) ? response.data : [];
-  return rows
-    .map((row) => ({
-      id: toIntegerOrNull(toObject(row)?.id),
-      station_id: toIntegerOrNull(toObject(row)?.station_id),
-    }))
-    .filter((row): row is SelectedTimeseriesRow =>
-      row.id !== null && row.station_id !== null
-    );
+  return normalizeSosSelectedWorkRpcResponse(response.data);
 }
 
 async function recordStationAttempts(
@@ -821,7 +751,6 @@ async function upsertStationCheckpoints(
 
 async function buildIngestPayload(
   connector: ConnectorConfig | null,
-  connectorId: number,
 ): Promise<{
   payload: Record<string, unknown>;
   windowHours: number;
@@ -841,23 +770,24 @@ async function buildIngestPayload(
   const stationBatchLimit =
     toPositiveIntegerOrNull(payload.station_batch_limit) ?? getStationBatchLimit(connector);
   const staleLimit = toPositiveIntegerOrNull(payload.stale_limit) ?? DEFAULT_STALE_LIMIT;
-
-  const stationRefs = await loadStationRefs({
+  const bridgeDayUtc = new Date().toISOString().slice(0, 10);
+  const selectedWork = await loadSelectedWork({
     batchLimit: stationBatchLimit,
     staleLimit,
-  });
-  const stationRows = await loadStationRows(connectorId, stationRefs);
-  const timeseriesRows = await loadTimeseriesRows(
-    connectorId,
-    stationRows.map((row) => row.id),
     timeseriesLimit,
-  );
+    dayUtc: bridgeDayUtc,
+  });
+  const stationRows = selectedWork.stationRows;
+  const timeseriesRows = selectedWork.timeseriesRows;
   const timeseriesIds = timeseriesRows.map((row) => String(row.id));
 
   payload.connector_code = connectorCode;
   payload.window_hours = windowHours;
   payload.timeseries_limit = timeseriesLimit;
   payload.timeseries_ids = timeseriesIds;
+  payload.selected_timeseries = selectedWork.selectedTimeseries;
+  payload.uk_air_html_bridge_rows = selectedWork.bridgeRows;
+  payload.uk_air_html_bridge_day_utc = bridgeDayUtc;
 
   return {
     payload,
@@ -1301,7 +1231,7 @@ async function main(): Promise<void> {
   let ingestResponse: IngestResponse | null = null;
 
   try {
-    const payloadPlan = await buildIngestPayload(connector, connectorId);
+    const payloadPlan = await buildIngestPayload(connector);
 
     if (!payloadPlan.stationRows.length) {
       await recordSkippedRun(connectorId, runStartedAtIso, "no_station_refs");
