@@ -686,9 +686,6 @@ class UkAirClient:
                 if self._retry_failed(attempt, failure):
                     continue
                 resp.raise_for_status()
-                raise RuntimeError(
-                    f"UK-AIR SOS request failed after {self.retries} attempts: {failure}"
-                )
 
             try:
                 resp.raise_for_status()
