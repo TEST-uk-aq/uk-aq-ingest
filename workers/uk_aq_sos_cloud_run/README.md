@@ -21,11 +21,17 @@ Dropbox behavior in Cloud Run:
 Run feed note:
 - If the ingest response omits `last_observed_at`, the worker derives it from
   `max(timeseries.last_value_at)` across the run's selected timeseries ids.
+- Run payloads distinguish `stations_selected`, `stations_attempted`, and
+  `stations_polled`; the last is the distinct station count backed by a
+  successful current-run timeseries checkpoint.
 - Station batch note:
-  - By default, station batch size follows `connectors.poll_timeseries_batch_size`
-    (dashboard `batch_size`) so switching backends keeps one control surface.
-  - `SOS_STATION_BATCH_LIMIT` is fallback-only when connector batch size is unset.
-  - `batch_size` is a total cap across tier1, tier2, and stale picks (stale does not add extra rows above `batch_size`).
+  - Station selection is independently capped by `SOS_STATION_BATCH_LIMIT`
+    (default `500`) or an explicit request `station_batch_limit` override.
+  - `connectors.poll_timeseries_batch_size` independently caps acquired
+    timeseries and does not determine the station limit.
+  - The station limit is a total cap across tier1, tier2, and stale picks.
+    `SOS_STALE_LIMIT` reserves minimum stale progress; stale work may fill more
+    unused places when ordinary work under-fills the total cap.
 
 If no station refs are due, run is recorded as `skipped` (`no_station_refs`).
 If station refs are selected but no timeseries are found, run is `skipped` (`no_timeseries_ids`).
@@ -85,7 +91,7 @@ gcloud run deploy uk-aq-sos-ingest \
 - `SOS_CLAIM_TIMEOUT_MINUTES` (default `30`)
 - `SOS_DEFAULT_WINDOW_HOURS` (default `6`)
 - `SOS_DEFAULT_TIMESERIES_LIMIT` (default `100`)
-- `SOS_STATION_BATCH_LIMIT` (default `100`)
+- `SOS_STATION_BATCH_LIMIT` (default `500`)
 - `SOS_STALE_LIMIT` (default `4`)
 - `SOS_INGEST_SCRIPT_PATH` (default `/app/runtime/ingest_sos/index.ts`)
 - `SOS_MAX_RUNTIME_SECONDS` (ingest runtime budget inside handler)

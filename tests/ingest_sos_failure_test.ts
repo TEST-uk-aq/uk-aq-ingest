@@ -302,6 +302,9 @@ Deno.test("SOS Cloud Run keeps local failures generic and preserves partial runt
       runtime_deadline_failure_count: 0,
       runtime_deadline_timeseries_sample: [],
       individual_error_count: 2,
+      stations_selected: 5,
+      stations_attempted: 4,
+      stations_polled: 3,
       series_polled: 4,
       observations_upserted: 7,
     },
@@ -316,7 +319,12 @@ Deno.test("SOS Cloud Run keeps local failures generic and preserves partial runt
     "partial",
     "runtime_budget_exceeded",
   );
-  if (!result || result.httpStatus !== 207 || result.payload.partial !== true) {
+  if (
+    !result || result.httpStatus !== 207 || result.payload.partial !== true ||
+    result.payload.stations_selected !== 5 ||
+    result.payload.stations_attempted !== 4 ||
+    result.payload.stations_polled !== 3
+  ) {
     throw new Error(
       `Partial result was not retained: ${JSON.stringify(result)}`,
     );
@@ -336,7 +344,10 @@ Deno.test("SOS Cloud Run writes and accepts compact results for every skipped ou
     if (
       !isSosCloudRunChildResult(result) || result.httpStatus !== 200 ||
       result.payload.ok !== true || result.payload.status !== "skipped" ||
-      result.payload.reason !== reason || result.payload.connector_id !== 42
+      result.payload.reason !== reason || result.payload.connector_id !== 42 ||
+      result.payload.stations_selected !== 0 ||
+      result.payload.stations_attempted !== 0 ||
+      result.payload.stations_polled !== 0
     ) {
       throw new Error(`Skipped result was invalid: ${JSON.stringify(result)}`);
     }
