@@ -144,7 +144,9 @@ jobs:
               handle.write(f"OPENAQ_POLL_WAS_ENABLED={'1' if poll_enabled else '0'}\n")
           PY
 
-      - name: Sync stations
+      - name: Sync UK-AIR SOS stations
+        id: sync_sos_stations
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
@@ -214,6 +216,8 @@ jobs:
           PY
 
       - name: Discover UK-AIR SOS timeseries
+        id: discover_sos_timeseries
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
@@ -558,6 +562,19 @@ jobs:
           OBS_AQIDB_REPAIR_OBSERVED_PROPERTY_IDS: ${{ vars.OBS_AQIDB_REPAIR_OBSERVED_PROPERTY_IDS }}
         run: |
           python3 scripts/stations_daily/sync_obs_aqidb_uk_aq_core.py
+
+      - name: Fail Daily Stations if SOS work failed
+        if: >-
+          always() &&
+          (
+            steps.sync_sos_stations.outcome == 'failure' ||
+            steps.discover_sos_timeseries.outcome == 'failure'
+          )
+        run: |
+          echo "ERROR: UK-AIR SOS work failed during Daily Stations."
+          echo "sync_sos_stations outcome: ${{ steps.sync_sos_stations.outcome }}"
+          echo "discover_sos_timeseries outcome: ${{ steps.discover_sos_timeseries.outcome }}"
+          exit 1
 
       - name: Report daily task health
         if: always()
