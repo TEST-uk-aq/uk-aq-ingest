@@ -671,12 +671,26 @@ class UkAirClient:
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         url = f"{self.base_url}/{path.lstrip('/')}"
+        request_label = self._request_label(path, params)
         for attempt in range(1, self.retries + 1):
             try:
                 resp = self.session.get(url, params=params, timeout=self.timeout)
-                if resp.status_code in (429, 500, 502, 503, 504):
-                    self._sleep(attempt)
+            except requests.RequestException as exc:
+                failure = f"{type(exc).__name__} {request_label}: {exc}"
+                if self._retry_failed(attempt, failure):
                     continue
+                raise
+
+            if resp.status_code in (429, 500, 502, 503, 504):
+                failure = f"HTTP {resp.status_code} {request_label}"
+                if self._retry_failed(attempt, failure):
+                    continue
+                resp.raise_for_status()
+                raise RuntimeError(
+                    f"UK-AIR SOS request failed after {self.retries} attempts: {failure}"
+                )
+
+            try:
                 resp.raise_for_status()
                 data = resp.json()
                 if self.raw_recorder:
@@ -690,36 +704,60 @@ class UkAirClient:
                         attempt,
                         self.retries,
                         status,
-                        self._request_label(path, params),
+                        request_label,
                     )
                     return {}
                 level = logging.INFO if status == 400 else logging.WARNING
-                LOG.log(
-                    level,
-                    "Request failed (attempt %s/%s): HTTP %s %s",
+                if self._retry_failed(
                     attempt,
-                    self.retries,
-                    status,
-                    self._request_label(path, params),
-                )
-                if attempt == self.retries:
-                    raise
-                self._sleep(attempt)
+                    f"HTTP {status} {request_label}",
+                    level=level,
+                ):
+                    continue
+                raise
             except requests.RequestException as exc:
-                LOG.warning(
-                    "Request failed (attempt %s/%s): %s",
-                    attempt,
-                    self.retries,
-                    exc,
-                )
-                if attempt == self.retries:
-                    raise
-                self._sleep(attempt)
-        return {}
+                failure = f"{type(exc).__name__} {request_label}: {exc}"
+                if self._retry_failed(attempt, failure):
+                    continue
+                raise
+        raise RuntimeError(
+            f"UK-AIR SOS request ended without a response after {self.retries} attempts: "
+            f"{request_label}"
+        )
+
+    def _retry_delay(self, attempt: int) -> int:
+        return min(30, 2**attempt)
+
+    def _retry_failed(
+        self,
+        attempt: int,
+        failure: str,
+        *,
+        level: int = logging.WARNING,
+    ) -> bool:
+        if attempt == self.retries:
+            LOG.log(
+                level,
+                "Request failed (attempt %s/%s): %s; retries exhausted.",
+                attempt,
+                self.retries,
+                failure,
+            )
+            return False
+        delay = self._retry_delay(attempt)
+        LOG.log(
+            level,
+            "Request failed (attempt %s/%s): %s; retrying in %ss.",
+            attempt,
+            self.retries,
+            failure,
+            delay,
+        )
+        self._sleep(attempt)
+        return True
 
     def _sleep(self, attempt: int) -> None:
-        delay = min(30, 2**attempt)
-        time.sleep(delay)
+        time.sleep(self._retry_delay(attempt))
 
     def _request_label(self, path: str, params: Optional[Dict[str, Any]]) -> str:
         if not params:
@@ -2985,8 +3023,7 @@ def main() -> None:
             context={"station_like": args.station_like, "region": args.region},
             exc=exc,
         )
-        if isinstance(exc, IngestDbObservationWriteError):
-            raise
+        raise
     finally:
         if raw_session:
             raw_session.finalize()
