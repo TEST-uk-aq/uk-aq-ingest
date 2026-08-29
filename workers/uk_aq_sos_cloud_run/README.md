@@ -94,7 +94,7 @@ gcloud run deploy uk-aq-sos-ingest \
 - `SOS_STATION_BATCH_LIMIT` (default `1000`)
 - `SOS_STALE_LIMIT` (default `4`)
 - `SOS_INGEST_SCRIPT_PATH` (default `/app/runtime/ingest_sos/index.ts`)
-- `SOS_MAX_RUNTIME_SECONDS` (ingest runtime budget inside handler)
+- `SOS_MAX_RUNTIME_SECONDS` (default `600`; ingest runtime budget inside handler)
 - `SOS_LOCAL_PORT` (default `8000`; local ingest server port, separate from Cloud Run `PORT`)
 - `SB_UK_AQ_CRON_SECRET` (if set, local call sends `x-cron-secret`)
 - `OBSERVS_WRITE_MODE` (workflow default: `pubsub_only`)
