@@ -28,6 +28,7 @@ import {
 import {
   fetchUkAirHtmlPage,
   isUkAirHtmlFallbackProbeFailure,
+  prepareUkAirHtmlRequestStart,
   resolveUkAirHtmlMappings,
   type UkAirHtmlBridgeRow,
   type UkAirHtmlMappedWork,
@@ -277,7 +278,7 @@ async function postgrestRequest<T>(
  */
 async function recordStationPollAttempt(
   stationIds: number[],
-  attemptedAtIso: string,
+  polledAtIso: string,
 ): Promise<void> {
   const distinctStationIds = [...new Set(stationIds)].sort((a, b) => a - b);
   if (!distinctStationIds.length) return;
@@ -288,7 +289,9 @@ async function recordStationPollAttempt(
     {},
     {
       p_station_ids: distinctStationIds,
-      p_attempted_at: attemptedAtIso,
+      // Historic RPC parameter name; schema will record this as station
+      // last_polled_at under the new attempt-semantic contract.
+      p_attempted_at: polledAtIso,
     },
     undefined,
     UK_AQ_CORE_SCHEMA,
@@ -409,6 +412,7 @@ serve(async (req) => {
   const shouldStop = () => Date.now() >= runtimeDeadline;
   let timeBudgetHit = false;
   let individualTimeseriesErrorCount = 0;
+  let selectedWorkIncomplete = false;
   const runtimeDeadlineFailures: RuntimeDeadlineFailureSummary = {
     count: 0,
     timeseriesSample: [],
@@ -876,6 +880,24 @@ serve(async (req) => {
                 if (shouldStop()) {
                   return;
                 }
+                let requestStart: FetchRequestStart;
+                try {
+                  requestStart = prepareSosRequestStart(runtimeDeadline);
+                } catch (error) {
+                  const failure = asSosFetchFailure(error);
+                  if (isRuntimeDeadlineFailure(failure)) {
+                    addRuntimeDeadlineFailure(
+                      runtimeDeadlineFailures,
+                      row.id,
+                      RUNTIME_DEADLINE_TIMESERIES_SAMPLE_LIMIT,
+                    );
+                  } else {
+                    errors.push(`${row.id}:request_preflight_failed`);
+                    individualTimeseriesErrorCount += 1;
+                    selectedWorkIncomplete = true;
+                  }
+                  return;
+                }
                 try {
                   await recordStationPollAttempt(
                     [row.station_id],
@@ -884,6 +906,8 @@ serve(async (req) => {
                   attemptedStationIds.add(row.station_id);
                 } catch (error) {
                   errors.push(`${row.id}:station_attempt_record_failed`);
+                  individualTimeseriesErrorCount += 1;
+                  selectedWorkIncomplete = true;
                   console.warn(
                     `Station attempt persistence failed for timeseries ${row.id}: ${boundMessage(error)}`,
                   );
@@ -911,7 +935,7 @@ serve(async (req) => {
                     `/timeseries/${encodeURIComponent(sourceId)}/getData`,
                     { timespan, format: "tvp" },
                     rawRecorder,
-                    { deadlineMs: runtimeDeadline },
+                    { deadlineMs: runtimeDeadline, initialRequestStart: requestStart },
                   );
                   const points = parseDatapoints(data?.values, row.id);
                   await writeObservationPoints(
@@ -1059,6 +1083,9 @@ serve(async (req) => {
                     const siteStationIds = [
                       ...new Set(siteWork.map((work) => work.timeseries.station_id)),
                     ];
+                    const requestStart = prepareUkAirHtmlRequestStart(
+                      runtimeDeadline,
+                    );
                     try {
                       await recordStationPollAttempt(
                         siteStationIds,
@@ -1074,6 +1101,7 @@ serve(async (req) => {
                           "station_attempt_record_failed",
                         );
                       }
+                      selectedWorkIncomplete = true;
                       await errorLogger.logError({
                         source: "edge",
                         severity: "error",
@@ -1094,6 +1122,7 @@ serve(async (req) => {
                     const page = await fetchUkAirHtmlPage(
                       siteRef,
                       runtimeDeadline,
+                      requestStart,
                     );
                     const parsed = parseUkAirHtmlChart(
                       page.html,
@@ -1440,7 +1469,8 @@ serve(async (req) => {
             }
 
             const hardGateway502Failure = gateway502Failures > 0 && polled === 0;
-            const partial = runtimeBudgetExceeded || htmlFallbackIncomplete;
+            const partial = runtimeBudgetExceeded || htmlFallbackIncomplete ||
+              selectedWorkIncomplete;
             status = hardGateway502Failure ? 502 : errors.length ? 207 : 200;
             responsePayload = {
               status: hardGateway502Failure ? "gateway_failure" : "ok",
@@ -1596,6 +1626,12 @@ type RawRecorder = {
 type FetchJsonOptions = {
   attempts?: number;
   deadlineMs?: number;
+  initialRequestStart?: FetchRequestStart;
+};
+
+type FetchRequestStart = {
+  timeoutMs: number;
+  timeoutKind: "runtime_deadline" | "request_timeout";
 };
 
 function createLogBuffer(): LogBuffer {
@@ -2490,6 +2526,30 @@ function _extractList(payload: unknown, keys: string[]): Array<Record<string, un
   return [];
 }
 
+function prepareSosRequestStart(deadlineMs?: number): FetchRequestStart {
+  const remainingBudgetMs = deadlineMs == null
+    ? Number.POSITIVE_INFINITY
+    : deadlineMs - Date.now();
+  if (remainingBudgetMs <= MIN_FETCH_TIMEOUT_MS) {
+    throw new SosFetchFailure({
+      kind: "runtime_deadline",
+      message: "Runtime budget exhausted before UK-AIR SOS fetch completed.",
+    });
+  }
+  const timeoutMs = Number.isFinite(remainingBudgetMs)
+    ? Math.max(
+      MIN_FETCH_TIMEOUT_MS,
+      Math.min(DEFAULT_TIMEOUT_MS, remainingBudgetMs - 250),
+    )
+    : DEFAULT_TIMEOUT_MS;
+  return {
+    timeoutMs,
+    timeoutKind: timeoutMs < DEFAULT_TIMEOUT_MS
+      ? "runtime_deadline"
+      : "request_timeout",
+  };
+}
+
 async function fetchJson(
   baseUrl: string,
   path: string,
@@ -2506,21 +2566,10 @@ async function fetchJson(
   const attempts = clampPositiveInt(options?.attempts ?? FETCH_RETRY_ATTEMPTS, FETCH_RETRY_ATTEMPTS);
   const deadlineMs = options?.deadlineMs;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const remainingBudgetMs = deadlineMs == null
-      ? Number.POSITIVE_INFINITY
-      : deadlineMs - Date.now();
-    if (remainingBudgetMs <= MIN_FETCH_TIMEOUT_MS) {
-      throw new SosFetchFailure({
-        kind: "runtime_deadline",
-        message: "Runtime budget exhausted before UK-AIR SOS fetch completed.",
-      });
-    }
-    const timeoutMs = Number.isFinite(remainingBudgetMs)
-      ? Math.max(MIN_FETCH_TIMEOUT_MS, Math.min(DEFAULT_TIMEOUT_MS, remainingBudgetMs - 250))
-      : DEFAULT_TIMEOUT_MS;
-    const timeoutKind = timeoutMs < DEFAULT_TIMEOUT_MS
-      ? "runtime_deadline"
-      : "request_timeout";
+    const requestStart = attempt === 1 && options?.initialRequestStart
+      ? options.initialRequestStart
+      : prepareSosRequestStart(deadlineMs);
+    const { timeoutMs, timeoutKind } = requestStart;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {

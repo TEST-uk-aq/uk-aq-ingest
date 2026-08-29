@@ -49,6 +49,7 @@ Deno.test("SOS selected-work transport deduplicates metadata and retains mapping
   assertEquals(plan.stationRows.length, 2);
   assertEquals(plan.timeseriesRows.length, 1);
   assertEquals(plan.selectedTimeseries.length, 1);
+  assertEquals(plan.selectedTimeseries[0].station_id, 10);
   assertEquals(plan.selectedTimeseries[0].phenomenon_id, "501");
   assertEquals(plan.bridgeRows.length, 2);
 
@@ -62,6 +63,7 @@ Deno.test("SOS selected-work transport deduplicates metadata and retains mapping
     [101],
   );
   assertEquals(compact?.selectedTimeseries.length, 1);
+  assertEquals(compact?.selectedTimeseries[0].station_id, 10);
   assertEquals(compact?.bridgeRows.length, 2);
 });
 
@@ -71,6 +73,15 @@ Deno.test("SOS selected-work transport fails closed on conflicting timeseries me
     normalizeSosSelectedWorkRpcResponse([
       row,
       { ...row, uom: "ppb" },
+    ])
+  );
+});
+
+Deno.test("SOS selected-work transport rejects a bridge station mismatch", () => {
+  const row = selectedWorkRow();
+  assertThrows(() =>
+    normalizeSosSelectedWorkRpcResponse([
+      { ...row, bridge_station_id: 11 },
     ])
   );
 });

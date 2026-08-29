@@ -19,8 +19,14 @@ const RETRYABLE_FETCH_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 export type UkAirHtmlSelectedTimeseries = {
   id: number;
+  station_id: number;
   last_value_at: string | null;
   uom: string | null;
+};
+
+export type UkAirHtmlRequestStart = {
+  timeoutMs: number;
+  timeoutKind: "runtime_deadline" | "request_timeout";
 };
 
 export type UkAirHtmlBridgeRow = {
@@ -173,9 +179,32 @@ export function resolveUkAirHtmlMappings(
   };
 }
 
+export function prepareUkAirHtmlRequestStart(
+  runtimeDeadline: number,
+): UkAirHtmlRequestStart {
+  const remainingBudgetMs = runtimeDeadline - Date.now();
+  if (remainingBudgetMs <= MIN_FETCH_TIMEOUT_MS) {
+    throw new SosFetchFailureError({
+      kind: "runtime_deadline",
+      message: "Runtime budget exhausted before UK-AIR HTML fetch completed.",
+    });
+  }
+  const timeoutMs = Math.max(
+    MIN_FETCH_TIMEOUT_MS,
+    Math.min(DEFAULT_TIMEOUT_MS, remainingBudgetMs - 250),
+  );
+  return {
+    timeoutMs,
+    timeoutKind: timeoutMs < DEFAULT_TIMEOUT_MS
+      ? "runtime_deadline"
+      : "request_timeout",
+  };
+}
+
 export async function fetchUkAirHtmlPage(
   siteRef: string,
   runtimeDeadline: number,
+  initialRequestStart?: UkAirHtmlRequestStart,
 ): Promise<{ html: string; status: number; durationMs: number }> {
   const url = new URL(DATA_PLOT_URL);
   url.searchParams.set("site_id", siteRef);
@@ -183,20 +212,10 @@ export async function fetchUkAirHtmlPage(
   const startedAt = Date.now();
 
   for (let attempt = 1; attempt <= FETCH_RETRY_ATTEMPTS; attempt += 1) {
-    const remainingBudgetMs = runtimeDeadline - Date.now();
-    if (remainingBudgetMs <= MIN_FETCH_TIMEOUT_MS) {
-      throw new SosFetchFailureError({
-        kind: "runtime_deadline",
-        message: "Runtime budget exhausted before UK-AIR HTML fetch completed.",
-      });
-    }
-    const timeoutMs = Math.max(
-      MIN_FETCH_TIMEOUT_MS,
-      Math.min(DEFAULT_TIMEOUT_MS, remainingBudgetMs - 250),
-    );
-    const timeoutKind = timeoutMs < DEFAULT_TIMEOUT_MS
-      ? "runtime_deadline"
-      : "request_timeout";
+    const requestStart = attempt === 1 && initialRequestStart
+      ? initialRequestStart
+      : prepareUkAirHtmlRequestStart(runtimeDeadline);
+    const { timeoutMs, timeoutKind } = requestStart;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
