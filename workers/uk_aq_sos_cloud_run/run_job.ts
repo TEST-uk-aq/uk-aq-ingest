@@ -50,7 +50,7 @@ const DEFAULT_TIMESERIES_LIMIT = parsePositiveInt(
 );
 const DEFAULT_STATION_BATCH_LIMIT = parsePositiveInt(
   Deno.env.get("SOS_STATION_BATCH_LIMIT"),
-  500,
+  1000,
 );
 const DEFAULT_STALE_LIMIT = parsePositiveInt(
   Deno.env.get("SOS_STALE_LIMIT"),
