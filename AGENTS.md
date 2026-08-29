@@ -1,29 +1,80 @@
-# Agent Notes
+# UK AQ ingest coding-agent rules
 
-## Required repository rules
+This file is the active repository-level agent instruction set. `AGENTS_BASE.md` is retained as older reference material and is **not** a mandatory/default read. Where it differs, this file and active `system_docs/` contracts take precedence.
 
-The existing repository-specific rules are stored in [`AGENTS_BASE.md`](AGENTS_BASE.md) and are incorporated into this `AGENTS.md`.
+## Scope and authority
 
-Coding agents must read and follow `AGENTS_BASE.md` before making changes in this repository. The TEST validation policy below takes precedence where older wording could be interpreted as requiring broader testing.
+- This is a UK AQ TEST repository. Do not inspect, modify or propagate changes to LIVE unless the user explicitly asks for LIVE work.
+- Keep work bounded to the requested connector/subsystem.
+- Before implementation read:
+  1. this file;
+  2. `../TEST-uk-aq-system-docs/system_docs/SYSTEM_OVERVIEW.md`;
+  3. the relevant area `README.md`;
+  4. only the broad/narrow contracts selected by that router;
+  5. the implementation files actually in scope.
+- Do not recursively preload all system docs, legacy docs, plans, drafts or archive material.
+- Active `system_docs/` contracts are authoritative. Report conflicts with code/user requests rather than silently overriding them.
+- Coding agents may read `system_docs/` but MUST NOT edit/move/rename/delete it. Provide a concise Chat-mode documentation handover when implementation changes require contract updates.
 
-## Authoritative System Contracts
+## Default operating mode
 
-- Before analysing, planning, or changing code, schema, workflows, configuration, or non-system documentation, coding agents must read this `AGENTS.md`, any linked `AGENTS_BASE.md`, and the relevant active files under `system_docs/` in this or the related UK AQ repositories.
-- Active files under `system_docs/` define the authoritative UK AQ system contracts. Codex and other coding agents must follow those contracts and preserve the documented behaviour.
-- If a user request, the current code, or another document conflicts with `system_docs/`, stop and report the conflict. Do not silently override, reinterpret, weaken, or work around the contract.
-- `system_docs_legacy/` and archived documentation are historical references and do not override active `system_docs/`.
-- Codex and other coding agents must not create, edit, move, rename, or delete files under `system_docs/`.
-- Updating `system_docs/` is reserved for ChatGPT in Chat mode. When an implementation change requires a system-documentation update, the coding agent must provide a concise handover identifying the affected documents and summarising the implemented behaviour, files changed, schema or configuration changes, deployment implications, and validation results.
+Default is focused code/schema/non-system-doc implementation only.
 
-## TEST System Validation Policy
+Unless explicitly requested, do **not**:
 
-- This repository is part of the UK AQ TEST system. It is intended for development and real operational testing before changes are transferred to LIVE.
-- Perform as little pre-deployment testing as reasonably possible.
-- Before deployment, run only the smallest fast local check needed to establish that changed code or configuration is structurally viable, such as syntax, type checking, parsing or one directly relevant existing check.
-- Do not create new automated tests by default.
-- Add a targeted test only when it is genuinely needed to protect against a specific high-risk regression that would be difficult to detect through normal TEST operation.
-- Do not run broad test suites, exhaustive edge-case testing, large fixture programmes, shadow comparisons, soak tests or extended validation unless the user explicitly requests them.
-- Functional testing should normally happen after deployment through real operation on the TEST system.
-- For a reversible change, one successful normal operation and one representative output check are generally sufficient.
-- Data deletion, schema safety, message acknowledgement and irreversible operations may require one narrowly targeted check before execution.
-- Do not expand the task solely to improve test coverage.
+- create/amend commits, push, create branches or PRs;
+- execute SQL or apply migrations against TEST/LIVE databases;
+- deploy Supabase functions, Cloud Run, Workers or workflows;
+- run backfills, reconciliations, bulk/long-running jobs or destructive data operations;
+- change GCP, Supabase, Cloudflare, R2, Dropbox or GitHub settings;
+- run broad external-API fetches or repeatedly inspect cloud logs.
+
+When external work is required but not authorised, make repository changes only and provide exact manual commands, expected output, rollback notes and real TEST validation steps.
+
+## Validation policy
+
+Before deployment, run only the smallest fast local checks needed for structural viability, such as syntax/type parsing or one directly relevant deterministic check.
+
+Do not create tests or run broad suites by default. A targeted pre-deployment check is justified only for a specific high-risk boundary that normal TEST operation cannot safely expose, such as destructive schema/data behaviour or message acknowledgement.
+
+Functional validation happens after deployment through real TEST operations. Do not add speculative fixture programmes, shadow comparisons, soak tests or exhaustive edge-case suites unless explicitly requested.
+
+## Archive safety
+
+- Archive paths are retired for active execution; never add archive fallbacks to active scripts/workers/default runners.
+- Before a substantial or high-risk change to active non-test implementation code, preserve the exact pre-change in-scope code under the repository's existing dated `archive/` convention, preserving relative paths where practical.
+- Archive each source file at most once per calendar day and reuse today's copy.
+- Do not create code-style archives for system/non-system documentation, tests/fixtures/test data, generated output, logs, caches, build/dependency artefacts or other non-code files.
+- Existing archive files are reference/rollback only and MUST NOT be modified or executed.
+
+## Schema and environment configuration
+
+- Canonical SQL DDL belongs in sibling `TEST-uk-aq-schema/schemas/`; existing-database migrations belong in its active `schemas/migrations/` structure. Do not make ingest-local SQL the sole canonical definition.
+- Reuse existing environment variables/secrets/configuration before creating new names.
+- When an ingest environment variable is added/removed/renamed, keep both the ops `env-vars-master.csv` and this repo's `config/uk_aq_github_env_targets.csv`/environment sync tooling aligned as applicable.
+- New/changed Supabase edge functions must remain represented in the active deploy workflow.
+- Supabase PostgreSQL 17 in this project does not support TimescaleDB; do not propose TimescaleDB/hypertables as an implementation path.
+
+## Repository terminology
+
+- Preserve `UK-AIR SOS` as the external service name.
+- Use `timeseries` rather than `sensors` for code/data identities.
+- Prefer `uk_aq` naming for project-owned files/code. Connector/network identity and source-prefix rules are governed by the active ingest contracts, not duplicated here.
+
+## Reporting
+
+After implementation report:
+
+- files changed;
+- relevant contract behaviour changed or preserved;
+- structural checks run;
+- manual schema/deploy/run commands if required;
+- post-deployment real TEST validation;
+- rollback considerations;
+- documentation handover needed, if any.
+
+If no implementation files changed, say so.
+
+## Search
+
+Prefer `grep` for text search/file discovery; do not use `rg` unless explicitly requested.
