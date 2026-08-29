@@ -956,6 +956,7 @@ serve(async (req) => {
                   successfullyPolledTimeseriesIds.add(Number(row.id));
                   successfullyPolledStationIds.add(row.station_id);
                 } catch (err) {
+                  selectedWorkIncomplete = true;
                   if (isIngestDbObservationWriteError(err)) {
                     const writeError = err as {
                       stats?: Record<string, unknown>;
