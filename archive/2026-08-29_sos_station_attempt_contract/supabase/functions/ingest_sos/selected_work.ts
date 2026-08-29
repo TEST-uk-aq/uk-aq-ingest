@@ -10,7 +10,6 @@ export type SosSelectedTimeseriesDispatchRow = {
 
 export type SosSelectedTimeseriesMetadata = {
   id: number;
-  station_id: number;
   timeseries_ref: string | null;
   service_ref: string | null;
   phenomenon_id: string | null;
@@ -93,7 +92,6 @@ export function normalizeSosSelectedWorkRpcResponse(
     const timeseriesId = positiveInteger(row.timeseries_id, "timeseries_id");
     const metadata: SosSelectedTimeseriesMetadata = {
       id: timeseriesId,
-      station_id: stationId,
       timeseries_ref: nullableString(row.timeseries_ref, "timeseries_ref"),
       service_ref: nullableString(row.service_ref, "service_ref"),
       phenomenon_id: nullablePositiveIntegerText(
@@ -132,15 +130,6 @@ export function normalizeSosSelectedWorkRpcResponse(
         `SOS selected-work RPC bridge row ${bridgeTimeseriesId} does not match selected timeseries ${timeseriesId}.`,
       );
     }
-    const bridgeStationId = positiveInteger(
-      row.bridge_station_id,
-      "bridge_station_id",
-    );
-    if (bridgeStationId !== stationId) {
-      throw new Error(
-        `SOS selected-work RPC bridge station ${bridgeStationId} does not match selected timeseries station ${stationId}.`,
-      );
-    }
     bridgeRows.push({
       site_ref: nonEmptyString(row.bridge_site_ref, "bridge_site_ref"),
       uk_air_ref: nullableString(row.bridge_uk_air_ref, "bridge_uk_air_ref"),
@@ -148,7 +137,10 @@ export function normalizeSosSelectedWorkRpcResponse(
         row.bridge_pollutant_code,
         "bridge_pollutant_code",
       ).toLowerCase(),
-      station_id: bridgeStationId,
+      station_id: positiveInteger(
+        row.bridge_station_id,
+        "bridge_station_id",
+      ),
       station_ref: nullableString(
         row.bridge_station_ref,
         "bridge_station_ref",
@@ -215,10 +207,6 @@ export function readSosCompactChildPayload(
       timeseriesId,
       {
         id: timeseriesId,
-        station_id: positiveInteger(
-          row.station_id,
-          "selected_timeseries.station_id",
-        ),
         timeseries_ref: nullableString(
           row.timeseries_ref,
           "selected_timeseries.timeseries_ref",
@@ -308,15 +296,6 @@ export function readSosCompactChildPayload(
       valid_to_day_utc: validToDayUtc,
     } satisfies SosHtmlBridgeMetadata;
   });
-
-  for (const bridgeRow of bridgeRows) {
-    const selected = metadataById.get(bridgeRow.timeseries_id);
-    if (!selected || selected.station_id !== bridgeRow.station_id) {
-      throw new Error(
-        `SOS compact bridge row station ${bridgeRow.station_id} does not match selected timeseries ${bridgeRow.timeseries_id}.`,
-      );
-    }
-  }
 
   return {
     selectedTimeseries: Array.from(metadataById.values()),

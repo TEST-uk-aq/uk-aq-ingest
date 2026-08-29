@@ -137,6 +137,7 @@ type StationCheckpointRow = {
   next_due_at: string | null;
   last_observed_at: string | null;
   ingest_lag_samples: number[];
+  last_polled_at: string | null;
 };
 
 function requiredEnv(name: string): string {
@@ -437,6 +438,42 @@ async function loadSelectedWork(params: {
   return normalizeSosSelectedWorkRpcResponse(response.data);
 }
 
+async function recordStationAttempts(
+  timeseriesRows: SelectedTimeseriesRow[],
+  attemptedAtIso: string,
+): Promise<number> {
+  const stationIds = [...new Set(timeseriesRows.map((row) => row.station_id))]
+    .sort((a, b) => a - b);
+  if (!stationIds.length) {
+    return 0;
+  }
+
+  const response = await postgrestRequest(
+    "POST",
+    "rpc/sos_record_station_attempts",
+    {
+      schema: UK_AQ_CORE_SCHEMA,
+      body: {
+        p_station_ids: stationIds,
+        p_attempted_at: attemptedAtIso,
+      },
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Failed to record SOS station attempts (${response.status}): ${response.text}`,
+    );
+  }
+
+  const recorded = toIntegerOrNull(response.data);
+  if (recorded !== stationIds.length) {
+    throw new Error(
+      `SOS station attempt count mismatch: expected ${stationIds.length}, recorded ${recorded}`,
+    );
+  }
+  return recorded;
+}
+
 async function loadSuccessfullyPolledTimeseriesIds(
   timeseriesIds: string[],
   runStartedAtIso: string,
@@ -637,7 +674,7 @@ async function loadStationCheckpointRows(
         schema: UK_AQ_RAW_SCHEMA,
         query: {
           select:
-            "station_id,next_due_at,last_observed_at,ingest_lag_samples",
+            "station_id,next_due_at,last_observed_at,ingest_lag_samples,last_polled_at",
           station_id: postgrestIn(stationIds),
           order: "station_id.asc",
           limit: String(limit),
@@ -670,6 +707,7 @@ async function loadStationCheckpointRows(
         next_due_at: toStringOrNull(obj?.next_due_at),
         last_observed_at: toStringOrNull(obj?.last_observed_at),
         ingest_lag_samples: lagSamples,
+        last_polled_at: toStringOrNull(obj?.last_polled_at),
       });
     }
     if (rows.length < limit) {
@@ -779,6 +817,7 @@ function buildStationCheckpointRows(
       next_due_at: nextDueAt,
       last_observed_at: updatedLastObserved,
       ingest_lag_samples: lagSamples,
+      last_polled_at: nowIso,
       updated_at: nowIso,
     };
   });
@@ -1354,14 +1393,14 @@ async function main(): Promise<void> {
       timeseries_selected: payloadPlan.timeseriesIds.length,
     });
 
-    const selectedStationIds = [
+    const attemptedStationIds = [
       ...new Set(
         payloadPlan.timeseriesRows.map((row) => row.station_id),
       ),
     ].sort((a, b) => a - b);
     const preRunLatestByStation = await loadStationLatestObserved(
       connectorId,
-      selectedStationIds,
+      attemptedStationIds,
     );
 
     server = new Deno.Command("deno", {
@@ -1382,6 +1421,16 @@ async function main(): Promise<void> {
     }).spawn();
 
     await waitForServer(`http://127.0.0.1:${PORT}/`);
+    const attemptedAtIso = new Date().toISOString();
+    const stationsAttempted = await recordStationAttempts(
+      payloadPlan.timeseriesRows,
+      attemptedAtIso,
+    );
+    logSummary("attempts_recorded", {
+      connector_id: connectorId,
+      stations_attempted: stationsAttempted,
+      attempted_at: attemptedAtIso,
+    });
     ingestResponse = await runIngestOnce(payloadPlan.payload);
 
     const { runStatus, runMessage, payload } = deriveRunSummary(ingestResponse);
@@ -1409,6 +1458,7 @@ async function main(): Promise<void> {
       (station) => successfullyPolledStationIds.has(station.id),
     );
     payload.stations_selected = payloadPlan.stationRows.length;
+    payload.stations_attempted = stationsAttempted;
     payload.stations_polled = successfullyPolledStationIds.size;
 
     const maxTimeseriesLastObservedAt = await fetchMaxTimeseriesLastValueAt(
@@ -1481,7 +1531,7 @@ async function main(): Promise<void> {
       response_status: ingestResponse.status,
       connector_id: connectorId,
       stations_selected: payloadPlan.stationRows.length,
-      stations_attempted: toIntegerOrNull(payload.stations_attempted),
+      stations_attempted: stationsAttempted,
       stations_polled: successfullyPolledStationIds.size,
       series_polled: toIntegerOrNull(payload?.series_polled),
       observations_upserted: toIntegerOrNull(payload?.observations_upserted),

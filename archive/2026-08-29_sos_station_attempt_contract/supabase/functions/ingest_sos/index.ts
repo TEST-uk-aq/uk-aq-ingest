@@ -28,7 +28,6 @@ import {
 import {
   fetchUkAirHtmlPage,
   isUkAirHtmlFallbackProbeFailure,
-  prepareUkAirHtmlRequestStart,
   resolveUkAirHtmlMappings,
   type UkAirHtmlBridgeRow,
   type UkAirHtmlMappedWork,
@@ -271,41 +270,6 @@ async function postgrestRequest<T>(
   return { data: payload as T, error: null };
 }
 
-/**
- * Commits the station-level acquisition attempt immediately before an upstream
- * request. The compatibility RPC name is historical; the schema contract is
- * that it monotonically records station `last_polled_at` attempt timestamps.
- */
-async function recordStationPollAttempt(
-  stationIds: number[],
-  polledAtIso: string,
-): Promise<void> {
-  const distinctStationIds = [...new Set(stationIds)].sort((a, b) => a - b);
-  if (!distinctStationIds.length) return;
-
-  const { data, error } = await postgrestRequest<number>(
-    "POST",
-    "rpc/sos_record_station_attempts",
-    {},
-    {
-      p_station_ids: distinctStationIds,
-      // Historic RPC parameter name; schema will record this as station
-      // last_polled_at under the new attempt-semantic contract.
-      p_attempted_at: polledAtIso,
-    },
-    undefined,
-    UK_AQ_CORE_SCHEMA,
-  );
-  if (error) {
-    throw new Error(`Failed to record station poll attempt: ${error.message}`);
-  }
-  if (Number(data) !== distinctStationIds.length) {
-    throw new Error(
-      `Station poll attempt count mismatch: expected ${distinctStationIds.length}, recorded ${String(data)}`,
-    );
-  }
-}
-
 async function publicRpcRequest<T>(
   fn: string,
   args?: Record<string, unknown>,
@@ -386,8 +350,6 @@ serve(async (req) => {
   let status = 200;
   let polled = 0;
   let observationsUpserted = 0;
-  const attemptedStationIds = new Set<number>();
-  const successfullyPolledStationIds = new Set<number>();
   const changedTimeseriesIds = new Set<number>();
   const ingestDbObservationWriteStats =
     createEmptyIngestDbObservationWriteStats();
@@ -412,7 +374,6 @@ serve(async (req) => {
   const shouldStop = () => Date.now() >= runtimeDeadline;
   let timeBudgetHit = false;
   let individualTimeseriesErrorCount = 0;
-  let selectedWorkIncomplete = false;
   const runtimeDeadlineFailures: RuntimeDeadlineFailureSummary = {
     count: 0,
     timeseriesSample: [],
@@ -880,54 +841,6 @@ serve(async (req) => {
                 if (shouldStop()) {
                   return;
                 }
-                let requestStart: FetchRequestStart;
-                try {
-                  requestStart = prepareSosRequestStart(runtimeDeadline);
-                } catch (error) {
-                  const failure = asSosFetchFailure(error);
-                  if (isRuntimeDeadlineFailure(failure)) {
-                    addRuntimeDeadlineFailure(
-                      runtimeDeadlineFailures,
-                      row.id,
-                      RUNTIME_DEADLINE_TIMESERIES_SAMPLE_LIMIT,
-                    );
-                  } else {
-                    errors.push(`${row.id}:request_preflight_failed`);
-                    individualTimeseriesErrorCount += 1;
-                    selectedWorkIncomplete = true;
-                  }
-                  return;
-                }
-                try {
-                  await recordStationPollAttempt(
-                    [row.station_id],
-                    new Date().toISOString(),
-                  );
-                  attemptedStationIds.add(row.station_id);
-                } catch (error) {
-                  errors.push(`${row.id}:station_attempt_record_failed`);
-                  individualTimeseriesErrorCount += 1;
-                  selectedWorkIncomplete = true;
-                  console.warn(
-                    `Station attempt persistence failed for timeseries ${row.id}: ${boundMessage(error)}`,
-                  );
-                  await errorLogger.logError({
-                    source: "edge",
-                    severity: "error",
-                    message: "Failed to persist SOS station poll attempt.",
-                    context: {
-                      station_id: row.station_id,
-                      timeseries_id: row.id,
-                      error: boundMessage(error),
-                    },
-                    connector_code: connector?.connector_code ??
-                      requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-                    connector_id: connector?.id ?? requestedConnectorId ?? null,
-                    station_id: row.station_id,
-                    timeseries_id: row.id,
-                  });
-                  return;
-                }
                 try {
                   const sourceId = row.timeseries_ref || String(row.id);
                   const data = await fetchJson(
@@ -935,7 +848,7 @@ serve(async (req) => {
                     `/timeseries/${encodeURIComponent(sourceId)}/getData`,
                     { timespan, format: "tvp" },
                     rawRecorder,
-                    { deadlineMs: runtimeDeadline, initialRequestStart: requestStart },
+                    { deadlineMs: runtimeDeadline },
                   );
                   const points = parseDatapoints(data?.values, row.id);
                   await writeObservationPoints(
@@ -954,9 +867,7 @@ serve(async (req) => {
                   );
                   polled += 1;
                   successfullyPolledTimeseriesIds.add(Number(row.id));
-                  successfullyPolledStationIds.add(row.station_id);
                 } catch (err) {
-                  selectedWorkIncomplete = true;
                   if (isIngestDbObservationWriteError(err)) {
                     const writeError = err as {
                       stats?: Record<string, unknown>;
@@ -1081,49 +992,9 @@ serve(async (req) => {
                   if (shouldStop()) return;
                   const siteStartedAt = Date.now();
                   try {
-                    const siteStationIds = [
-                      ...new Set(siteWork.map((work) => work.timeseries.station_id)),
-                    ];
-                    const requestStart = prepareUkAirHtmlRequestStart(
-                      runtimeDeadline,
-                    );
-                    try {
-                      await recordStationPollAttempt(
-                        siteStationIds,
-                        new Date().toISOString(),
-                      );
-                      siteStationIds.forEach((stationId) =>
-                        attemptedStationIds.add(stationId)
-                      );
-                    } catch (error) {
-                      for (const work of siteWork) {
-                        recordFallbackTimeseriesFailure(
-                          work.timeseries.id,
-                          "station_attempt_record_failed",
-                        );
-                      }
-                      selectedWorkIncomplete = true;
-                      await errorLogger.logError({
-                        source: "edge",
-                        severity: "error",
-                        message:
-                          "Failed to persist SOS station poll attempt before HTML fallback request.",
-                        context: {
-                          site_ref: siteRef,
-                          station_ids: siteStationIds,
-                          timeseries_ids: siteWork.map((work) => work.timeseries.id),
-                          error: boundMessage(error),
-                        },
-                        connector_code: connector?.connector_code ??
-                          requestedConnectorCode ?? SOS_CONNECTOR_CODE,
-                        connector_id: connector?.id ?? requestedConnectorId ?? null,
-                      });
-                      return;
-                    }
                     const page = await fetchUkAirHtmlPage(
                       siteRef,
                       runtimeDeadline,
-                      requestStart,
                     );
                     const parsed = parseUkAirHtmlChart(
                       page.html,
@@ -1238,9 +1109,6 @@ serve(async (req) => {
                         polled += 1;
                         successfullyPolledTimeseriesIds.add(
                           work.timeseries.id,
-                        );
-                        successfullyPolledStationIds.add(
-                          work.timeseries.station_id,
                         );
                       } catch (error) {
                         if (isIngestDbObservationWriteError(error)) {
@@ -1470,8 +1338,7 @@ serve(async (req) => {
             }
 
             const hardGateway502Failure = gateway502Failures > 0 && polled === 0;
-            const partial = runtimeBudgetExceeded || htmlFallbackIncomplete ||
-              selectedWorkIncomplete;
+            const partial = runtimeBudgetExceeded || htmlFallbackIncomplete;
             status = hardGateway502Failure ? 502 : errors.length ? 207 : 200;
             responsePayload = {
               status: hardGateway502Failure ? "gateway_failure" : "ok",
@@ -1483,8 +1350,6 @@ serve(async (req) => {
                   : "UK-AIR HTML fallback recovered SOS probe failure"
                 : null,
               connector_id: connector.id,
-              stations_attempted: attemptedStationIds.size,
-              stations_polled: successfullyPolledStationIds.size,
               series_polled: polled,
               observations_upserted: observationsUpserted,
               timeseries_updated: changedTimeseriesIds.size,
@@ -1582,8 +1447,6 @@ serve(async (req) => {
     }
   }
 
-  responsePayload.stations_attempted = attemptedStationIds.size;
-  responsePayload.stations_polled = successfullyPolledStationIds.size;
   return json(responsePayload, status);
 });
 
@@ -1627,12 +1490,6 @@ type RawRecorder = {
 type FetchJsonOptions = {
   attempts?: number;
   deadlineMs?: number;
-  initialRequestStart?: FetchRequestStart;
-};
-
-type FetchRequestStart = {
-  timeoutMs: number;
-  timeoutKind: "runtime_deadline" | "request_timeout";
 };
 
 function createLogBuffer(): LogBuffer {
@@ -2427,8 +2284,7 @@ async function loadTimeseries(
       "GET",
       "timeseries",
       {
-        select:
-          "id,station_id,timeseries_ref,service_ref,phenomenon_id,last_value_at,uom",
+        select: "id,timeseries_ref,service_ref,phenomenon_id,last_value_at,uom",
         connector_id: `eq.${connectorId}`,
         ended_at: "is.null",
         limit: String(PAGE_SIZE),
@@ -2443,7 +2299,6 @@ async function loadTimeseries(
     }
     rows.push(...data.map((row) => ({
       id: Number(row.id),
-      station_id: Number(row.station_id),
       timeseries_ref: row.timeseries_ref ? String(row.timeseries_ref) : null,
       service_ref: row.service_ref ? String(row.service_ref) : null,
       phenomenon_id: row.phenomenon_id ? String(row.phenomenon_id) : null,
@@ -2527,30 +2382,6 @@ function _extractList(payload: unknown, keys: string[]): Array<Record<string, un
   return [];
 }
 
-function prepareSosRequestStart(deadlineMs?: number): FetchRequestStart {
-  const remainingBudgetMs = deadlineMs == null
-    ? Number.POSITIVE_INFINITY
-    : deadlineMs - Date.now();
-  if (remainingBudgetMs <= MIN_FETCH_TIMEOUT_MS) {
-    throw new SosFetchFailure({
-      kind: "runtime_deadline",
-      message: "Runtime budget exhausted before UK-AIR SOS fetch completed.",
-    });
-  }
-  const timeoutMs = Number.isFinite(remainingBudgetMs)
-    ? Math.max(
-      MIN_FETCH_TIMEOUT_MS,
-      Math.min(DEFAULT_TIMEOUT_MS, remainingBudgetMs - 250),
-    )
-    : DEFAULT_TIMEOUT_MS;
-  return {
-    timeoutMs,
-    timeoutKind: timeoutMs < DEFAULT_TIMEOUT_MS
-      ? "runtime_deadline"
-      : "request_timeout",
-  };
-}
-
 async function fetchJson(
   baseUrl: string,
   path: string,
@@ -2567,10 +2398,21 @@ async function fetchJson(
   const attempts = clampPositiveInt(options?.attempts ?? FETCH_RETRY_ATTEMPTS, FETCH_RETRY_ATTEMPTS);
   const deadlineMs = options?.deadlineMs;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const requestStart = attempt === 1 && options?.initialRequestStart
-      ? options.initialRequestStart
-      : prepareSosRequestStart(deadlineMs);
-    const { timeoutMs, timeoutKind } = requestStart;
+    const remainingBudgetMs = deadlineMs == null
+      ? Number.POSITIVE_INFINITY
+      : deadlineMs - Date.now();
+    if (remainingBudgetMs <= MIN_FETCH_TIMEOUT_MS) {
+      throw new SosFetchFailure({
+        kind: "runtime_deadline",
+        message: "Runtime budget exhausted before UK-AIR SOS fetch completed.",
+      });
+    }
+    const timeoutMs = Number.isFinite(remainingBudgetMs)
+      ? Math.max(MIN_FETCH_TIMEOUT_MS, Math.min(DEFAULT_TIMEOUT_MS, remainingBudgetMs - 250))
+      : DEFAULT_TIMEOUT_MS;
+    const timeoutKind = timeoutMs < DEFAULT_TIMEOUT_MS
+      ? "runtime_deadline"
+      : "request_timeout";
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
