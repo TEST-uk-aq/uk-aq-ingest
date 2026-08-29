@@ -55,7 +55,7 @@ notes = "Sensor.Community ingest trigger"
 
 [jobs.uk_aq_sos]
 enabled = true
-cron_expr = "*/10 * * * *"
+cron_expr = "*/15 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
