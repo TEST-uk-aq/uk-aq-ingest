@@ -26,7 +26,7 @@ Run feed note:
   successful current-run timeseries checkpoint.
 - Station batch note:
   - Station selection is independently capped by `SOS_STATION_BATCH_LIMIT`
-    (default `500`) or an explicit request `station_batch_limit` override.
+    (default `1000`) or an explicit request `station_batch_limit` override.
   - `connectors.poll_timeseries_batch_size` independently caps acquired
     timeseries and does not determine the station limit.
   - The station limit is a total cap across tier1, tier2, and stale picks.
@@ -91,7 +91,7 @@ gcloud run deploy uk-aq-sos-ingest \
 - `SOS_CLAIM_TIMEOUT_MINUTES` (default `30`)
 - `SOS_DEFAULT_WINDOW_HOURS` (default `6`)
 - `SOS_DEFAULT_TIMESERIES_LIMIT` (default `100`)
-- `SOS_STATION_BATCH_LIMIT` (default `500`)
+- `SOS_STATION_BATCH_LIMIT` (default `1000`)
 - `SOS_STALE_LIMIT` (default `4`)
 - `SOS_INGEST_SCRIPT_PATH` (default `/app/runtime/ingest_sos/index.ts`)
 - `SOS_MAX_RUNTIME_SECONDS` (ingest runtime budget inside handler)
