@@ -5,7 +5,7 @@ config_version = 1
 scheduler_name = "uk-aq-cron-scheduler-ingest"
 
 [jobs.uk_uk_aq_stations_daily]
-enabled = true
+enabled = false
 cron_expr = "0 3 * * *"
 target_type = "github_workflow"
 github_repo = "TEST-uk-aq/uk-aq-ingest"
@@ -15,7 +15,7 @@ dry_run = false
 notes = "UK-AQ Stations Daily Sync"
 
 [jobs.uk_aq_blondon_communities]
-enabled = true
+enabled = false
 cron_expr = "*/15 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
@@ -24,7 +24,7 @@ dry_run = false
 notes = "Breathe London Communities ingest trigger"
 
 [jobs.uk_aq_blondon_nodes]
-enabled = true
+enabled = false
 cron_expr = "*/15 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
@@ -45,7 +45,7 @@ notes = "OpenAQ safety trigger; service decides whether work is needed"
 trigger_mode = "safety"
 
 [jobs.uk_aq_scomm]
-enabled = true
+enabled = false
 cron_expr = "*/5 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
@@ -54,7 +54,7 @@ dry_run = false
 notes = "Sensor.Community ingest trigger"
 
 [jobs.uk_aq_sos]
-enabled = true
+enabled = false
 cron_expr = "*/15 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
