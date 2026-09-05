@@ -45,7 +45,7 @@ notes = "OpenAQ safety trigger; service decides whether work is needed"
 trigger_mode = "safety"
 
 [jobs.uk_aq_scomm]
-enabled = true
+enabled = false
 cron_expr = "*/5 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
