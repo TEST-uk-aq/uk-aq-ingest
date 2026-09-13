@@ -4,6 +4,11 @@ const RPC_SCHEMA = "uk_aq_public";
 const SUPABASE_RETRY_MAX_ATTEMPTS = 3;
 const SUPABASE_RETRY_DELAYS_MS = [250, 500];
 const SUPABASE_TRANSIENT_STATUS_CODES = new Set([502, 503, 504]);
+const RETRY_SAFE_HEALTH_RPCS = new Set([
+  "uk_aq_rpc_daily_task_finished",
+  "uk_aq_rpc_daily_task_failed",
+  "uk_aq_rpc_recompute_daily_task_status",
+]);
 
 function parseBoolean(raw, fallback = false) {
   if (raw === undefined || raw === null || raw === "") {
@@ -89,6 +94,10 @@ export function isTransientSupabaseError(error) {
   return name === "aborterror" || message.includes("timed out");
 }
 
+export function isRetrySafeHealthRpc(rpcName) {
+  return RETRY_SAFE_HEALTH_RPCS.has(rpcName);
+}
+
 function defaultSleep(delayMs) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
@@ -123,7 +132,7 @@ export async function postRpc(
   { supabaseUrl, serviceRoleKey, rpcName, body },
   { fetchImpl = fetch, sleep, logger } = {},
 ) {
-  return retrySupabaseOperation(`RPC ${rpcName}`, async () => {
+  const request = async () => {
     const response = await fetchImpl(`${supabaseUrl}/rest/v1/rpc/${rpcName}`, {
       method: "POST",
       headers: {
@@ -144,7 +153,11 @@ export async function postRpc(
 
     const text = await response.text();
     return text.trim() ? JSON.parse(text) : null;
-  }, { sleep, logger });
+  };
+  if (!isRetrySafeHealthRpc(rpcName)) {
+    return request();
+  }
+  return retrySupabaseOperation(`RPC ${rpcName}`, request, { sleep, logger });
 }
 
 function mapJobStatus(jobStatus) {

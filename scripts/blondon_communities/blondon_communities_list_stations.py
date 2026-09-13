@@ -499,11 +499,14 @@ class SupabaseWriter:
             return {}
         metadata: Dict[int, Dict[str, Any]] = {}
         for chunk in chunked([str(val) for val in station_ids], 200):
-            resp = (
-                self.core.table("station_metadata")
-                .select("station_id,attributes")
-                .in_("station_id", list(chunk))
-                .execute()
+            resp = retry_supabase_operation(
+                "Breathe London Communities station metadata lookup",
+                lambda: (
+                    self.core.table("station_metadata")
+                    .select("station_id,attributes")
+                    .in_("station_id", list(chunk))
+                    .execute()
+                ),
             )
             rows = resp.data if hasattr(resp, "data") else resp.get("data")
             for row in rows or []:
