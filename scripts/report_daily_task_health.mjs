@@ -1,4 +1,9 @@
+import { pathToFileURL } from "node:url";
+
 const RPC_SCHEMA = "uk_aq_public";
+const SUPABASE_RETRY_MAX_ATTEMPTS = 3;
+const SUPABASE_RETRY_DELAYS_MS = [250, 500];
+const SUPABASE_TRANSIENT_STATUS_CODES = new Set([502, 503, 504]);
 
 function parseBoolean(raw, fallback = false) {
   if (raw === undefined || raw === null || raw === "") {
@@ -60,31 +65,86 @@ async function writeGithubOutputs(values) {
   await fs.appendFile(outputFile, `${lines.join("\n")}\n`, { encoding: "utf-8" });
 }
 
-async function readResponseText(response, limit = 2000) {
-  const text = await response.text();
-  return text.length <= limit ? text : `${text.slice(0, limit - 3)}...`;
+export function isTransientSupabaseError(error) {
+  const status = Number(error?.status ?? error?.statusCode ?? error?.response?.status);
+  if (SUPABASE_TRANSIENT_STATUS_CODES.has(status)) {
+    return true;
+  }
+  const causeCode = String(error?.cause?.code || "").toUpperCase();
+  if ([
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EPIPE",
+    "ETIMEDOUT",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_BODY_TIMEOUT",
+    "UND_ERR_SOCKET",
+  ].includes(causeCode)) {
+    return true;
+  }
+  const name = String(error?.name || "").toLowerCase();
+  const message = String(error?.message || "").toLowerCase();
+  return name === "aborterror" || message.includes("timed out");
 }
 
-async function postRpc({ supabaseUrl, serviceRoleKey, rpcName, body }) {
-  const response = await fetch(`${supabaseUrl}/rest/v1/rpc/${rpcName}`, {
-    method: "POST",
-    headers: {
-      apikey: serviceRoleKey,
-      Authorization: `Bearer ${serviceRoleKey}`,
-      "Content-Type": "application/json",
-      "Accept-Profile": RPC_SCHEMA,
-      "Content-Profile": RPC_SCHEMA,
-    },
-    body: JSON.stringify(body),
-  });
+function defaultSleep(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
 
-  if (!response.ok) {
-    const text = await readResponseText(response);
-    throw new Error(`RPC ${rpcName} failed (${response.status}): ${text}`);
+export async function retrySupabaseOperation(operationName, operation, {
+  sleep = defaultSleep,
+  logger = console,
+} = {}) {
+  for (let attempt = 1; attempt <= SUPABASE_RETRY_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isTransientSupabaseError(error) || attempt === SUPABASE_RETRY_MAX_ATTEMPTS) {
+        throw error;
+      }
+      const delayMs = SUPABASE_RETRY_DELAYS_MS[attempt - 1];
+      const status = Number(error?.status ?? error?.statusCode ?? error?.response?.status);
+      const reason = SUPABASE_TRANSIENT_STATUS_CODES.has(status)
+        ? `HTTP ${status}`
+        : error?.cause?.code || error?.name || "connection failure";
+      logger.warn(
+        `Retrying Supabase ${operationName} after transient ${reason} `
+        + `(attempt ${attempt + 1}/${SUPABASE_RETRY_MAX_ATTEMPTS}; waiting ${delayMs}ms).`,
+      );
+      await sleep(delayMs);
+    }
   }
+  throw new Error("Unreachable Supabase retry state.");
+}
 
-  const text = await response.text();
-  return text.trim() ? JSON.parse(text) : null;
+export async function postRpc(
+  { supabaseUrl, serviceRoleKey, rpcName, body },
+  { fetchImpl = fetch, sleep, logger } = {},
+) {
+  return retrySupabaseOperation(`RPC ${rpcName}`, async () => {
+    const response = await fetchImpl(`${supabaseUrl}/rest/v1/rpc/${rpcName}`, {
+      method: "POST",
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+        "Content-Type": "application/json",
+        "Accept-Profile": RPC_SCHEMA,
+        "Content-Profile": RPC_SCHEMA,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const error = new Error(`RPC ${rpcName} failed (${response.status}).`);
+      error.status = response.status;
+      throw error;
+    }
+
+    const text = await response.text();
+    return text.trim() ? JSON.parse(text) : null;
+  }, { sleep, logger });
 }
 
 function mapJobStatus(jobStatus) {
@@ -269,4 +329,6 @@ async function main() {
   }
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}

@@ -1,6 +1,8 @@
 import os
+import logging
+import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 
 from postgrest import SyncPostgrestClient
 from supabase import Client, ClientOptions, create_client
@@ -12,6 +14,74 @@ from scripts.uk_aq_service_egress_metrics import (
 DEFAULT_CORE_SCHEMA = os.getenv("UK_AQ_CORE_SCHEMA", "uk_aq_core")
 DEFAULT_RAW_SCHEMA = os.getenv("UK_AQ_RAW_SCHEMA", "uk_aq_raw")
 DEFAULT_POP_SCHEMA = os.getenv("UK_AQ_POP_SCHEMA", "uk_aq_pop")
+LOG = logging.getLogger(__name__)
+
+SUPABASE_RETRY_MAX_ATTEMPTS = 3
+SUPABASE_RETRY_DELAYS_SECONDS = (0.25, 0.5)
+SUPABASE_TRANSIENT_STATUS_CODES = frozenset((502, 503, 504))
+T = TypeVar("T")
+
+
+def _supabase_error_status_code(error: BaseException) -> Optional[int]:
+    """Return a transport status code when the client exposes one."""
+    candidates = (
+        getattr(error, "status_code", None),
+        getattr(error, "http_status", None),
+        getattr(error, "status", None),
+        getattr(error, "code", None),
+        getattr(getattr(error, "response", None), "status_code", None),
+    )
+    for value in candidates:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def is_transient_supabase_error(error: BaseException) -> bool:
+    """Classify only retry-safe PostgREST transport failures."""
+    if _supabase_error_status_code(error) in SUPABASE_TRANSIENT_STATUS_CODES:
+        return True
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return True
+
+    module = type(error).__module__.lower()
+    name = type(error).__name__.lower()
+    return module.startswith(("httpx", "requests")) and (
+        "timeout" in name
+        or "connect" in name
+        or name in {"readerror", "networkerror"}
+    )
+
+
+def retry_supabase_operation(
+    operation_name: str,
+    operation: Callable[[], T],
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """Run an explicitly safe Supabase operation with a small bounded retry."""
+    for attempt in range(1, SUPABASE_RETRY_MAX_ATTEMPTS + 1):
+        try:
+            return operation()
+        except Exception as error:
+            if not is_transient_supabase_error(error) or attempt == SUPABASE_RETRY_MAX_ATTEMPTS:
+                raise
+            delay = SUPABASE_RETRY_DELAYS_SECONDS[attempt - 1]
+            status_code = _supabase_error_status_code(error)
+            reason = f"HTTP {status_code}" if status_code else type(error).__name__
+            LOG.warning(
+                "Retrying Supabase %s after transient %s (attempt %s/%s; waiting %.2fs).",
+                operation_name,
+                reason,
+                attempt + 1,
+                SUPABASE_RETRY_MAX_ATTEMPTS,
+                delay,
+            )
+            sleep(delay)
+
+    raise AssertionError("unreachable")
 
 
 def _resolve_schema_client(client: Client, schema: str) -> Client:

@@ -31,7 +31,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.ingest_helpers import station_coords
-from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
+from scripts.uk_aq_supabase import (
+    SupabaseSchemas,
+    create_supabase_client,
+    retry_supabase_operation,
+)
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
 
 load_dotenv()
@@ -223,12 +227,15 @@ class SupabaseWriter:
         self.public = self.client.schema(os.getenv("UK_AQ_PUBLIC_SCHEMA") or "uk_aq_public")
 
     def upsert_connector(self) -> int:
-        existing = (
-            self.core.table("connectors")
-            .select("id,poll_enabled")
-            .eq("connector_code", BLONDON_COMMUNITIES_CONNECTOR_CODE)
-            .limit(1)
-            .execute()
+        existing = retry_supabase_operation(
+            "Breathe London Communities connector lookup",
+            lambda: (
+                self.core.table("connectors")
+                .select("id,poll_enabled")
+                .eq("connector_code", BLONDON_COMMUNITIES_CONNECTOR_CODE)
+                .limit(1)
+                .execute()
+            ),
         )
         existing_rows = existing.data if hasattr(existing, "data") else existing.get("data")
         existing_row = (
@@ -248,26 +255,41 @@ class SupabaseWriter:
             "timeseries_station_filter_supported": False,
             "poll_enabled": poll_enabled,
         }
-        self.core.table("connectors").upsert(payload, on_conflict="connector_code").execute()
-        row = (
-            self.core.table("connectors")
-            .select("id")
-            .eq("connector_code", BLONDON_COMMUNITIES_CONNECTOR_CODE)
-            .single()
-            .execute()
+        upserted = retry_supabase_operation(
+            "Breathe London Communities connector upsert",
+            lambda: self.core.table("connectors")
+            .upsert(payload, on_conflict="connector_code")
+            .execute(),
         )
-        data = row.data if hasattr(row, "data") else row.get("data")
-        if not data:
+        if isinstance(existing_row, dict):
+            try:
+                return int(existing_row["id"])
+            except (KeyError, TypeError, ValueError):
+                pass
+
+        data = upserted.data if hasattr(upserted, "data") else upserted.get("data")
+        row = data[0] if isinstance(data, list) and data else data
+        if isinstance(row, dict):
+            try:
+                return int(row["id"])
+            except (KeyError, TypeError, ValueError):
+                pass
+
+        connector_id = self.fetch_connector_id()
+        if connector_id is None:
             raise RuntimeError("Failed to resolve connector id for Breathe London.")
-        return int(data["id"])
+        return connector_id
 
     def fetch_connector_id(self) -> Optional[int]:
-        resp = (
-            self.core.table("connectors")
-            .select("id")
-            .eq("connector_code", BLONDON_COMMUNITIES_CONNECTOR_CODE)
-            .limit(1)
-            .execute()
+        resp = retry_supabase_operation(
+            "Breathe London Communities connector ID lookup",
+            lambda: (
+                self.core.table("connectors")
+                .select("id")
+                .eq("connector_code", BLONDON_COMMUNITIES_CONNECTOR_CODE)
+                .limit(1)
+                .execute()
+            ),
         )
         rows = resp.data if hasattr(resp, "data") else resp.get("data")
         if not rows:
@@ -290,10 +312,15 @@ class SupabaseWriter:
         payload = [row for row in rows if row.get("station_ref")]
         if not payload:
             return 0
-        self.core.table("stations").upsert(
-            payload,
-            on_conflict="connector_id,service_ref,station_ref",
-        ).execute()
+        retry_supabase_operation(
+            "Breathe London Communities station upsert",
+            lambda: self.core.table("stations")
+            .upsert(
+                payload,
+                on_conflict="connector_id,service_ref,station_ref",
+            )
+            .execute(),
+        )
         return len(payload)
 
     def fetch_station_ids_by_ref(
@@ -307,13 +334,16 @@ class SupabaseWriter:
             return {}
         mapping: Dict[str, int] = {}
         for chunk in chunked(refs, 200):
-            resp = (
-                self.core.table("stations")
-                .select("id,station_ref")
-                .eq("connector_id", connector_id)
-                .eq("service_ref", str(service_ref))
-                .in_("station_ref", list(chunk))
-                .execute()
+            resp = retry_supabase_operation(
+                "Breathe London Communities station ID lookup",
+                lambda: (
+                    self.core.table("stations")
+                    .select("id,station_ref")
+                    .eq("connector_id", connector_id)
+                    .eq("service_ref", str(service_ref))
+                    .in_("station_ref", list(chunk))
+                    .execute()
+                ),
             )
             rows = resp.data if hasattr(resp, "data") else resp.get("data")
             for row in rows or []:
@@ -501,7 +531,12 @@ class SupabaseWriter:
                 {"station_id": station_id, "attributes": merged, "updated_at": timestamp}
             )
         if rows:
-            self.core.table("station_metadata").upsert(rows, on_conflict="station_id").execute()
+            retry_supabase_operation(
+                "Breathe London Communities station metadata upsert",
+                lambda: self.core.table("station_metadata")
+                .upsert(rows, on_conflict="station_id")
+                .execute(),
+            )
         return len(rows)
 
     def upsert_phenomena(self, rows: Iterable[Dict[str, Any]]) -> int:
