@@ -1880,15 +1880,15 @@ async function runPool<T>(
 }
 
 function recordObservation(
-  observationsByTimeseriesRef: Map<string, Map<string, number | null>>,
+  observationsByTimeseriesRef: Map<string, Map<string, number>>,
   latestByTimeseriesRef: Map<
     string,
-    { observed_at: string; value: number | null }
+    { observed_at: string; value: number }
   >,
   latestObservedByStationId: Map<number, string>,
   timeseriesRef: string,
   observedAt: string,
-  value: number | null,
+  value: number,
   stationId: number | null,
   nowMs: number,
   windowMs: number | null,
@@ -1908,10 +1908,6 @@ function recordObservation(
   }
   if (!timeseriesObservations.has(observedAt)) {
     timeseriesObservations.set(observedAt, value);
-  } else if (
-    timeseriesObservations.get(observedAt) === null && value !== null
-  ) {
-    timeseriesObservations.set(observedAt, value);
   }
   const existing = latestByTimeseriesRef.get(timeseriesRef);
   if (!existing || observedAt > existing.observed_at) {
@@ -1929,6 +1925,29 @@ function recordObservation(
       stationIdByObservedRef.set(timeseriesRef, stationId);
     }
   }
+}
+
+function finiteObservationValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function resolveHourlyObservationValue(
+  record: OpenAQHourlyRecord,
+): number | null {
+  for (
+    const candidate of [
+      record?.summary?.avg,
+      record?.summary?.median,
+      record?.summary?.q50,
+      record?.value,
+    ]
+  ) {
+    const value = finiteObservationValue(candidate);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
 }
 
 function resolveLocationId(location: OpenAQLocation): string | null {
@@ -3216,12 +3235,13 @@ serve(async (req) => {
 
   const latestByTimeseries = new Map<
     string,
-    { observed_at: string; value: number | null }
+    { observed_at: string; value: number }
   >();
   const observationsByTimeseries = new Map<
     string,
-    Map<string, number | null>
+    Map<string, number>
   >();
+  const skippedObservationValues = { total: 0, hourly: 0, latest: 0 };
   const stationIdByObservedTimeseriesRef = new Map<string, number>();
   const latestObservedByStationId = new Map<number, string>();
   const gapContigEndByTimeseriesRef = new Map<string, string>();
@@ -3565,6 +3585,9 @@ serve(async (req) => {
             }
             const returned = new Set<string>();
             for (const record of hourly) {
+              if (resolveHourlyObservationValue(record) === null) {
+                continue;
+              }
               const observedAt = resolveHourlyObservedAt(record, nowMs);
               if (!observedAt) {
                 continue;
@@ -3617,6 +3640,12 @@ serve(async (req) => {
           }
         }
         for (const record of hourly) {
+          const value = resolveHourlyObservationValue(record);
+          if (value === null) {
+            skippedObservationValues.total += 1;
+            skippedObservationValues.hourly += 1;
+            continue;
+          }
           const observedAt = resolveHourlyObservedAt(record, nowMs);
           if (!observedAt) {
             continue;
@@ -3627,11 +3656,7 @@ serve(async (req) => {
             latestObservedByStationId,
             String(timeseriesRef),
             observedAt,
-            record?.summary?.avg ??
-              record?.summary?.median ??
-              record?.summary?.q50 ??
-              record?.value ??
-              null,
+            value,
             stationId,
             nowMs,
             null,
@@ -3680,13 +3705,19 @@ serve(async (req) => {
       if (!timeseriesRef || !observedAt) {
         continue;
       }
+      const value = finiteObservationValue(record?.value);
+      if (value === null) {
+        skippedObservationValues.total += 1;
+        skippedObservationValues.latest += 1;
+        continue;
+      }
       recordObservation(
         observationsByTimeseries,
         latestByTimeseries,
         latestObservedByStationId,
         String(timeseriesRef),
         observedAt,
-        record?.value ?? null,
+        value,
         stationId,
         nowMs,
         windowMs,
@@ -3778,6 +3809,9 @@ serve(async (req) => {
     timeseries_refs: timeseriesRefs.length,
     timeseries_ids: Object.keys(timeseriesIdByRef).length,
     timeseries_station_ids: Object.keys(stationIdByTimeseriesId).length,
+    observations_skipped_invalid_value: skippedObservationValues.total,
+    hourly_observations_skipped_invalid_value: skippedObservationValues.hourly,
+    latest_observations_skipped_invalid_value: skippedObservationValues.latest,
   });
 
   let observationsUpserted = 0;
@@ -4350,6 +4384,9 @@ serve(async (req) => {
     observations_rows_input: observationsRowsInput,
     observations_rows_prepared: observationsRowsPrepared,
     observations_rows_deduped_prewrite: observationsRowsDedupedPrewrite,
+    observations_skipped_invalid_value: skippedObservationValues.total,
+    hourly_observations_skipped_invalid_value: skippedObservationValues.hourly,
+    latest_observations_skipped_invalid_value: skippedObservationValues.latest,
     observs_rows_prepared: observsRowsPrepared,
     observs_rows_deduped_prewrite: observsRowsDedupedPrewrite,
     observs_written: observsWritten,
@@ -4489,6 +4526,9 @@ serve(async (req) => {
     observations_rows_input: observationsRowsInput,
     observations_rows_prepared: observationsRowsPrepared,
     observations_rows_deduped_prewrite: observationsRowsDedupedPrewrite,
+    observations_skipped_invalid_value: skippedObservationValues.total,
+    hourly_observations_skipped_invalid_value: skippedObservationValues.hourly,
+    latest_observations_skipped_invalid_value: skippedObservationValues.latest,
     observs_rows_prepared: observsRowsPrepared,
     observs_rows_deduped_prewrite: observsRowsDedupedPrewrite,
     observs_written: observsWritten,
