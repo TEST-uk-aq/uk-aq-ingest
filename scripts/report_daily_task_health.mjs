@@ -197,14 +197,20 @@ async function mergeSupplementalSummary(summary, logger = console) {
     return summary;
   }
 
+  let handle;
   try {
     const fs = await import("node:fs/promises");
-    const stats = await fs.stat(file);
+    handle = await fs.open(file, "r");
+    const stats = await handle.stat();
     if (!stats.isFile() || stats.size > MAX_SUPPLEMENTAL_SUMMARY_BYTES) {
       throw new Error("supplemental summary must be a file no larger than 64 KiB");
     }
 
-    const supplemental = JSON.parse(await fs.readFile(file, "utf-8"));
+    const contents = await handle.readFile("utf-8");
+    if (Buffer.byteLength(contents, "utf-8") > MAX_SUPPLEMENTAL_SUMMARY_BYTES) {
+      throw new Error("supplemental summary must be a file no larger than 64 KiB");
+    }
+    const supplemental = JSON.parse(contents);
     if (supplemental === null || Array.isArray(supplemental) || typeof supplemental !== "object") {
       throw new Error("supplemental summary must contain a top-level JSON object");
     }
@@ -229,6 +235,15 @@ async function mergeSupplementalSummary(summary, logger = console) {
     const reason = error instanceof Error ? error.message : String(error);
     logger.warn(`Daily task health supplemental summary warning: ${reason}. Ignoring file.`);
     return summary;
+  } finally {
+    if (handle) {
+      try {
+        await handle.close();
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        logger.warn(`Daily task health supplemental summary close warning: ${reason}.`);
+      }
+    }
   }
 }
 
