@@ -38,7 +38,7 @@ LOG = logging.getLogger("ukair_bc_reference_refresh")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 CONNECTOR_CODE = "ukair_bc"
-NETWORK_CODE = "uk_black_carbon"
+NETWORK_CODE = "black_carbon"
 SERVICE_REF = "ukair_bc"
 SUPPORTED_FROM = date(2020, 1, 1)
 UK_AIR_BASE_URL = "https://uk-air.defra.gov.uk"
@@ -75,6 +75,13 @@ REQUIRED_CATALOGUE_COLUMNS = frozenset(
 )
 UKA_RE = re.compile(r"^UKA[0-9]+$")
 SITE_REF_RE = re.compile(r"^[A-Z0-9]+$")
+BLACK_CARBON_NETWORK_LABELS = frozenset(
+    {
+        "black carbon",
+        "black carbon network",
+        "uk black carbon network",
+    }
+)
 FLAT_FILES_SITE_REF_RE = re.compile(
     r"data/flat_files\?site_id=([A-Za-z0-9]+)", re.IGNORECASE
 )
@@ -224,7 +231,7 @@ def split_networks(value: Any) -> List[str]:
 
 def has_black_carbon_membership(networks: Iterable[str]) -> bool:
     normalized = {re.sub(r"\s+", " ", value.strip().lower()) for value in networks}
-    return bool(normalized & {"uk black carbon network", "black carbon network"})
+    return bool(normalized & BLACK_CARBON_NETWORK_LABELS)
 
 
 def parse_catalogue_csv(content: bytes) -> List[CatalogueStation]:
@@ -544,11 +551,15 @@ def resolve_metadata(schemas: SupabaseSchemas) -> Dict[str, Any]:
         select="id,network_code,display_name,public_display_enabled",
     )
     if int(connector.get("default_network_id") or 0) != int(network["id"]):
-        raise RuntimeError("ukair_bc connector default_network_id does not match uk_black_carbon")
+        raise RuntimeError(
+            f"{CONNECTOR_CODE} connector default_network_id does not match {NETWORK_CODE}"
+        )
     if bool(connector.get("poll_enabled")):
         raise RuntimeError("ukair_bc.poll_enabled must remain false for reference refresh")
     if bool(network.get("public_display_enabled")):
-        raise RuntimeError("uk_black_carbon must not be publicly displayed by this rollout")
+        raise RuntimeError(
+            f"{NETWORK_CODE} must not be publicly displayed by this rollout"
+        )
 
     properties = response_rows(
         schemas.core.table("observed_properties")

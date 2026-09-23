@@ -4,7 +4,10 @@ from pathlib import Path
 import pytest
 
 from scripts.ukair_bc.ukair_bc_reference_refresh import (
+    CONNECTOR_CODE,
+    NETWORK_CODE,
     PROPERTY_CONFIG,
+    SERVICE_REF,
     CatalogueStation,
     PlannedStation,
     SiteRefEvidence,
@@ -27,7 +30,7 @@ HEADER = (
 
 
 def catalogue_row(
-    uka: str = "UKA01055", *, end_date: str = "", networks: str = "UK Black Carbon Network"
+    uka: str = "UKA01055", *, end_date: str = "", networks: str = "Black Carbon"
 ) -> bytes:
     return (
         HEADER
@@ -43,6 +46,12 @@ def test_catalogue_parser_filters_supported_period_without_fixed_counts() -> Non
     assert current.relevant and current.active
     assert relevant_closed.relevant and not relevant_closed.active
     assert not old_closed.relevant
+
+
+def test_canonical_connector_network_and_service_identities() -> None:
+    assert NETWORK_CODE == "black_carbon"
+    assert CONNECTOR_CODE == "ukair_bc"
+    assert SERVICE_REF == "ukair_bc"
 
 
 def test_catalogue_parser_rejects_wrong_network_and_duplicate_uka() -> None:
