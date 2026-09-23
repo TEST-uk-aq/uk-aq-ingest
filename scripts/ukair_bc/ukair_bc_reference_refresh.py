@@ -988,7 +988,8 @@ def run_refresh(args: argparse.Namespace) -> Dict[str, Any]:
         ).execute()
 
     phenomena_rows = build_phenomena_rows(connector_id)
-    diagnostics = upsert_phenomena_via_rpc(schemas.public, phenomena_rows)
+    public = client.schema(os.getenv("UK_AQ_PUBLIC_SCHEMA") or "uk_aq_public")
+    diagnostics = upsert_phenomena_via_rpc(public, phenomena_rows)
     phenomenon_ids, property_ids = validate_phenomena_results(phenomena_rows, diagnostics)
     summary["phenomena_resolved"] = len(phenomenon_ids)
     for property_code, canonical in metadata["properties_by_code"].items():
