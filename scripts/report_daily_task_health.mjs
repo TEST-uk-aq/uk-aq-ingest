@@ -4,6 +4,7 @@ const RPC_SCHEMA = "uk_aq_public";
 const SUPABASE_RETRY_MAX_ATTEMPTS = 3;
 const SUPABASE_RETRY_DELAYS_MS = [250, 500];
 const SUPABASE_TRANSIENT_STATUS_CODES = new Set([502, 503, 504]);
+const MAX_SUPPLEMENTAL_SUMMARY_BYTES = 64 * 1024;
 const RETRY_SAFE_HEALTH_RPCS = new Set([
   "uk_aq_rpc_daily_task_finished",
   "uk_aq_rpc_daily_task_failed",
@@ -190,6 +191,47 @@ function buildSummary(jobStatus) {
   };
 }
 
+async function mergeSupplementalSummary(summary, logger = console) {
+  const file = optionalEnv("DAILY_TASK_HEALTH_SUPPLEMENTAL_SUMMARY_FILE");
+  if (!file) {
+    return summary;
+  }
+
+  try {
+    const fs = await import("node:fs/promises");
+    const stats = await fs.stat(file);
+    if (!stats.isFile() || stats.size > MAX_SUPPLEMENTAL_SUMMARY_BYTES) {
+      throw new Error("supplemental summary must be a file no larger than 64 KiB");
+    }
+
+    const supplemental = JSON.parse(await fs.readFile(file, "utf-8"));
+    if (supplemental === null || Array.isArray(supplemental) || typeof supplemental !== "object") {
+      throw new Error("supplemental summary must contain a top-level JSON object");
+    }
+
+    const merged = { ...summary };
+    const reservedFields = [];
+    for (const [key, value] of Object.entries(supplemental)) {
+      const isUnsafeKey = ["__proto__", "constructor", "prototype"].includes(key);
+      if (Object.hasOwn(summary, key) || isUnsafeKey) {
+        reservedFields.push(key);
+      } else {
+        merged[key] = value;
+      }
+    }
+    if (reservedFields.length > 0) {
+      logger.warn(
+        `Daily task health supplemental summary ignored reserved fields: ${reservedFields.join(", ")}.`,
+      );
+    }
+    return merged;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    logger.warn(`Daily task health supplemental summary warning: ${reason}. Ignoring file.`);
+    return summary;
+  }
+}
+
 function stripUndefined(input) {
   Object.keys(input).forEach((key) => {
     if (input[key] === undefined) {
@@ -250,10 +292,11 @@ async function main() {
     const jobStatus = requiredEnv("JOB_STATUS");
     const status = mapJobStatus(jobStatus);
     const healthRunId = optionalEnv("DAILY_TASK_HEALTH_RUN_ID");
+    const summary = await mergeSupplementalSummary(buildSummary(jobStatus));
 
     if (healthRunId) {
       const payload = stripUndefined({
-        summary: buildSummary(jobStatus),
+        summary,
         finished_at: status === "Finished" ? now : undefined,
         failed_at: status === "Failed" ? now : undefined,
         error_message: status === "Failed"
@@ -296,7 +339,7 @@ async function main() {
         started_at: optionalEnv("DAILY_TASK_STARTED_AT") || undefined,
         finished_at: status === "Finished" ? now : undefined,
         failed_at: status === "Failed" ? now : undefined,
-        summary: buildSummary(jobStatus),
+        summary,
         error_message: status === "Failed"
           ? `GitHub Actions job ended with status: ${jobStatus}`
           : undefined,

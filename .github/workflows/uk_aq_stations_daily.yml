@@ -563,18 +563,36 @@ jobs:
         run: |
           python3 scripts/stations_daily/sync_obs_aqidb_uk_aq_core.py
 
-      - name: Fail Daily Stations if SOS work failed
-        if: >-
-          always() &&
-          (
-            steps.sync_sos_stations.outcome == 'failure' ||
-            steps.discover_sos_timeseries.outcome == 'failure'
-          )
+      - name: Build isolated UK-AIR SOS warning summary
+        if: always()
+        env:
+          SYNC_SOS_STATIONS_OUTCOME: ${{ steps.sync_sos_stations.outcome }}
+          DISCOVER_SOS_TIMESERIES_OUTCOME: ${{ steps.discover_sos_timeseries.outcome }}
+          SUPPLEMENTAL_SUMMARY_FILE: ${{ runner.temp }}/daily-stations-health-summary.json
         run: |
-          echo "ERROR: UK-AIR SOS work failed during Daily Stations."
-          echo "sync_sos_stations outcome: ${{ steps.sync_sos_stations.outcome }}"
-          echo "discover_sos_timeseries outcome: ${{ steps.discover_sos_timeseries.outcome }}"
-          exit 1
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const stages = [
+            ["sync_sos_stations", process.env.SYNC_SOS_STATIONS_OUTCOME],
+            ["discover_sos_timeseries", process.env.DISCOVER_SOS_TIMESERIES_OUTCOME],
+          ]
+            .filter(([, outcome]) => outcome === "failure")
+            .map(([stage]) => stage);
+
+          const summary = stages.length === 0 ? {} : {
+            warnings: [{
+              code: "uk_air_sos_reference_refresh_failed",
+              reason: "UK-AIR SOS station/reference refresh was unavailable; existing SOS reference data was retained.",
+              connector_code: "sos",
+              stages,
+            }],
+          };
+          fs.writeFileSync(process.env.SUPPLEMENTAL_SUMMARY_FILE, JSON.stringify(summary));
+          if (stages.length > 0) {
+            console.warn(`UK-AIR SOS reference refresh warning recorded for: ${stages.join(", ")}.`);
+          }
+          NODE
 
       - name: Report daily task health
         if: always()
@@ -584,5 +602,6 @@ jobs:
           DAILY_TASK_KEY: ingest.stations_daily
           DAILY_TASK_HEALTH_REPORT_STAGE: final
           DAILY_TASK_HEALTH_RUN_ID: ${{ steps.daily_task_health_started.outputs.health_run_id }}
+          DAILY_TASK_HEALTH_SUPPLEMENTAL_SUMMARY_FILE: ${{ runner.temp }}/daily-stations-health-summary.json
           JOB_STATUS: ${{ job.status }}
         run: node scripts/report_daily_task_health.mjs
