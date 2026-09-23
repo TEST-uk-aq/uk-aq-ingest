@@ -291,6 +291,15 @@ jobs:
           echo "ERROR: UK-AIR SOS timeseries discovery failed for a non-isolated reason."
           exit 1
 
+      - name: Refresh UK-AIR Black Carbon reference metadata
+        if: always() && job.status == 'success'
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+          UKAIR_BC_SITE_SEARCH_URL: ${{ vars.UKAIR_BC_SITE_SEARCH_URL }}
+        run: |
+          python3 scripts/ukair_bc/ukair_bc_reference_refresh.py --to-supabase
+
       - name: Sync Breathe London Communities stations
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
