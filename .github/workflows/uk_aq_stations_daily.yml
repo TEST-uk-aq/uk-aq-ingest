@@ -151,7 +151,20 @@ jobs:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
         run: |
+          set +e
           python3 scripts/sos/sos_list_stations.py --to-supabase
+          exit_code=$?
+          set -e
+          if [ "$exit_code" -eq 75 ]; then
+            echo "upstream_unavailable=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Reject non-isolated UK-AIR SOS station sync failure
+        if: steps.sync_sos_stations.outcome == 'failure' && steps.sync_sos_stations.outputs.upstream_unavailable != 'true'
+        run: |
+          echo "ERROR: UK-AIR SOS station sync failed for a non-isolated reason."
+          exit 1
 
       - name: Pause UK-AIR SOS polling
         id: pause_sos_polling
@@ -222,7 +235,14 @@ jobs:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
         run: |
+          set +e
           python3 scripts/sos/sos_ingest.py --discover
+          exit_code=$?
+          set -e
+          if [ "$exit_code" -eq 75 ]; then
+            echo "upstream_unavailable=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
 
       - name: Resume UK-AIR SOS polling
         id: resume_sos_polling
@@ -261,6 +281,15 @@ jobs:
         if: always() && (steps.pause_sos_polling.outputs.connector_found != '1' || steps.pause_sos_polling.outputs.poll_was_enabled != '1')
         run: |
           echo "Leaving UK-AIR SOS polling unchanged (workflow did not pause it)."
+
+      - name: Reject non-isolated UK-AIR SOS timeseries discovery failure
+        if: >-
+          always() &&
+          steps.discover_sos_timeseries.outcome == 'failure' &&
+          steps.discover_sos_timeseries.outputs.upstream_unavailable != 'true'
+        run: |
+          echo "ERROR: UK-AIR SOS timeseries discovery failed for a non-isolated reason."
+          exit 1
 
       - name: Sync Breathe London Communities stations
         env:
@@ -563,18 +592,38 @@ jobs:
         run: |
           python3 scripts/stations_daily/sync_obs_aqidb_uk_aq_core.py
 
-      - name: Fail Daily Stations if SOS work failed
-        if: >-
-          always() &&
-          (
-            steps.sync_sos_stations.outcome == 'failure' ||
-            steps.discover_sos_timeseries.outcome == 'failure'
-          )
+      - name: Build isolated UK-AIR SOS warning summary
+        if: always()
+        env:
+          SYNC_SOS_STATIONS_OUTCOME: ${{ steps.sync_sos_stations.outcome }}
+          SYNC_SOS_STATIONS_UPSTREAM_UNAVAILABLE: ${{ steps.sync_sos_stations.outputs.upstream_unavailable }}
+          DISCOVER_SOS_TIMESERIES_OUTCOME: ${{ steps.discover_sos_timeseries.outcome }}
+          DISCOVER_SOS_TIMESERIES_UPSTREAM_UNAVAILABLE: ${{ steps.discover_sos_timeseries.outputs.upstream_unavailable }}
+          SUPPLEMENTAL_SUMMARY_FILE: ${{ runner.temp }}/daily-stations-health-summary.json
         run: |
-          echo "ERROR: UK-AIR SOS work failed during Daily Stations."
-          echo "sync_sos_stations outcome: ${{ steps.sync_sos_stations.outcome }}"
-          echo "discover_sos_timeseries outcome: ${{ steps.discover_sos_timeseries.outcome }}"
-          exit 1
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const stages = [
+            ["sync_sos_stations", process.env.SYNC_SOS_STATIONS_OUTCOME, process.env.SYNC_SOS_STATIONS_UPSTREAM_UNAVAILABLE],
+            ["discover_sos_timeseries", process.env.DISCOVER_SOS_TIMESERIES_OUTCOME, process.env.DISCOVER_SOS_TIMESERIES_UPSTREAM_UNAVAILABLE],
+          ]
+            .filter(([, outcome, unavailable]) => outcome === "failure" && unavailable === "true")
+            .map(([stage]) => stage);
+
+          const summary = stages.length === 0 ? {} : {
+            warnings: [{
+              code: "uk_air_sos_reference_refresh_failed",
+              reason: "UK-AIR SOS station/reference refresh was unavailable; existing SOS reference data was retained.",
+              connector_code: "sos",
+              stages,
+            }],
+          };
+          fs.writeFileSync(process.env.SUPPLEMENTAL_SUMMARY_FILE, JSON.stringify(summary));
+          if (stages.length > 0) {
+            console.warn(`UK-AIR SOS reference refresh warning recorded for: ${stages.join(", ")}.`);
+          }
+          NODE
 
       - name: Report daily task health
         if: always()
@@ -584,5 +633,6 @@ jobs:
           DAILY_TASK_KEY: ingest.stations_daily
           DAILY_TASK_HEALTH_REPORT_STAGE: final
           DAILY_TASK_HEALTH_RUN_ID: ${{ steps.daily_task_health_started.outputs.health_run_id }}
+          DAILY_TASK_HEALTH_SUPPLEMENTAL_SUMMARY_FILE: ${{ runner.temp }}/daily-stations-health-summary.json
           JOB_STATUS: ${{ job.status }}
         run: node scripts/report_daily_task_health.mjs

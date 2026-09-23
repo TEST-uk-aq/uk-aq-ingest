@@ -50,6 +50,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.ingest_helpers import station_coords, station_in_bbox, station_in_bbox_or_missing_coords
+from scripts.sos.sos_failure_classification import (
+    SOS_UPSTREAM_UNAVAILABLE_EXIT_CODE,
+    SosUpstreamUnavailableError,
+    raise_for_retry_exhausted_status,
+    raise_for_retry_exhausted_transport,
+)
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
 from scripts.uk_aq_ingestdb_observation_writer import (
@@ -679,13 +685,13 @@ class UkAirClient:
                 failure = f"{type(exc).__name__} {request_label}: {exc}"
                 if self._retry_failed(attempt, failure):
                     continue
-                raise
+                raise_for_retry_exhausted_transport(exc, request_label)
 
             if resp.status_code in (429, 500, 502, 503, 504):
                 failure = f"HTTP {resp.status_code} {request_label}"
                 if self._retry_failed(attempt, failure):
                     continue
-                resp.raise_for_status()
+                raise_for_retry_exhausted_status(resp.status_code, request_label)
 
             try:
                 resp.raise_for_status()
@@ -3034,4 +3040,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SosUpstreamUnavailableError as exc:
+        LOG.error("%s", exc)
+        raise SystemExit(SOS_UPSTREAM_UNAVAILABLE_EXIT_CODE) from exc
