@@ -10,7 +10,9 @@ This contract is the cross-connector Daily Stations and scheduler/orchestration 
 
 - [`daily_stations_sos_isolation_contract.md`](daily_stations_sos_isolation_contract.md): narrow isolated SOS reference-stage failure handling;
 - [`network_catalogue_mirror_contract.md`](network_catalogue_mirror_contract.md): authoritative IngestDB-to-ObsAQIDB network catalogue mirror;
-- [`blondon_nodes_reference_discovery_contract.md`](blondon_nodes_reference_discovery_contract.md): deterministic Breathe London Nodes phenomena/timeseries discovery.
+- [`blondon_nodes_reference_discovery_contract.md`](blondon_nodes_reference_discovery_contract.md): current deterministic Breathe London Nodes phenomena/timeseries discovery.
+- [`blondon_communities_reference_discovery_contract.md`](blondon_communities_reference_discovery_contract.md): **future, not currently deployed** deterministic Breathe London Communities discovery.
+- [`blondon_reference_failure_isolation_contract.md`](blondon_reference_failure_isolation_contract.md): **future, not currently deployed** quarter-hour missing-reference self-repair and station-level partial continuation for both Breathe London connectors.
 
 ## Cross-repository authority
 
@@ -155,4 +157,4 @@ This umbrella does not authorise:
 - changing observation retention or R2 history;
 - merging connector identities;
 - deleting historical timeseries;
-- changing SOS, OpenAQ, Sensor.Community or Breathe London Communities lifecycle/source-observation behaviour except where an active narrower contract explicitly authorises it.
+- changing SOS, OpenAQ, Sensor.Community or Breathe London Communities lifecycle/source-observation behaviour except where an active narrower contract explicitly authorises it. The agreed future Communities discovery and shared Breathe London reference-resilience contracts authorise only their explicitly bounded new behaviour, not a wider lifecycle or observation transport change.
