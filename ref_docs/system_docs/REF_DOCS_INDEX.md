@@ -18,11 +18,11 @@ Source repository:
 
 Source commit:
 
-`bc14d60ddee0996a2765d3f84ba69ed9025fa94f`
+`773cc13e5f40bb8b2eb39ad7016e5bc2480793c7`
 
 Snapshot date:
 
-`23/09/2026`
+`24/09/2026`
 
 ## Reading rule
 
@@ -38,11 +38,14 @@ If a routed contract is not present in this mirror, do not infer its contents. R
 
 ## Mirrored scope
 
-This snapshot intentionally contains the contracts needed for the current TEST Daily Stations SOS warning work:
+This snapshot intentionally contains the contracts needed for the current TEST Daily Stations and Breathe London reference-resilience implementation work:
 
 - system overview and documentation authority rules;
-- ingest area routing;
-- Daily Stations cross-connector orchestration;
+- ingest area routing and Daily Stations cross-connector orchestration;
+- Breathe London Nodes deterministic reference discovery;
+- future Breathe London Communities deterministic reference discovery;
+- future shared Breathe London missing-reference self-repair and isolated station-failure behaviour;
+- station/timeseries metadata ownership;
 - the isolated UK-AIR SOS Daily Stations failure/warning contract.
 
 It is intentionally not a complete copy of all UK AQ system documentation.
