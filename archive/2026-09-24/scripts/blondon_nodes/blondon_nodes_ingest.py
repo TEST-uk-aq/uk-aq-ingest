@@ -294,9 +294,6 @@ class SupabaseWriter:
             os.getenv("UK_AQ_PUBLIC_SCHEMA") or "uk_aq_public"
         )
         self.observation_write_stats = empty_stats()
-        self.reference_repair_attempts = 0
-        self.missing_refs_repaired = 0
-        self.unresolved_timeseries_refs: List[str] = []
 
     def fetch_connector(self) -> Dict[str, Any]:
         resp = self.core.table("connectors").select("id,poll_enabled,poll_window_hours,poll_interval_minutes,poll_timeseries_batch_size").eq("connector_code", CONNECTOR_CODE).limit(1).execute()
@@ -339,7 +336,6 @@ class SupabaseWriter:
                 out[str(r["timeseries_ref"])] = int(r["id"])
         missing_rows = [row for row in rows if row["timeseries_ref"] not in out]
         if missing_rows:
-            self.reference_repair_attempts = 1
             self.core.table("timeseries").upsert(
                 missing_rows, on_conflict="connector_id,timeseries_ref"
             ).execute()
@@ -353,8 +349,10 @@ class SupabaseWriter:
                 for result_row in resp.data or []:
                     out[str(result_row["timeseries_ref"])] = int(result_row["id"])
         unresolved = [ref for ref in refs if ref not in out]
-        self.unresolved_timeseries_refs = unresolved
-        self.missing_refs_repaired = len(missing_rows) - len(unresolved)
+        if unresolved:
+            raise RuntimeError(
+                f"Missing Nodes timeseries identities after self-repair: {unresolved[:10]}"
+            )
         return out
 
     def upsert_observations(self, rows: Sequence[Dict[str, Any]]) -> int:
@@ -805,16 +803,6 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
         species=species,
     )
     ts_ids = writer.upsert_timeseries(ts_rows) if not args.dry_run else {r["timeseries_ref"]: -i-1 for i, r in enumerate(ts_rows)}
-    unresolved_timeseries_refs = writer.unresolved_timeseries_refs if not args.dry_run else []
-    isolated_station_refs = sorted({ref.rsplit(":", 1)[0] for ref in unresolved_timeseries_refs})
-    if isolated_station_refs and len(isolated_station_refs) >= len(stations):
-        raise RuntimeError(
-            "All selected Nodes stations have unresolved timeseries identities: "
-            + ",".join(unresolved_timeseries_refs[:10])
-        )
-    if isolated_station_refs:
-        LOG.error("Isolating Nodes stations with unresolved references: %s", isolated_station_refs)
-        stations = [row for row in stations if str(row["station_ref"]) not in set(isolated_station_refs)]
     client = BreatheLondonNodesClient(api_key, raw_capture=raw_capture)
     secondary_errors: List[str] = []
     secondary_error_count = 0
@@ -1008,10 +996,10 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
         last_observed_at = max(
             str(row["observed_at"]) for row in written_observation_rows
         )
-    partial = had_species_errors or stopped_reason is not None or bool(isolated_station_refs)
+    partial = had_species_errors or stopped_reason is not None
     if partial:
         run_status = "partial"
-        run_message = stopped_reason or ("reference_station_isolation" if isolated_station_refs else "species_errors")
+        run_message = stopped_reason or "species_errors"
     elif args.dry_run:
         run_status = "dry_run"
         run_message = "ok"
@@ -1058,11 +1046,6 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
         "empty_series": empty_series,
         "checkpoints": len(checkpoint_rows) if not args.dry_run else 0,
         "partial": partial,
-        "reference_repair_attempts": writer.reference_repair_attempts,
-        "missing_refs_repaired": writer.missing_refs_repaired,
-        "isolated_station_count": len(isolated_station_refs),
-        "isolated_station_refs": isolated_station_refs[:100],
-        "unresolved_timeseries_refs": unresolved_timeseries_refs[:200],
         "stopped_reason": stopped_reason,
         "dry_run": args.dry_run,
         **raw_capture.summary_fields(),

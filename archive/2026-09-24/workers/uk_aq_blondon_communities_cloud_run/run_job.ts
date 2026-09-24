@@ -477,11 +477,6 @@ function deriveRunSummary(ingestResponse: IngestResponse): {
 const STORED_RESPONSE_PAYLOAD_KEYS = [
   "partial",
   "stopped_reason",
-  "reference_repair_attempts",
-  "missing_refs_repaired",
-  "isolated_station_count",
-  "isolated_station_refs",
-  "unresolved_timeseries_refs",
   "stations_selected",
   "stations_processed",
   "stations_updated",

@@ -33,7 +33,6 @@ from scripts.blondon_communities.blondon_communities_list_stations import (
     load_api_key,
     normalize_station_payload,
 )
-from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
 
 load_dotenv()
 
@@ -58,7 +57,6 @@ SPECIES_CONFIG = {
         "source_label": "breathelondon:pm2.5",
         "notation": "PM2.5",
         "pollutant_label": "pm2.5",
-        "observed_property_code": "pm25",
     },
     "INO2": {
         "label": "NO2",
@@ -66,7 +64,6 @@ SPECIES_CONFIG = {
         "source_label": "breathelondon:no2",
         "notation": "NO2",
         "pollutant_label": "no2",
-        "observed_property_code": "no2",
     },
 }
 
@@ -357,11 +354,11 @@ def main() -> int:
                 "pollutant_label": config["pollutant_label"],
             }
         )
-    for row in phenomena_rows:
-        row.update({"source_uom": SPECIES_CONFIG[next(s for s in species_list if SPECIES_CONFIG[s]["source_label"] == row["source_label"])]["uom"], "mapping_kind": "raw_observed_property", "observed_property_code": SPECIES_CONFIG[next(s for s in species_list if SPECIES_CONFIG[s]["source_label"] == row["source_label"])]["observed_property_code"], "is_aqi_eligible": True})
-    diagnostics = upsert_phenomena_via_rpc(writer.public, phenomena_rows)
-    phenomenon_ids = {label: int(row["phenomenon_id"]) for label, row in diagnostics.items()}
-    observed_property_ids = {label: int(row["observed_property_id"]) for label, row in diagnostics.items()}
+    if not args.dry_run:
+        writer.upsert_phenomena(phenomena_rows)
+    phenomenon_ids = writer.fetch_phenomena_ids(
+        connector_id, [row["source_label"] for row in phenomena_rows]
+    )
 
     timeseries_rows = []
     for row in station_rows:
@@ -381,7 +378,6 @@ def main() -> int:
                     "service_ref": BLONDON_COMMUNITIES_SERVICE_REF,
                     "connector_id": connector_id,
                     "phenomenon_id": phenomenon_ids.get(config["source_label"]),
-                    "observed_property_id": observed_property_ids.get(config["source_label"]),
                     "extras": {"site_code": station_ref, "species": species},
                 }
             )

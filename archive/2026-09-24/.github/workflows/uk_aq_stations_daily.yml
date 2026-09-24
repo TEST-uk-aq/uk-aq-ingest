@@ -308,13 +308,6 @@ jobs:
         run: |
           python3 scripts/blondon_communities/blondon_communities_list_stations.py --to-supabase
 
-      - name: Discover Breathe London Communities timeseries
-        env:
-          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
-        run: |
-          node scripts/blondon_communities/blondon_communities_discover_timeseries.mjs
-
       - name: Sync Breathe London Nodes stations
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}

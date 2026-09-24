@@ -7,7 +7,6 @@ on:
     paths:
       - "workers/uk_aq_blondon_communities_cloud_run/**"
       - "supabase/functions/ingest_breathelondon/**"
-      - "shared/blondon_communities_reference.mjs"
       - "supabase/functions/_shared/cache.ts"
       - "supabase/functions/_shared/fetch_egress_patch.ts"
       - "supabase/functions/_shared/egress_metrics.ts"
