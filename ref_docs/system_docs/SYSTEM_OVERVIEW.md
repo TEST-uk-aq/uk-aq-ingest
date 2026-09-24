@@ -28,9 +28,9 @@ A normal coding task should enter through the relevant area below rather than re
 
 | Task or subsystem | Start here | Status |
 |---|---|---|
-| Connector ingest, Daily Stations discovery, Breathe London reference discovery, UK-AIR SOS polling/fallback | [`ingest/README.md`](ingest/README.md) | Active current runtime; also routes explicitly labelled future high-frequency canonicalisation contracts |
+| Connector ingest, Daily Stations discovery, Breathe London reference discovery, UK-AIR SOS polling/fallback | [`ingest/README.md`](ingest/README.md) | Active current runtime; also routes explicitly labelled future Breathe London Communities discovery and shared reference recovery, high-frequency and UK-AIR Black Carbon contracts |
 | Latest snapshot builder and current snapshot/API boundary | [`latest_snapshot/README.md`](latest_snapshot/README.md) | Active |
-| Canonical observation history, timeseries continuity, history indexes and current History Integrity repair | [`r2_history/README.md`](r2_history/README.md) | Active |
+| Canonical observation history, timeseries continuity, history indexes and current History Integrity repair | [`r2_history/README.md`](r2_history/README.md) | Active; also routes explicitly labelled future Black Carbon direct-R2 history authority |
 | Future dedicated Integrity Factory architecture | [`integrity_factory/README.md`](integrity_factory/README.md) | Future implementation authority; not current Integrity runtime |
 | UK AQ Media / AQ in the News discovery, editorial and public-feed subsystem | [`media/README.md`](media/README.md) | Active standalone runtime; also routes future homepage latest-six generation/cache authority; public website cut-over not yet done |
 | Calculated hourly DAQI / European AQI and station-history AQI behaviour | [`aqi-levels/README.md`](aqi-levels/README.md) | Active |
@@ -44,11 +44,11 @@ A normal coding task should enter through the relevant area below rather than re
 | Geography and postcode products | [`geography/README.md`](geography/README.md) | Active |
 | MacBook Pro local MySQL persistence, naming and TEST/LIVE isolation | [`local_mysql/README.md`](local_mysql/README.md) | Active |
 | GCP Cloud Billing export, Pro MySQL reporting and Dropbox archive | [`gcp_billing/README.md`](gcp_billing/README.md) | Future implementation authority; not yet deployed |
-| TEST GCP Cloud Logging analysis archive to Dropbox | [`gcp_logging_archive/README.md`](gcp_logging_archive/README.md) | Future implementation authority; collector prepared but not yet deployed/accepted |
+| GCP Cloud Logging analysis archive to Dropbox | [`gcp_logging_archive/README.md`](gcp_logging_archive/README.md) | Active TEST runtime on accepted environment-agnostic implementation; separate LIVE activation authorised but not yet deployed/accepted |
 | Monitoring and Supabase egress attribution | [`monitoring/README.md`](monitoring/README.md) | Partly active; broader migration pending |
 | Backup, restore and R2 history Dropbox backup | [`backup_and_recovery/README.md`](backup_and_recovery/README.md) | Partly active; broader migration pending |
 | Prune daily and retention outside completed R2-history contracts | `prune_and_retention/` | Area migration pending |
-| Observs outbox and partition maintenance | `observs_operations/` | Area migration pending |
+| Observs partition maintenance; outbox migration still pending | [`observs_operations/README.md`](observs_operations/README.md) | Active for partition maintenance; outbox/flush-service migration pending |
 | Public/private APIs outside completed history/AQI boundaries | `api_services/` | Area migration pending |
 | Cloudflare and GCP scheduling | `scheduling/` | Area migration pending |
 | Shared runtime components and cross-area invariants | `shared/` | Area migration pending |
