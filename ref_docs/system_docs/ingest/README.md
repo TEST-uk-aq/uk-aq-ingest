@@ -55,6 +55,20 @@ Use this for deterministic Nodes phenomena/timeseries identity, the `4 × active
 
 For source observations add only the relevant Nodes raw/normalisation/transport contract below.
 
+### Future Breathe London Communities reference discovery and shared partial recovery
+
+**Status: future implementation authority, not current deployed behaviour.**
+
+For the planned matched Communities/Nodes reference resilience implementation, read:
+
+1. [`contract.md`](contract.md) for Daily Stations and mirror gating;
+2. [`blondon_nodes_reference_discovery_contract.md`](blondon_nodes_reference_discovery_contract.md) for the existing four-species Nodes identity;
+3. [`blondon_communities_reference_discovery_contract.md`](blondon_communities_reference_discovery_contract.md) for the proposed two-species Communities Daily Stations stage;
+4. [`blondon_reference_failure_isolation_contract.md`](blondon_reference_failure_isolation_contract.md) for common quarter-hour targeted self-repair, failed-station checkpoint protection, partial status and systemic-failure boundaries;
+5. [`station_metadata_ownership_contract.md`](station_metadata_ownership_contract.md) when changing current reference-metadata ownership.
+
+Only add the compact transport specialist when the changed code actually crosses observation writer or cross-database delivery boundaries. These future documents do not assert that the Communities discovery stage or partial-run isolation is already deployed.
+
 ## Observation ingest routes
 
 ### Shared compact-ingest invariants
@@ -161,6 +175,16 @@ Start with [`sos/README.md`](sos/README.md).
 
 The SOS sub-area routes normal polling, current-day HTML fallback, parsing, acquisition provenance, interfaces, operations and validation separately.
 
+### Future UK-AIR Black Carbon connector
+
+Status: **future implementation authority; not current runtime behaviour**.
+
+Start with [`ukair_black_carbon/README.md`](ukair_black_carbon/README.md).
+
+The Black Carbon connector is a dedicated source identity, separate from SOS. Its hourly BC/UV observations are R2-only; IngestDB owns connector/network/station/timeseries metadata rather than observation persistence.
+
+For direct canonical R2 publication also read [`../r2_history/ukair_black_carbon_history_contract.md`](../r2_history/ukair_black_carbon_history_contract.md).
+
 ## Ingest plus historical R2 repair
 
 Start with the relevant ingest route above.
@@ -177,6 +201,8 @@ A normal current-ingest task should not preload R2-history contracts merely beca
 | [`daily_stations_sos_isolation_contract.md`](daily_stations_sos_isolation_contract.md) | Narrow isolated SOS reference-stage failure behaviour |
 | [`network_catalogue_mirror_contract.md`](network_catalogue_mirror_contract.md) | IngestDB-to-ObsAQIDB network catalogue/core mirror authority |
 | [`blondon_nodes_reference_discovery_contract.md`](blondon_nodes_reference_discovery_contract.md) | Deterministic Nodes Daily Stations phenomena/timeseries discovery |
+| [`blondon_communities_reference_discovery_contract.md`](blondon_communities_reference_discovery_contract.md) | Future Communities deterministic Daily Stations timeseries discovery; not yet deployed |
+| [`blondon_reference_failure_isolation_contract.md`](blondon_reference_failure_isolation_contract.md) | Future shared Nodes/Communities ingest-side repair and isolated station failure; not yet deployed |
 | [`compact_observation_transport_and_metadata_ownership_contract.md`](compact_observation_transport_and_metadata_ownership_contract.md) | Shared compact-ingest invariants/boundary |
 | [`station_metadata_ownership_contract.md`](station_metadata_ownership_contract.md) | Station/timeseries reference metadata ownership and Sensor.Community lifecycle split |
 | [`compact_observation_transport_contract.md`](compact_observation_transport_contract.md) | Compact observation/latest-value RPC, Pub/Sub delivery and egress transport |
@@ -188,6 +214,7 @@ A normal current-ingest task should not preload R2-history contracts merely beca
 | [`high_frequency_observation_canonicalisation_contract.md`](high_frequency_observation_canonicalisation_contract.md) | Future explicitly designated high-frequency source to five-minute canonical product boundary |
 | [`sensorcommunity_canonical_observation_contract.md`](sensorcommunity_canonical_observation_contract.md) | Future Sensor.Community raw/cleansing/five-minute canonical serving boundary |
 | [`sos/`](sos/) | UK-AIR SOS observation polling and authorised HTML fallback |
+| [`ukair_black_carbon/`](ukair_black_carbon/) | Future dedicated UK-AIR Black Carbon metadata/source contracts with R2-only observations |
 
 ## Implementation guidance
 
