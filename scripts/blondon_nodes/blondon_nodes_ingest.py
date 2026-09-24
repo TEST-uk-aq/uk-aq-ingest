@@ -15,7 +15,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -64,9 +64,39 @@ BASE_URL = os.getenv("BLONDON_NODES_BASE_URL", "https://breathe-london-7x54d7qf.
 DEFAULT_BATCH_SIZE = 500
 DEFAULT_OVERLAP_MINUTES = 10
 DEFAULT_SLEEP_SECONDS = 0.1
+TIMESERIES_REFERENCE_FIELDS = (
+    "id",
+    "connector_id",
+    "station_id",
+    "timeseries_ref",
+    "label",
+    "uom",
+    "service_ref",
+    "phenomenon_id",
+    "observed_property_id",
+    "extras",
+)
 
 def chunked(values: Sequence[Any], size: int) -> List[Sequence[Any]]:
     return [values[index:index + size] for index in range(0, len(values), size)]
+
+
+def timeseries_reference_matches(
+    existing: Mapping[str, Any], expected: Mapping[str, Any]
+) -> bool:
+    for field in TIMESERIES_REFERENCE_FIELDS:
+        if field in {"id", "extras"}:
+            continue
+        if existing.get(field) != expected.get(field):
+            return False
+    existing_extras = existing.get("extras")
+    expected_extras = expected.get("extras")
+    if not isinstance(existing_extras, dict) or not isinstance(expected_extras, dict):
+        return False
+    return all(
+        existing_extras.get(key) == value
+        for key, value in expected_extras.items()
+    )
 
 
 def utcnow() -> datetime:
@@ -297,6 +327,7 @@ class SupabaseWriter:
         self.reference_repair_attempts = 0
         self.missing_refs_repaired = 0
         self.unresolved_timeseries_refs: List[str] = []
+        self.reference_repair_errors: List[str] = []
 
     def fetch_connector(self) -> Dict[str, Any]:
         resp = self.core.table("connectors").select("id,poll_enabled,poll_window_hours,poll_interval_minutes,poll_timeseries_batch_size").eq("connector_code", CONNECTOR_CODE).limit(1).execute()
@@ -331,30 +362,68 @@ class SupabaseWriter:
     def upsert_timeseries(self, rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
         if not rows:
             return {}
-        refs = [r["timeseries_ref"] for r in rows]
-        out: Dict[str, int] = {}
+        expected_by_ref = {str(row["timeseries_ref"]): row for row in rows}
+        refs = list(expected_by_ref)
+        if len(refs) != len(rows):
+            raise RuntimeError("Duplicate generated Nodes timeseries identities")
+        before: Dict[str, Dict[str, Any]] = {}
         for refs_chunk in chunked(refs, 200):
-            resp = self.core.table("timeseries").select("id,timeseries_ref").eq("connector_id", rows[0]["connector_id"]).in_("timeseries_ref", refs_chunk).execute()
-            for r in resp.data or []:
-                out[str(r["timeseries_ref"])] = int(r["id"])
-        missing_rows = [row for row in rows if row["timeseries_ref"] not in out]
-        if missing_rows:
-            self.reference_repair_attempts = 1
-            self.core.table("timeseries").upsert(
-                missing_rows, on_conflict="connector_id,timeseries_ref"
+            resp = self.core.table("timeseries").select(
+                ",".join(TIMESERIES_REFERENCE_FIELDS)
+            ).eq("connector_id", rows[0]["connector_id"]).in_(
+                "timeseries_ref", refs_chunk
             ).execute()
-            missing_refs = [row["timeseries_ref"] for row in missing_rows]
-            for refs_chunk in chunked(missing_refs, 200):
-                resp = self.core.table("timeseries").select(
-                    "id,timeseries_ref"
-                ).eq("connector_id", rows[0]["connector_id"]).in_(
-                    "timeseries_ref", refs_chunk
+            for r in resp.data or []:
+                ref = str(r["timeseries_ref"])
+                if ref in before:
+                    raise RuntimeError(f"Duplicate stored Nodes timeseries identity: {ref}")
+                before[ref] = dict(r)
+        missing_rows = [row for row in rows if row["timeseries_ref"] not in before]
+        missing_by_station: Dict[str, List[Dict[str, Any]]] = {}
+        for row in missing_rows:
+            extras = row.get("extras") or {}
+            station_ref = str(extras.get("site_code") or "")
+            missing_by_station.setdefault(station_ref, []).append(row)
+        for station_ref, station_rows in missing_by_station.items():
+            self.reference_repair_attempts += 1
+            try:
+                self.core.table("timeseries").upsert(
+                    station_rows, on_conflict="connector_id,timeseries_ref"
                 ).execute()
-                for result_row in resp.data or []:
-                    out[str(result_row["timeseries_ref"])] = int(result_row["id"])
-        unresolved = [ref for ref in refs if ref not in out]
+            except Exception as exc:
+                message = f"{station_ref}:{exc}"
+                self.reference_repair_errors.append(message)
+                LOG.error("Nodes reference repair failed for %s: %s", station_ref, exc)
+
+        final: Dict[str, Dict[str, Any]] = {}
+        for refs_chunk in chunked(refs, 200):
+            resp = self.core.table("timeseries").select(
+                ",".join(TIMESERIES_REFERENCE_FIELDS)
+            ).eq("connector_id", rows[0]["connector_id"]).in_(
+                "timeseries_ref", refs_chunk
+            ).execute()
+            for r in resp.data or []:
+                ref = str(r["timeseries_ref"])
+                if ref in final:
+                    raise RuntimeError(f"Duplicate stored Nodes timeseries identity: {ref}")
+                final[ref] = dict(r)
+
+        out: Dict[str, int] = {}
+        unresolved: List[str] = []
+        for ref, expected in expected_by_ref.items():
+            actual = final.get(ref)
+            if actual is None or not timeseries_reference_matches(actual, expected):
+                unresolved.append(ref)
+                continue
+            if ref in before and int(actual["id"]) != int(before[ref]["id"]):
+                unresolved.append(ref)
+                continue
+            out[ref] = int(actual["id"])
         self.unresolved_timeseries_refs = unresolved
-        self.missing_refs_repaired = len(missing_rows) - len(unresolved)
+        unresolved_set = set(unresolved)
+        self.missing_refs_repaired = sum(
+            1 for row in missing_rows if row["timeseries_ref"] not in unresolved_set
+        )
         return out
 
     def upsert_observations(self, rows: Sequence[Dict[str, Any]]) -> int:
@@ -790,6 +859,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
             }
         )
         return 0
+    stations_selected = len(stations)
     if not args.dry_run:
         phenomenon_ids, observed_property_ids = writer.upsert_phenomena(
             connector_id, species
@@ -807,7 +877,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
     ts_ids = writer.upsert_timeseries(ts_rows) if not args.dry_run else {r["timeseries_ref"]: -i-1 for i, r in enumerate(ts_rows)}
     unresolved_timeseries_refs = writer.unresolved_timeseries_refs if not args.dry_run else []
     isolated_station_refs = sorted({ref.rsplit(":", 1)[0] for ref in unresolved_timeseries_refs})
-    if isolated_station_refs and len(isolated_station_refs) >= len(stations):
+    if isolated_station_refs and len(isolated_station_refs) >= stations_selected:
         raise RuntimeError(
             "All selected Nodes stations have unresolved timeseries identities: "
             + ",".join(unresolved_timeseries_refs[:10])
@@ -836,7 +906,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
             "connector_code": CONNECTOR_CODE,
             "connector_id": connector_id,
             "selected_species": species,
-            "selected_station_count": len(stations),
+            "selected_station_count": stations_selected,
             "run_end_time": end_time.isoformat(),
             "explicit_start_time": (
                 explicit_start.isoformat() if explicit_start is not None else None
@@ -1011,7 +1081,12 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
     partial = had_species_errors or stopped_reason is not None or bool(isolated_station_refs)
     if partial:
         run_status = "partial"
-        run_message = stopped_reason or ("reference_station_isolation" if isolated_station_refs else "species_errors")
+        if isolated_station_refs:
+            run_message = "reference_station_isolation"
+            if stopped_reason:
+                run_message += f":{stopped_reason}"
+        else:
+            run_message = stopped_reason or "species_errors"
     elif args.dry_run:
         run_status = "dry_run"
         run_message = "ok"
@@ -1032,7 +1107,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
         "run_status": run_status,
         "run_message": run_message,
         "last_observed_at": last_observed_at,
-        "stations_selected": len(stations),
+        "stations_selected": stations_selected,
         "stations_processed": stations_processed,
         "stations_updated": len(checkpoint_rows) if not args.dry_run else 0,
         "series_polled": api_calls,
@@ -1063,6 +1138,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
         "isolated_station_count": len(isolated_station_refs),
         "isolated_station_refs": isolated_station_refs[:100],
         "unresolved_timeseries_refs": unresolved_timeseries_refs[:200],
+        "reference_repair_errors": writer.reference_repair_errors[:100],
         "stopped_reason": stopped_reason,
         "dry_run": args.dry_run,
         **raw_capture.summary_fields(),

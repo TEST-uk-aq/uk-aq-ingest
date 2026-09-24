@@ -59,6 +59,8 @@ SPECIES_CONFIG = {
         "notation": "PM2.5",
         "pollutant_label": "pm2.5",
         "observed_property_code": "pm25",
+        "mapping_kind": "raw_observed_property",
+        "is_aqi_eligible": True,
     },
     "INO2": {
         "label": "NO2",
@@ -67,6 +69,8 @@ SPECIES_CONFIG = {
         "notation": "NO2",
         "pollutant_label": "no2",
         "observed_property_code": "no2",
+        "mapping_kind": "raw_observed_property",
+        "is_aqi_eligible": True,
     },
 }
 
@@ -121,6 +125,135 @@ def _parse_start_date(value: Optional[str]) -> Optional[datetime]:
 
 def _build_timeseries_ref(station_ref: str, species: str) -> str:
     return f"{station_ref}:{species}"
+
+
+def _build_phenomena_rows(
+    connector_id: int, species_list: Iterable[str]
+) -> List[Dict[str, Any]]:
+    rows = []
+    for species in species_list:
+        config = SPECIES_CONFIG[species]
+        rows.append(
+            {
+                "connector_id": connector_id,
+                "label": config["label"],
+                "source_label": config["source_label"],
+                "notation": config["notation"],
+                "pollutant_label": config["pollutant_label"],
+                "source_uom": config["uom"],
+                "mapping_kind": config["mapping_kind"],
+                "observed_property_code": config["observed_property_code"],
+                "is_aqi_eligible": config["is_aqi_eligible"],
+            }
+        )
+    return rows
+
+
+def _response_rows(response: Any) -> List[Dict[str, Any]]:
+    data = response.data if hasattr(response, "data") else response.get("data")
+    return [dict(row) for row in (data or [])]
+
+
+def _validate_canonical_mappings(
+    input_rows: Iterable[Dict[str, Any]],
+    diagnostics: Dict[str, Dict[str, Any]],
+) -> Tuple[Dict[str, int], Dict[str, int]]:
+    phenomenon_ids: Dict[str, int] = {}
+    observed_property_ids: Dict[str, int] = {}
+    for input_row in input_rows:
+        source_label = str(input_row["source_label"])
+        diagnostic = diagnostics.get(source_label)
+        if not diagnostic or diagnostic.get("phenomenon_id") is None:
+            raise RuntimeError(
+                f"Canonical mapping missing phenomenon_id for {source_label}"
+            )
+        if diagnostic.get("observed_property_id") is None:
+            raise RuntimeError(
+                "Canonical mapping missing observed_property_id for "
+                f"{source_label}"
+            )
+        if diagnostic.get("mapping_warning"):
+            raise RuntimeError(
+                f"Canonical mapping warning for {source_label}: "
+                f"{diagnostic['mapping_warning']}"
+            )
+        if (
+            diagnostic.get("observed_property_code")
+            != input_row["observed_property_code"]
+        ):
+            raise RuntimeError(
+                f"Canonical observed-property mismatch for {source_label}"
+            )
+        if diagnostic.get("mapping_kind") != input_row["mapping_kind"]:
+            raise RuntimeError(f"Canonical mapping-kind mismatch for {source_label}")
+        if (
+            diagnostic.get("is_aqi_eligible")
+            is not input_row["is_aqi_eligible"]
+        ):
+            raise RuntimeError(
+                f"Canonical AQI-eligibility mismatch for {source_label}"
+            )
+        phenomenon_ids[source_label] = int(diagnostic["phenomenon_id"])
+        observed_property_ids[source_label] = int(
+            diagnostic["observed_property_id"]
+        )
+    return phenomenon_ids, observed_property_ids
+
+
+def _read_canonical_mappings(
+    writer: SupabaseWriter,
+    connector_id: int,
+    phenomena_rows: Iterable[Dict[str, Any]],
+) -> Tuple[Dict[str, int], Dict[str, int]]:
+    input_rows = list(phenomena_rows)
+    source_labels = [str(row["source_label"]) for row in input_rows]
+    phenomena_response = (
+        writer.core.table("phenomena")
+        .select("id,source_label,observed_property_id")
+        .eq("connector_id", connector_id)
+        .in_("source_label", source_labels)
+        .execute()
+    )
+    mappings_response = (
+        writer.core.table("observed_property_mappings")
+        .select(
+            "source_label,observed_property_id,observed_property_code,"
+            "mapping_kind,is_aqi_eligible,is_active"
+        )
+        .eq("connector_id", connector_id)
+        .in_("source_label", source_labels)
+        .execute()
+    )
+    phenomena = {
+        str(row["source_label"]): dict(row)
+        for row in _response_rows(phenomena_response)
+    }
+    mappings = {
+        str(row["source_label"]): dict(row)
+        for row in _response_rows(mappings_response)
+    }
+    diagnostics: Dict[str, Dict[str, Any]] = {}
+    for source_label in source_labels:
+        phenomenon = phenomena.get(source_label, {})
+        mapping = mappings.get(source_label, {})
+        mapping_warning = None
+        if not mapping:
+            mapping_warning = "missing_mapping"
+        elif mapping.get("is_active") is not True:
+            mapping_warning = "inactive_mapping"
+        elif phenomenon.get("observed_property_id") != mapping.get(
+            "observed_property_id"
+        ):
+            mapping_warning = "phenomenon_mapping_mismatch"
+        diagnostics[source_label] = {
+            "phenomenon_id": phenomenon.get("id"),
+            "observed_property_id": phenomenon.get("observed_property_id"),
+            "observed_property_code": mapping.get("observed_property_code"),
+            "mapping_kind": mapping.get("mapping_kind"),
+            "is_aqi_eligible": mapping.get("is_aqi_eligible"),
+            "mapping_warning": mapping_warning,
+        }
+    return _validate_canonical_mappings(input_rows, diagnostics)
 
 
 def _extract_observations(
@@ -345,23 +478,19 @@ def main() -> int:
         LOG.warning("No station ids resolved for Breathe London.")
         return 0
 
-    phenomena_rows = []
-    for species in species_list:
-        config = SPECIES_CONFIG[species]
-        phenomena_rows.append(
-            {
-                "connector_id": connector_id,
-                "label": config["label"],
-                "source_label": config["source_label"],
-                "notation": config["notation"],
-                "pollutant_label": config["pollutant_label"],
-            }
+    phenomena_rows = _build_phenomena_rows(connector_id, species_list)
+    if args.dry_run:
+        phenomenon_ids, observed_property_ids = _read_canonical_mappings(
+            writer,
+            connector_id,
+            phenomena_rows,
         )
-    for row in phenomena_rows:
-        row.update({"source_uom": SPECIES_CONFIG[next(s for s in species_list if SPECIES_CONFIG[s]["source_label"] == row["source_label"])]["uom"], "mapping_kind": "raw_observed_property", "observed_property_code": SPECIES_CONFIG[next(s for s in species_list if SPECIES_CONFIG[s]["source_label"] == row["source_label"])]["observed_property_code"], "is_aqi_eligible": True})
-    diagnostics = upsert_phenomena_via_rpc(writer.public, phenomena_rows)
-    phenomenon_ids = {label: int(row["phenomenon_id"]) for label, row in diagnostics.items()}
-    observed_property_ids = {label: int(row["observed_property_id"]) for label, row in diagnostics.items()}
+    else:
+        diagnostics = upsert_phenomena_via_rpc(writer.public, phenomena_rows)
+        phenomenon_ids, observed_property_ids = _validate_canonical_mappings(
+            phenomena_rows,
+            diagnostics,
+        )
 
     timeseries_rows = []
     for row in station_rows:
