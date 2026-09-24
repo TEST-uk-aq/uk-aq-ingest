@@ -548,7 +548,7 @@ def resolve_metadata(schemas: SupabaseSchemas) -> Dict[str, Any]:
         table_name="networks",
         code_field="network_code",
         code=NETWORK_CODE,
-        select="id,network_code,display_name,public_display_enabled",
+        select="id,network_code,display_name",
     )
     if int(connector.get("default_network_id") or 0) != int(network["id"]):
         raise RuntimeError(
@@ -556,10 +556,6 @@ def resolve_metadata(schemas: SupabaseSchemas) -> Dict[str, Any]:
         )
     if bool(connector.get("poll_enabled")):
         raise RuntimeError("ukair_bc.poll_enabled must remain false for reference refresh")
-    if bool(network.get("public_display_enabled")):
-        raise RuntimeError(
-            f"{NETWORK_CODE} must not be publicly displayed by this rollout"
-        )
 
     properties = response_rows(
         schemas.core.table("observed_properties")
