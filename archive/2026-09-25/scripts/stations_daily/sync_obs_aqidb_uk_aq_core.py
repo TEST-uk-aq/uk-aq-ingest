@@ -58,11 +58,10 @@ _NETWORKS_TABLE_META = {
         {"column_name": "network_type", "udt_name": "text", "is_nullable": "NO", "column_default": None, "ordinal_position": 4},
         {"column_name": "ingest_enabled", "udt_name": "bool", "is_nullable": "NO", "column_default": "true", "ordinal_position": 5},
         {"column_name": "public_display_enabled", "udt_name": "bool", "is_nullable": "NO", "column_default": "false", "ordinal_position": 6},
-        {"column_name": "live_map_enabled", "udt_name": "bool", "is_nullable": "NO", "column_default": "false", "ordinal_position": 7},
-        {"column_name": "default_priority", "udt_name": "int4", "is_nullable": "NO", "column_default": "100", "ordinal_position": 8},
-        {"column_name": "metadata", "udt_name": "jsonb", "is_nullable": "NO", "column_default": "'{}'::jsonb", "ordinal_position": 9},
-        {"column_name": "created_at", "udt_name": "timestamptz", "is_nullable": "NO", "column_default": "now()", "ordinal_position": 10},
-        {"column_name": "updated_at", "udt_name": "timestamptz", "is_nullable": "NO", "column_default": "now()", "ordinal_position": 11},
+        {"column_name": "default_priority", "udt_name": "int4", "is_nullable": "NO", "column_default": "100", "ordinal_position": 7},
+        {"column_name": "metadata", "udt_name": "jsonb", "is_nullable": "NO", "column_default": "'{}'::jsonb", "ordinal_position": 8},
+        {"column_name": "created_at", "udt_name": "timestamptz", "is_nullable": "NO", "column_default": "now()", "ordinal_position": 9},
+        {"column_name": "updated_at", "udt_name": "timestamptz", "is_nullable": "NO", "column_default": "now()", "ordinal_position": 10},
     ],
 }
 
