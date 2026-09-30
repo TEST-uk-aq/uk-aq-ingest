@@ -292,9 +292,6 @@ const OPENAQ_SHARED_BUDGET_HOUR_LIMIT = Number(
   Deno.env.get("OPENAQ_SHARED_BUDGET_HOUR_LIMIT") ??
     DEFAULT_SHARED_BUDGET_HOUR_LIMIT,
 );
-const OPENAQ_SHARED_BUDGET_TRANSPORT = (
-  Deno.env.get("OPENAQ_SHARED_BUDGET_TRANSPORT") ?? "postgrest"
-).trim().toLowerCase();
 const OPENAQ_LAG_STAT: LagStat = parseLagStat(
   Deno.env.get("OPENAQ_LAG_STAT"),
 );
@@ -1572,51 +1569,16 @@ async function reserveSharedOpenaqBudget(
     return true;
   }
 
-  const budgetArgs = {
-    p_budget_key: sharedBudgetState.key,
-    p_tokens: requestedTokens,
-    p_minute_limit: sharedBudgetState.minuteLimit,
-    p_hour_limit: sharedBudgetState.hourLimit,
-    p_caller: sharedBudgetState.caller,
-  };
-  let budgetResponse: {
-    data: OpenAQSharedBudgetReserveRow[] | null;
-    error: { message: string } | null;
-  };
-  if (OPENAQ_SHARED_BUDGET_TRANSPORT === "database") {
-    try {
-      const { reserveOpenaqBudgetViaDatabase } = await import(
-        "./openaq_budget_database.ts"
-      );
-      budgetResponse = {
-        data: await reserveOpenaqBudgetViaDatabase({
-          pBudgetKey: budgetArgs.p_budget_key,
-          pTokens: budgetArgs.p_tokens,
-          pMinuteLimit: budgetArgs.p_minute_limit,
-          pHourLimit: budgetArgs.p_hour_limit,
-          pCaller: budgetArgs.p_caller,
-        }),
-        error: null,
-      };
-    } catch (error) {
-      budgetResponse = {
-        data: null,
-        error: error instanceof Error
-          ? error
-          : new Error("OpenAQ shared budget database reservation failed"),
-      };
-    }
-  } else if (OPENAQ_SHARED_BUDGET_TRANSPORT === "postgrest") {
-    budgetResponse = await rpcRequest<OpenAQSharedBudgetReserveRow[]>(
-      "uk_aq_rpc_openaq_token_budget_reserve",
-      budgetArgs,
-    );
-  } else {
-    budgetResponse = {
-      data: null,
-      error: new Error("Unsupported OpenAQ shared budget transport"),
-    };
-  }
+  const budgetResponse = await rpcRequest<OpenAQSharedBudgetReserveRow[]>(
+    "uk_aq_rpc_openaq_token_budget_reserve",
+    {
+      p_budget_key: sharedBudgetState.key,
+      p_tokens: requestedTokens,
+      p_minute_limit: sharedBudgetState.minuteLimit,
+      p_hour_limit: sharedBudgetState.hourLimit,
+      p_caller: sharedBudgetState.caller,
+    },
+  );
 
   if (budgetResponse.error || !Array.isArray(budgetResponse.data)) {
     sharedBudgetState.granted = false;
