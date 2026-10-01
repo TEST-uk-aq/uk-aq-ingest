@@ -186,7 +186,9 @@ export function classifyIngestDbObservationWriteFailure(error) {
     return { classification: "serialization_failure", retryable: true, ...fields };
   }
   if (
-    (code && (/^08/.test(code) || ["57P01", "57P02", "57P03"].includes(code))) ||
+    (code &&
+      (code === "CONNECT_TIMEOUT" || /^08/.test(code) ||
+        ["57P01", "57P02", "57P03"].includes(code))) ||
     /connection (?:terminated|reset|closed|refused)|econnreset|socket hang up|temporary network|network error|network request failed|fetch failed|error sending request|postgrest request timed out|request timed out|operation was aborted|aborterror/i
       .test(message)
   ) {
