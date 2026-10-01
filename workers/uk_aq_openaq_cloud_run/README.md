@@ -8,7 +8,9 @@ This Cloud Run service runs OpenAQ ingest in Google Cloud using the existing
 1. Checks connector state (`poll_enabled`, `scheduler_backend`) in `uk_aq_core.connectors`.
 2. Claims the connector via `uk_aq_public.uk_aq_rpc_dispatch_claim`.
 3. Selects due station refs using `uk_aq_public.uk_aq_rpc_openaq_select_station_refs`
-   with tiered + stale limits derived from connector `batch_size`.
+   with tiered + stale limits derived from the configured station `batch_size`.
+   The separate `max_requests_per_run` payload field controls the ingest request
+   allowance (and falls back to `batch_size` for older callers).
 4. Calls local OpenAQ ingest once with scoped `station_refs`.
 5. Records run status in `connectors` + `uk_aq_ingest_runs` (+ `error_logs` on failure).
 6. Loads the earliest due checkpoint through
@@ -27,6 +29,12 @@ Dropbox behavior in Cloud Run:
 - Wrapper-inserted direct failure `error_logs` rows are mirrored into `/error_log/YYYY-MM-DD/` and patch `error_logs.dropbox_path` when Dropbox error logging is enabled.
 - Existing OpenAQ log/raw uploads remain controlled by the ingest runtime.
 - Shared-budget throttles (`shared_budget_minute_limit` / `shared_budget_hour_limit`) are protective stops, not direct failures. They are persisted in the current `uk_aq_ingest_runs.response_payload.warnings` array and normal OpenAQ log, and are not inserted into `error_logs` or mirrored to `/error_log/YYYY-MM-DD/`.
+- If the rolling-hour wrapper allowance cannot supply a normal run's full
+  `max_requests_per_run`, the wrapper records a skipped `hourly_budget_wait`
+  outcome without selecting stations or invoking the ingest handler. It queues
+  the next run no earlier than the first rolling 60-minute expiry that restores
+  the full allowance (or the bounded rate-limit fallback if that time cannot be
+  derived).
 
 If no station refs are due, run is recorded as `skipped` (`no_station_refs`) and
 the worker only schedules the next check task.
@@ -100,8 +108,8 @@ gcloud run deploy uk-aq-openaq-ingest \
 - `OPENAQ_SHARED_BUDGET_ENFORCE` (default `true`; enforce DB-backed shared minute/hour token budget before each OpenAQ API call)
 - `OPENAQ_SHARED_BUDGET_KEY` (default `openaq`; shared budget key used across all OpenAQ callers)
 - `OPENAQ_SHARED_BUDGET_CALLER` (default `ingest_openaq`; caller label written into budget telemetry)
-- `OPENAQ_SHARED_BUDGET_MINUTE_LIMIT` (default `50`; hard shared per-minute cap)
-- `OPENAQ_SHARED_BUDGET_HOUR_LIMIT` (default `1500`; hard shared rolling-hour cap)
+- `OPENAQ_SHARED_BUDGET_MINUTE_LIMIT` (workflow/runtime default `40`; an existing TEST variable may remain `40` or `50`, but must not exceed `50`)
+- `OPENAQ_SHARED_BUDGET_HOUR_LIMIT` (default `1900`; hard shared rolling-hour cap, with an existing GitHub Actions variable taking precedence over the fallback)
 - `OPENAQ_STALE_LIMIT` (default `4`)
 - `OPENAQ_TIER1_RETRY_SECONDS` (default `300`; minimum seconds since `last_polled_at` for tier1 due candidates)
 - `OPENAQ_MIN_GAP_STATIONS` (default `1`; minimum selected gap stations needed to run regardless of non-gap count)
@@ -143,3 +151,6 @@ gcloud run deploy uk-aq-openaq-ingest \
 - If only later pending OpenAQ self-task(s) exist, those later tasks are deleted and the newly computed earlier task is enqueued.
 - If a run returns `rate_limit_reset_at`, any pending self-task scheduled before that reset time is deleted and replaced with a post-reset task.
 - Shared-budget reset hints are also honored (`shared_budget_hour_reset_at`, `shared_budget_minute_reset_at`, `shared_budget_retry_after_seconds`) when OpenAQ header reset metadata is absent.
+- An `hourly_budget_wait` uses the same reconciliation path so a pending task
+  before the calculated rolling-capacity release is replaced rather than
+  causing minute-by-minute retries.

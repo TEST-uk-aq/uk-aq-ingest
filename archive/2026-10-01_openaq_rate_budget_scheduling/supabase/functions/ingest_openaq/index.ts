@@ -21,7 +21,6 @@ type PollRequest = {
   station_refs?: string[];
   window_hours?: number;
   batch_size?: number;
-  max_requests_per_run?: number;
   tier1_retry_seconds?: number;
   dry_run?: boolean;
 };
@@ -203,7 +202,7 @@ const DEFAULT_GAP_REQUESTS_REMAINING_MIN = 10;
 const DEFAULT_MIN_GAP_STATIONS = 1;
 const DEFAULT_MIN_NON_GAP_STATIONS = 10;
 const DEFAULT_SHARED_BUDGET_MINUTE_LIMIT = 40;
-const DEFAULT_SHARED_BUDGET_HOUR_LIMIT = 1900;
+const DEFAULT_SHARED_BUDGET_HOUR_LIMIT = 1500;
 const DEFAULT_SHARED_BUDGET_CALLER = "ingest_openaq";
 const DEFAULT_POSTGREST_TIMEOUT_MS = 30_000;
 type LagStat = "min" | "median" | "p25";
@@ -1479,9 +1478,6 @@ async function maybeSleepForRateLimit(
 }
 
 function toNumberOrNull(value: unknown): number | null {
-  if (value === null || value === undefined || value === "") {
-    return null;
-  }
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     return null;
@@ -1490,9 +1486,7 @@ function toNumberOrNull(value: unknown): number | null {
 }
 
 function applySharedBudgetRow(row: OpenAQSharedBudgetReserveRow): void {
-  sharedBudgetState.granted = typeof row.granted === "boolean"
-    ? row.granted
-    : null;
+  sharedBudgetState.granted = row.granted === true;
   sharedBudgetState.reason = row.reason ?? null;
   sharedBudgetState.requestedTokens = toNumberOrNull(row.requested_tokens);
   sharedBudgetState.minuteUsedBefore = toNumberOrNull(row.minute_used_before);
@@ -2693,19 +2687,8 @@ serve(async (req) => {
   const windowHours = Number(payload.window_hours ?? DEFAULT_WINDOW_HOURS);
   const dryRun = payload.dry_run ?? false;
   const requestedBatchSize = Number(payload.batch_size);
-  const stationBatchSize = positiveInt(
-    Number.isFinite(requestedBatchSize)
-      ? requestedBatchSize
-      : OPENAQ_MAX_REQUESTS_PER_RUN,
-    DEFAULT_MAX_REQUESTS_PER_RUN,
-  );
-  const requestedMaxRequestsPerRun = payload.max_requests_per_run == null
-    ? Number.NaN
-    : Number(payload.max_requests_per_run);
   const maxRequestsPerRun = positiveInt(
-    Number.isFinite(requestedMaxRequestsPerRun)
-      ? requestedMaxRequestsPerRun
-      : Number.isFinite(requestedBatchSize)
+    Number.isFinite(requestedBatchSize)
       ? requestedBatchSize
       : OPENAQ_MAX_REQUESTS_PER_RUN,
     DEFAULT_MAX_REQUESTS_PER_RUN,
@@ -2717,13 +2700,13 @@ serve(async (req) => {
   const staleLimit = Math.min(
     staleLimitConfigured,
     DEFAULT_STALE_LIMIT,
-    Math.max(0, stationBatchSize),
+    Math.max(0, maxRequestsPerRun),
   );
   const tier1RetrySeconds = positiveInt(
     Number(payload.tier1_retry_seconds ?? OPENAQ_TIER1_RETRY_SECONDS),
     DEFAULT_TIER1_RETRY_SECONDS,
   );
-  const tieredLimit = Math.max(0, stationBatchSize - staleLimit);
+  const tieredLimit = Math.max(0, maxRequestsPerRun - staleLimit);
   const gapReserveMin = nonNegativeInt(
     OPENAQ_GAP_REQUESTS_REMAINING_MIN,
     DEFAULT_GAP_REQUESTS_REMAINING_MIN,
@@ -2883,7 +2866,6 @@ serve(async (req) => {
     window_hours: windowHours,
     dry_run: dryRun,
     station_refs: stationRefs.length ? stationRefs.length : 0,
-    batch_size: stationBatchSize,
     max_requests_per_run: maxRequestsPerRun,
     tiered_limit: tieredLimit,
     stale_limit: staleLimit,

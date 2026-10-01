@@ -223,8 +223,7 @@ type OpenAQHourlyBudgetState = {
   cap: number;
   used: number;
   remaining: number;
-  capacityAvailableAt: string | null;
-  providerBudgetResetAt: string | null;
+  resetAt: string | null;
   rowsConsidered: number;
   windowStartIso: string;
 };
@@ -330,17 +329,6 @@ function toIntegerOrNull(value: unknown): number | null {
   return Math.trunc(parsed);
 }
 
-function toNullableInteger(value: unknown): number | null {
-  if (value === null || value === undefined || value === "") {
-    return null;
-  }
-  return toIntegerOrNull(value);
-}
-
-function toNullableBoolean(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
-}
-
 function toPositiveIntegerOrNull(value: unknown): number | null {
   const parsed = toIntegerOrNull(value);
   if (parsed === null || parsed <= 0) {
@@ -386,22 +374,6 @@ function parseTimestamp(value: unknown): Date | null {
   return date;
 }
 
-function laterFutureTimestampIso(
-  current: string | null,
-  candidate: unknown,
-  nowMs: number,
-): string | null {
-  const candidateDate = parseTimestamp(candidate);
-  if (!candidateDate || candidateDate.getTime() <= nowMs) {
-    return current;
-  }
-  const currentDate = parseTimestamp(current);
-  if (!currentDate || candidateDate.getTime() > currentDate.getTime()) {
-    return candidateDate.toISOString();
-  }
-  return current;
-}
-
 function evaluateEligibility(connector: ConnectorConfig | null, now: Date): {
   eligible: boolean;
   reason: string;
@@ -443,12 +415,6 @@ function getBatchLimit(connector: ConnectorConfig | null): number {
     return value;
   }
   return DEFAULT_BATCH_LIMIT;
-}
-
-function getMaxRequestsPerRun(connector: ConnectorConfig | null): number {
-  return toPositiveIntegerOrNull(
-    REQUEST_PAYLOAD_OVERRIDES.max_requests_per_run,
-  ) ?? getBatchLimit(connector);
 }
 
 function postgrestHeaders(
@@ -603,7 +569,7 @@ async function loadEarliestNextDueAt(
 
 async function buildIngestPayload(
   connector: ConnectorConfig | null,
-  maxRequestsPerRun: number,
+  options: { batchLimitOverride?: number } = {},
 ): Promise<{
   payload: Record<string, unknown>;
   configuredBatchLimit: number;
@@ -621,7 +587,10 @@ async function buildIngestPayload(
     CONNECTOR_CODE;
   const windowHours = getWindowHours(connector);
   const configuredBatchLimit = getBatchLimit(connector);
-  const batchLimit = configuredBatchLimit;
+  const requestedOverride = toIntegerOrNull(options.batchLimitOverride);
+  const batchLimit = requestedOverride === null
+    ? configuredBatchLimit
+    : Math.max(0, Math.min(configuredBatchLimit, requestedOverride));
   const staleLimitConfigured = toPositiveIntegerOrNull(payload.stale_limit) ??
     DEFAULT_STALE_LIMIT;
   const staleLimit = Math.min(staleLimitConfigured, Math.max(0, batchLimit));
@@ -638,7 +607,6 @@ async function buildIngestPayload(
   payload.connector_code = connectorCode;
   payload.window_hours = windowHours;
   payload.batch_size = batchLimit;
-  payload.max_requests_per_run = maxRequestsPerRun;
   payload.tier1_retry_seconds = tier1RetrySeconds;
   payload.station_refs = stationRows.map((row) => row.station_ref);
 
@@ -778,13 +746,6 @@ const STORED_RESPONSE_PAYLOAD_KEYS = [
   "shared_budget_retry_after_seconds",
   "requests_total",
   "max_requests_per_run",
-  "hourly_budget_cap",
-  "hourly_budget_used",
-  "hourly_budget_remaining",
-  "hourly_budget_required_allowance",
-  "hourly_budget_capacity_available_at",
-  "hourly_budget_provider_reset_at",
-  "hourly_budget_wait_until",
   "lag_stat",
   "gap_requests_remaining_min",
   "gap_requests_planned",
@@ -863,7 +824,6 @@ async function resolveConnectorId(
 
 async function loadRecentHourlyRequestBudget(
   now: Date,
-  requiredAllowance: number,
 ): Promise<OpenAQHourlyBudgetState> {
   const windowStart = new Date(now.getTime() - 60 * 60 * 1000);
   const windowStartIso = windowStart.toISOString();
@@ -887,28 +847,12 @@ async function loadRecentHourlyRequestBudget(
 
   const usageRows: Array<{ runStartedAtMs: number; requests: number }> = [];
   let used = 0;
-  let providerBudgetResetAt: string | null = null;
   for (const row of rows) {
     const runStartedAt = parseTimestamp(row.run_started_at);
     if (!runStartedAt) {
       continue;
     }
     const payload = toObject(row.response_payload);
-    providerBudgetResetAt = laterFutureTimestampIso(
-      providerBudgetResetAt,
-      payload?.rate_limit_reset_at,
-      now.getTime(),
-    );
-    providerBudgetResetAt = laterFutureTimestampIso(
-      providerBudgetResetAt,
-      payload?.shared_budget_hour_reset_at,
-      now.getTime(),
-    );
-    providerBudgetResetAt = laterFutureTimestampIso(
-      providerBudgetResetAt,
-      payload?.shared_budget_minute_reset_at,
-      now.getTime(),
-    );
     const requestsTotal = toIntegerOrNull(payload?.requests_total) ?? 0;
     if (requestsTotal <= 0) {
       continue;
@@ -923,24 +867,18 @@ async function loadRecentHourlyRequestBudget(
 
   const cap = Math.max(1, OPENAQ_MAX_REQUESTS_PER_HOUR);
   const remaining = Math.max(0, cap - used);
-  const normalizedRequiredAllowance = Math.max(
-    1,
-    Math.trunc(requiredAllowance),
-  );
-  let capacityAvailableAt: string | null = null;
-  if (remaining < normalizedRequiredAllowance) {
+  let resetAt: string | null = null;
+  if (remaining <= 0) {
     let rollingUsed = used;
     for (const row of usageRows) {
       rollingUsed -= row.requests;
-      if (Math.max(0, cap - rollingUsed) >= normalizedRequiredAllowance) {
-        capacityAvailableAt = new Date(
-          row.runStartedAtMs + 60 * 60 * 1000,
-        ).toISOString();
+      if (rollingUsed < cap) {
+        resetAt = new Date(row.runStartedAtMs + 60 * 60 * 1000).toISOString();
         break;
       }
     }
-    if (!capacityAvailableAt) {
-      capacityAvailableAt = new Date(
+    if (!resetAt) {
+      resetAt = new Date(
         now.getTime() + OPENAQ_RATE_LIMIT_FALLBACK_SECONDS * 1000,
       ).toISOString();
     }
@@ -950,8 +888,7 @@ async function loadRecentHourlyRequestBudget(
     cap,
     used,
     remaining,
-    capacityAvailableAt,
-    providerBudgetResetAt,
+    resetAt,
     rowsConsidered: usageRows.length,
     windowStartIso,
   };
@@ -2026,22 +1963,16 @@ async function main(): Promise<void> {
     connectorId = await resolveConnectorId(null);
   }
 
-  const normalMaxRequestsPerRun = getMaxRequestsPerRun(connector);
-
   let hourlyBudget: OpenAQHourlyBudgetState = {
     cap: OPENAQ_MAX_REQUESTS_PER_HOUR,
     used: 0,
     remaining: OPENAQ_MAX_REQUESTS_PER_HOUR,
-    capacityAvailableAt: null,
-    providerBudgetResetAt: null,
+    resetAt: null,
     rowsConsidered: 0,
     windowStartIso: new Date(now.getTime() - 60 * 60 * 1000).toISOString(),
   };
   try {
-    hourlyBudget = await loadRecentHourlyRequestBudget(
-      now,
-      normalMaxRequestsPerRun,
-    );
+    hourlyBudget = await loadRecentHourlyRequestBudget(now);
   } catch (error) {
     logSummary("hourly_budget_lookup_failed", {
       trigger_mode: OPENAQ_TRIGGER_MODE,
@@ -2050,56 +1981,44 @@ async function main(): Promise<void> {
       fallback_cap: OPENAQ_MAX_REQUESTS_PER_HOUR,
     });
   }
-  if (hourlyBudget.remaining < normalMaxRequestsPerRun) {
-    const budgetWaitUntil = laterFutureTimestampIso(
-      hourlyBudget.capacityAvailableAt,
-      hourlyBudget.providerBudgetResetAt,
-      now.getTime(),
-    );
+  if (hourlyBudget.remaining <= 0) {
     await recordSkippedRun(
       connectorId,
       runStartedAtIso,
-      "hourly_budget_wait",
+      "Skipped - Hourly Limit",
       {
-        reason: "hourly_budget_wait",
+        stopped_reason: "hourly_rate_limit_guard",
+        rate_limit_stop: true,
+        rate_limit_stop_reason: "hourly_rate_limit_guard",
+        rate_limit_reset_at: hourlyBudget.resetAt,
         requests_total: 0,
-        max_requests_per_run: normalMaxRequestsPerRun,
-        hourly_budget_cap: hourlyBudget.cap,
-        hourly_budget_used: hourlyBudget.used,
-        hourly_budget_remaining: hourlyBudget.remaining,
-        hourly_budget_required_allowance: normalMaxRequestsPerRun,
-        hourly_budget_capacity_available_at: hourlyBudget.capacityAvailableAt,
-        hourly_budget_provider_reset_at: hourlyBudget.providerBudgetResetAt,
-        hourly_budget_wait_until: budgetWaitUntil,
+        max_requests_per_run: 0,
       },
     );
     await scheduleNextCheck(
       connectorId,
-      "hourly_budget_wait",
+      "rate_limit_hourly_guard",
       "skipped",
       false,
-      budgetWaitUntil,
+      hourlyBudget.resetAt,
     );
     logSummary("skipped", {
-      reason: "hourly_budget_wait",
+      reason: "rate_limit_hourly_guard",
       trigger_mode: OPENAQ_TRIGGER_MODE,
       connector_id: connectorId,
       max_requests_per_hour: hourlyBudget.cap,
       hourly_requests_used: hourlyBudget.used,
       hourly_requests_remaining: hourlyBudget.remaining,
-      required_requests_per_run: normalMaxRequestsPerRun,
       hourly_window_start: hourlyBudget.windowStartIso,
       hourly_rows_considered: hourlyBudget.rowsConsidered,
-      provider_budget_reset_at: hourlyBudget.providerBudgetResetAt,
-      next_retry_at: budgetWaitUntil,
+      next_retry_at: hourlyBudget.resetAt,
     });
     return;
   }
 
-  const payloadPlan = await buildIngestPayload(
-    connector,
-    normalMaxRequestsPerRun,
-  );
+  const payloadPlan = await buildIngestPayload(connector, {
+    batchLimitOverride: hourlyBudget.remaining,
+  });
   if (!payloadPlan.stationRows.length) {
     await recordSkippedRun(connectorId, runStartedAtIso, "no_station_refs");
     await scheduleNextCheck(
@@ -2134,7 +2053,6 @@ async function main(): Promise<void> {
     hourly_requests_remaining: hourlyBudget.remaining,
     configured_batch_limit: payloadPlan.configuredBatchLimit,
     batch_limit: payloadPlan.batchLimit,
-    max_requests_per_run: normalMaxRequestsPerRun,
     tiered_limit: payloadPlan.tieredLimit,
     stale_limit: payloadPlan.staleLimit,
     tier1_retry_seconds: payloadPlan.tier1RetrySeconds,
@@ -2347,28 +2265,26 @@ async function main(): Promise<void> {
       shared_budget_reason: toStringOrNull(
         summary.payload?.shared_budget_reason,
       ),
-      shared_budget_granted: toNullableBoolean(
-        summary.payload?.shared_budget_granted,
-      ),
-      shared_budget_minute_limit: toNullableInteger(
+      shared_budget_granted: summary.payload?.shared_budget_granted === true,
+      shared_budget_minute_limit: toIntegerOrNull(
         summary.payload?.shared_budget_minute_limit,
       ),
-      shared_budget_minute_used_after: toNullableInteger(
+      shared_budget_minute_used_after: toIntegerOrNull(
         summary.payload?.shared_budget_minute_used_after,
       ),
-      shared_budget_minute_remaining: toNullableInteger(
+      shared_budget_minute_remaining: toIntegerOrNull(
         summary.payload?.shared_budget_minute_remaining,
       ),
-      shared_budget_hour_limit: toNullableInteger(
+      shared_budget_hour_limit: toIntegerOrNull(
         summary.payload?.shared_budget_hour_limit,
       ),
-      shared_budget_hour_used_after: toNullableInteger(
+      shared_budget_hour_used_after: toIntegerOrNull(
         summary.payload?.shared_budget_hour_used_after,
       ),
-      shared_budget_hour_remaining: toNullableInteger(
+      shared_budget_hour_remaining: toIntegerOrNull(
         summary.payload?.shared_budget_hour_remaining,
       ),
-      shared_budget_retry_after_seconds: toNullableInteger(
+      shared_budget_retry_after_seconds: toIntegerOrNull(
         summary.payload?.shared_budget_retry_after_seconds,
       ),
       suppress_scheduling: suppressScheduling,
