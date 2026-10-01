@@ -59,20 +59,17 @@ jobs:
       SOS_STATION_BATCH_LIMIT: ${{ vars.SOS_STATION_BATCH_LIMIT || '1000' }}
       SOS_STALE_LIMIT: ${{ vars.SOS_STALE_LIMIT || '4' }}
       SOS_MAX_RUNTIME_SECONDS: ${{ vars.SOS_MAX_RUNTIME_SECONDS || '600' }}
-      SOS_INGESTDB_WRITE_TRANSPORT: ${{ vars.SOS_INGESTDB_WRITE_TRANSPORT || 'postgrest' }}
       UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
       UK_AQ_DROPBOX_ROOT: ${{ vars.UK_AQ_DROPBOX_ROOT }}
       UK_AIR_RAW_DROPBOX_FOLDER: ${{ vars.UK_AIR_RAW_DROPBOX_FOLDER || '/connectors/sos/raw_data' }}
       SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
       OBS_AQIDB_SECRET_KEY: ${{ secrets.OBS_AQIDB_SECRET_KEY }}
-      UK_AQ_GCP_CLOUD_RUN_DATABASE_URL: ${{ secrets.UK_AQ_GCP_CLOUD_RUN_DATABASE_URL }}
       SB_UK_AQ_CRON_SECRET: ${{ secrets.SB_UK_AQ_CRON_SECRET }}
       DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
       DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
       DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
       SB_SECRET_KEY_SECRET_NAME: ${{ vars.SB_SECRET_KEY_SECRET_NAME || 'SB_SECRET_KEY' }}
       OBS_AQIDB_SECRET_KEY_SECRET_NAME: ${{ vars.OBS_AQIDB_SECRET_KEY_SECRET_NAME || 'OBS_AQIDB_SECRET_KEY' }}
-      UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME: ${{ vars.UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME || 'UK_AQ_GCP_CLOUD_RUN_DATABASE_URL' }}
       SB_UK_AQ_CRON_SECRET_SECRET_NAME: ${{ vars.SB_UK_AQ_CRON_SECRET_SECRET_NAME || 'SB_UK_AQ_CRON_SECRET' }}
       DROPBOX_APP_KEY_SECRET_NAME: ${{ vars.DROPBOX_APP_KEY_SECRET_NAME || 'DROPBOX_APP_KEY' }}
       DROPBOX_APP_SECRET_SECRET_NAME: ${{ vars.DROPBOX_APP_SECRET_SECRET_NAME || 'DROPBOX_APP_SECRET' }}
@@ -107,24 +104,6 @@ jobs:
             echo "Missing required secret: SUPABASE_URL"
             exit 1
           fi
-          case "${SOS_INGESTDB_WRITE_TRANSPORT}" in
-            postgrest)
-              ;;
-            database)
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL:-}" ]; then
-                echo "SOS_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
-                exit 1
-              fi
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME:-}" ]; then
-                echo "SOS_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
-                exit 1
-              fi
-              ;;
-            *)
-              echo "SOS_INGESTDB_WRITE_TRANSPORT must be exactly postgrest or database."
-              exit 1
-              ;;
-          esac
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "pubsub_only" ] && [ -z "${GCP_OBSERVS_PUBSUB_TOPIC:-}" ]; then
             echo "OBSERVS_WRITE_MODE=pubsub_only requires GCP_OBSERVS_PUBSUB_TOPIC."
@@ -250,11 +229,6 @@ jobs:
           upsert_secret "${SB_SECRET_KEY_SECRET_NAME}" "${SB_SECRET_KEY}" 1
           upsert_secret "UK_AQ_EDGE_UPSTREAM_SECRET" "${UK_AQ_EDGE_UPSTREAM_SECRET}" 1
           upsert_secret "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" "${SB_UK_AQ_CRON_SECRET}" 0
-          if [ "${SOS_INGESTDB_WRITE_TRANSPORT}" = "database" ]; then
-            upsert_secret "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL}" 1
-          else
-            echo "Skipping shared database secret sync (SOS_INGESTDB_WRITE_TRANSPORT=${SOS_INGESTDB_WRITE_TRANSPORT})."
-          fi
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "direct" ]; then
             upsert_secret "${OBS_AQIDB_SECRET_KEY_SECRET_NAME}" "${OBS_AQIDB_SECRET_KEY}" 1
@@ -329,7 +303,6 @@ jobs:
           add_env SOS_STATION_BATCH_LIMIT
           add_env SOS_STALE_LIMIT
           add_env SOS_MAX_RUNTIME_SECONDS
-          add_env SOS_INGESTDB_WRITE_TRANSPORT
           add_env UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL
           add_env UK_AQ_DROPBOX_ROOT
           add_env UK_AIR_RAW_DROPBOX_FOLDER
@@ -344,11 +317,6 @@ jobs:
           secret_updates=()
           add_secret_binding "UK_AQ_EDGE_UPSTREAM_SECRET" "UK_AQ_EDGE_UPSTREAM_SECRET" 1
           add_secret_binding "SB_SECRET_KEY" "${SB_SECRET_KEY_SECRET_NAME}" 1
-          if [ "${SOS_INGESTDB_WRITE_TRANSPORT}" = "database" ]; then
-            add_secret_binding "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" 1
-          else
-            echo "Skipping shared database secret binding (SOS_INGESTDB_WRITE_TRANSPORT=${SOS_INGESTDB_WRITE_TRANSPORT})."
-          fi
           if [ -n "${SB_UK_AQ_CRON_SECRET:-}" ]; then
             add_secret_binding "SB_UK_AQ_CRON_SECRET" "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" 0
           fi

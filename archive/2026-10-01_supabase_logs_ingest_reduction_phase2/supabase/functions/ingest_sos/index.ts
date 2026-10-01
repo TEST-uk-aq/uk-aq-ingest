@@ -40,11 +40,6 @@ import {
 } from "./uk_aq_html_parser.ts";
 import { recordSosObservationChanges } from "./run_metrics.ts";
 import {
-  recordSosStationAttemptsViaDatabase,
-  updateSosLatestValuesViaDatabase,
-  upsertSosObservationsViaDatabase,
-} from "./sos_database.ts";
-import {
   readSosCompactChildPayload,
   type SosSelectedTimeseriesMetadata,
 } from "./selected_work.ts";
@@ -144,14 +139,6 @@ const SOS_SERVICE_LABEL = Deno.env.get("SOS_SERVICE_LABEL")
   ?? DEFAULT_SERVICE_LABEL;
 const SOS_CONNECTOR_CODE = Deno.env.get("SOS_CONNECTOR_CODE")
   ?? DEFAULT_CONNECTOR_CODE;
-const SOS_INGESTDB_WRITE_TRANSPORT = (() => {
-  const value = (Deno.env.get("SOS_INGESTDB_WRITE_TRANSPORT") ?? "").trim();
-  if (!value || value === "postgrest") return "postgrest";
-  if (value === "database") return "database";
-  throw new Error(
-    "SOS_INGESTDB_WRITE_TRANSPORT must be exactly postgrest or database.",
-  );
-})();
 const SOS_MAX_RUNTIME_SECONDS = Number(
   Deno.env.get("SOS_MAX_RUNTIME_SECONDS") ?? DEFAULT_MAX_RUNTIME_SECONDS,
 );
@@ -296,34 +283,25 @@ async function recordStationPollAttempt(
   const distinctStationIds = [...new Set(stationIds)].sort((a, b) => a - b);
   if (!distinctStationIds.length) return;
 
-  let affectedRows: number;
-  if (SOS_INGESTDB_WRITE_TRANSPORT === "database") {
-    affectedRows = await recordSosStationAttemptsViaDatabase(
-      distinctStationIds,
-      polledAtIso,
-    );
-  } else {
-    const { data, error } = await postgrestRequest<number>(
-      "POST",
-      "rpc/sos_record_station_attempts",
-      {},
-      {
-        p_station_ids: distinctStationIds,
-        // Historic RPC parameter name; schema will record this as station
-        // last_polled_at under the new attempt-semantic contract.
-        p_attempted_at: polledAtIso,
-      },
-      undefined,
-      UK_AQ_CORE_SCHEMA,
-    );
-    if (error) {
-      throw new Error(`Failed to record station poll attempt: ${error.message}`);
-    }
-    affectedRows = Number(data);
+  const { data, error } = await postgrestRequest<number>(
+    "POST",
+    "rpc/sos_record_station_attempts",
+    {},
+    {
+      p_station_ids: distinctStationIds,
+      // Historic RPC parameter name; schema will record this as station
+      // last_polled_at under the new attempt-semantic contract.
+      p_attempted_at: polledAtIso,
+    },
+    undefined,
+    UK_AQ_CORE_SCHEMA,
+  );
+  if (error) {
+    throw new Error(`Failed to record station poll attempt: ${error.message}`);
   }
-  if (affectedRows !== distinctStationIds.length) {
+  if (Number(data) !== distinctStationIds.length) {
     throw new Error(
-      `Station poll attempt count mismatch: expected ${distinctStationIds.length}, recorded ${String(affectedRows)}`,
+      `Station poll attempt count mismatch: expected ${distinctStationIds.length}, recorded ${String(data)}`,
     );
   }
 }
@@ -859,27 +837,17 @@ serve(async (req) => {
                   buildCompactObservationRpcArgsV2(chunk, acquisitionMethod),
                 ),
               writeChunk: async (chunk: Record<string, unknown>[]) => {
-                const args = buildCompactObservationRpcArgsV2(
-                  chunk,
-                  acquisitionMethod,
+                const { data, error } = await postgrestRequest<
+                  Array<{ observations_upserted: number }>
+                >(
+                  "POST",
+                  "rpc/uk_aq_rpc_observations_compact_upsert_v2",
+                  {},
+                  buildCompactObservationRpcArgsV2(chunk, acquisitionMethod),
+                  undefined,
+                  "uk_aq_public",
                 );
-                let data: Array<{ observations_upserted: number }> | null;
-                if (SOS_INGESTDB_WRITE_TRANSPORT === "database") {
-                  data = await upsertSosObservationsViaDatabase(args);
-                } else {
-                  const result = await postgrestRequest<
-                    Array<{ observations_upserted: number }>
-                  >(
-                    "POST",
-                    "rpc/uk_aq_rpc_observations_compact_upsert_v2",
-                    {},
-                    args,
-                    undefined,
-                    "uk_aq_public",
-                  );
-                  if (result.error) throw result.error;
-                  data = result.data;
-                }
+                if (error) throw error;
                 observationsUpserted += recordSosObservationChanges(
                   data,
                   timeseriesId,
@@ -2867,34 +2835,18 @@ async function upsertLastValue(
   }
 
   const { error } = lastPoint.value !== null && lastPoint.value !== undefined
-    ? SOS_INGESTDB_WRITE_TRANSPORT === "database"
-      ? await (async () => {
-        try {
-          const data = await updateSosLatestValuesViaDatabase({
-            timeseries_ids: [seriesId],
-            last_values: [lastPoint.value as number],
-            last_value_ats: [lastPoint.observed_at],
-          });
-          return { data, error: null };
-        } catch (databaseError) {
-          return {
-            data: null,
-            error: { message: boundMessage(databaseError) },
-          };
-        }
-      })()
-      : await postgrestRequest(
-        "POST",
-        "rpc/uk_aq_rpc_timeseries_last_values_compact_update_v1",
-        {},
-        {
-          timeseries_ids: [seriesId],
-          last_values: [lastPoint.value],
-          last_value_ats: [lastPoint.observed_at],
-        },
-        undefined,
-        "uk_aq_public",
-      )
+    ? await postgrestRequest(
+      "POST",
+      "rpc/uk_aq_rpc_timeseries_last_values_compact_update_v1",
+      {},
+      {
+        timeseries_ids: [seriesId],
+        last_values: [lastPoint.value],
+        last_value_ats: [lastPoint.observed_at],
+      },
+      undefined,
+      "uk_aq_public",
+    )
     : await postgrestRequest(
       "PATCH",
       "timeseries",
