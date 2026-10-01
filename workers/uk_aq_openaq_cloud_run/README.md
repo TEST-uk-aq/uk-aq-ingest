@@ -108,7 +108,7 @@ gcloud run deploy uk-aq-openaq-ingest \
 - `OPENAQ_SHARED_BUDGET_ENFORCE` (default `true`; enforce DB-backed shared minute/hour token budget before each OpenAQ API call)
 - `OPENAQ_SHARED_BUDGET_KEY` (default `openaq`; shared budget key used across all OpenAQ callers)
 - `OPENAQ_SHARED_BUDGET_CALLER` (default `ingest_openaq`; caller label written into budget telemetry)
-- `OPENAQ_SHARED_BUDGET_MINUTE_LIMIT` (workflow/runtime default `40`; an existing TEST variable may remain `40` or `50`, but must not exceed `50`)
+- `OPENAQ_SHARED_BUDGET_MINUTE_LIMIT` (workflow/runtime default `50`; hard shared per-minute cap)
 - `OPENAQ_SHARED_BUDGET_HOUR_LIMIT` (default `1900`; hard shared rolling-hour cap, with an existing GitHub Actions variable taking precedence over the fallback)
 - `OPENAQ_STALE_LIMIT` (default `4`)
 - `OPENAQ_TIER1_RETRY_SECONDS` (default `300`; minimum seconds since `last_polled_at` for tier1 due candidates)
