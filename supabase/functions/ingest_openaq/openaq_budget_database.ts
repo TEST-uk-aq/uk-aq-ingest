@@ -16,7 +16,8 @@ export type OpenAQBudgetDatabaseRow = {
   requested_tokens: number;
   minute_bucket: string;
   minute_limit: number;
-  minute_used_before: number;
+  // Null when no current-minute row existed before the first reservation.
+  minute_used_before: number | null;
   minute_used_after: number;
   minute_remaining: number;
   minute_reset_at: string;
@@ -134,7 +135,6 @@ function normalizeBudgetRow(
     typeof raw.caller !== "string" ||
     requestedTokens === null ||
     minuteLimit === null ||
-    minuteUsedBefore === null ||
     minuteUsedAfter === null ||
     minuteRemaining === null ||
     hourLimit === null ||
