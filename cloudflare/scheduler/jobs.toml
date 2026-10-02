@@ -64,7 +64,7 @@ notes = "UK-AIR SOS ingest trigger"
 
 [jobs.uk_aq_waqn]
 enabled = true
-cron_expr = "*/5 * * * *"
+cron_expr = "*/15 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
@@ -73,7 +73,7 @@ notes = "WAQN ingest trigger; disabled until TEST source validation and connecto
 
 [jobs.uk_aq_saqn]
 enabled = false
-cron_expr = "17 * * * *"
+cron_expr = "*/5 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
