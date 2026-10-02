@@ -727,7 +727,10 @@ def run_ingest(
     )
     by_station: Dict[int, Dict[str, Dict[str, Any]]] = defaultdict(dict)
     for row in timeseries:
-        property_code = property_codes.get(int(row["observed_property_id"]))
+        property_id = row.get("observed_property_id")
+        if property_id is None:
+            continue
+        property_code = property_codes.get(int(property_id))
         if property_code in PROPERTY_TO_SPEC:
             by_station[int(row["station_id"])][property_code] = row
 
