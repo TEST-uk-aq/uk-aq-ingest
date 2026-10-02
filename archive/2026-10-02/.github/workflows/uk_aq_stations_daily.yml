@@ -1,0 +1,654 @@
+name: UK-AQ Stations Daily Sync
+
+permissions:
+  contents: write
+
+on:
+  # Intended external schedule:
+  #   03:00 UTC daily via Cloudflare Worker
+  # Previous GitHub cron:
+  #   schedule:
+  #     - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: uk-aq-stations-daily
+  cancel-in-progress: false
+
+jobs:
+  sync-stations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SOS_CONNECTOR_CODE: sos
+      SCOMM_CONNECTOR_CODE: sensorcommunity
+      OPENAQ_POLL_WAS_ENABLED: "0"
+      SOS_POLL_WAS_ENABLED: "0"
+      RUN_SCOMM_STATIONS_EXPORT: "0"
+      DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+      DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+      DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+      UK_AQ_DROPBOX_ROOT: ${{ vars.UK_AQ_DROPBOX_ROOT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js for daily task health reporting
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Report daily task health (started)
+        id: daily_task_health_started
+        env:
+          SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.OBS_AQIDB_SECRET_KEY }}
+          DAILY_TASK_KEY: ingest.stations_daily
+          DAILY_TASK_HEALTH_REPORT_STAGE: started
+        run: node scripts/report_daily_task_health.mjs
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install requests python-dotenv supabase pyproj psycopg2-binary
+
+      - name: Validate SUPABASE_DB_URL for pooler
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL || secrets.DATABASE_URL }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from urllib.parse import urlparse
+
+          dsn = (os.environ.get("SUPABASE_DB_URL") or "").strip()
+          if not dsn:
+              raise SystemExit("Missing SUPABASE_DB_URL (or DATABASE_URL) secret.")
+
+          parsed = urlparse(dsn)
+          host = (parsed.hostname or "").lower()
+          user = parsed.username or ""
+
+          if host.endswith(".pooler.supabase.com") and "." not in user:
+              raise SystemExit(
+                  "Invalid SUPABASE_DB_URL for Supabase pooler host: username must be "
+                  "'postgres.<project_ref>' (not plain 'postgres')."
+              )
+
+          print(f"SUPABASE_DB_URL looks valid for host={host}, user={user}.")
+          PY
+
+      - name: Pause OpenAQ polling
+        id: pause_openaq_polling
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import requests
+
+          supabase_url = os.environ.get("SUPABASE_URL")
+          supabase_key = os.environ.get("SB_SECRET_KEY")
+          if not supabase_url or not supabase_key:
+              raise SystemExit("SUPABASE_URL and SB_SECRET_KEY are required.")
+          url = f"{supabase_url}/rest/v1/connectors"
+          headers = {
+              "apikey": supabase_key,
+              "Authorization": f"Bearer {supabase_key}",
+              "Content-Type": "application/json",
+              "Accept-Profile": "uk_aq_core",
+              "Content-Profile": "uk_aq_core",
+          }
+          check = requests.get(
+              url,
+              params={"connector_code": "eq.openaq", "select": "id,poll_enabled"},
+              headers=headers,
+              timeout=30,
+          )
+          check.raise_for_status()
+          rows = check.json()
+          connector_found = bool(rows)
+          raw_poll_enabled = rows[0].get("poll_enabled") if rows else None
+          if isinstance(raw_poll_enabled, bool):
+              poll_enabled = raw_poll_enabled
+          elif isinstance(raw_poll_enabled, (int, float)):
+              poll_enabled = raw_poll_enabled != 0
+          elif isinstance(raw_poll_enabled, str):
+              poll_enabled = raw_poll_enabled.strip().lower() in {"1", "true", "t", "yes", "on"}
+          else:
+              poll_enabled = False
+          resp = requests.patch(
+              url,
+              params={"connector_code": "eq.openaq"},
+              headers=headers,
+              json={"poll_enabled": False},
+              timeout=30,
+          ) if connector_found and poll_enabled else None
+          if resp is not None:
+              resp.raise_for_status()
+              print("Paused openaq polling.")
+          else:
+              print(
+                  "Skipped pause for openaq (connector_found="
+                  f"{connector_found}, poll_enabled={poll_enabled})."
+              )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"connector_found={'1' if connector_found else '0'}\n")
+              handle.write(f"poll_was_enabled={'1' if poll_enabled else '0'}\n")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"OPENAQ_POLL_WAS_ENABLED={'1' if poll_enabled else '0'}\n")
+          PY
+
+      - name: Sync UK-AIR SOS stations
+        id: sync_sos_stations
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          set +e
+          python3 scripts/sos/sos_list_stations.py --to-supabase
+          exit_code=$?
+          set -e
+          if [ "$exit_code" -eq 75 ]; then
+            echo "upstream_unavailable=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Reject non-isolated UK-AIR SOS station sync failure
+        if: steps.sync_sos_stations.outcome == 'failure' && steps.sync_sos_stations.outputs.upstream_unavailable != 'true'
+        run: |
+          echo "ERROR: UK-AIR SOS station sync failed for a non-isolated reason."
+          exit 1
+
+      - name: Pause UK-AIR SOS polling
+        id: pause_sos_polling
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import requests
+
+          supabase_url = os.environ.get("SUPABASE_URL")
+          supabase_key = os.environ.get("SB_SECRET_KEY")
+          if not supabase_url or not supabase_key:
+              raise SystemExit("SUPABASE_URL and SB_SECRET_KEY are required.")
+          url = f"{supabase_url}/rest/v1/connectors"
+          headers = {
+              "apikey": supabase_key,
+              "Authorization": f"Bearer {supabase_key}",
+              "Content-Type": "application/json",
+              "Accept-Profile": "uk_aq_core",
+              "Content-Profile": "uk_aq_core",
+          }
+          check = requests.get(
+              url,
+              params={"connector_code": "eq.sos", "select": "id,poll_enabled"},
+              headers=headers,
+              timeout=30,
+          )
+          check.raise_for_status()
+          rows = check.json()
+          connector_found = bool(rows)
+          raw_poll_enabled = rows[0].get("poll_enabled") if rows else None
+          if isinstance(raw_poll_enabled, bool):
+              poll_enabled = raw_poll_enabled
+          elif isinstance(raw_poll_enabled, (int, float)):
+              poll_enabled = raw_poll_enabled != 0
+          elif isinstance(raw_poll_enabled, str):
+              poll_enabled = raw_poll_enabled.strip().lower() in {"1", "true", "t", "yes", "on"}
+          else:
+              poll_enabled = False
+          resp = requests.patch(
+              url,
+              params={"connector_code": "eq.sos"},
+              headers=headers,
+              json={"poll_enabled": False},
+              timeout=30,
+          ) if connector_found and poll_enabled else None
+          if resp is not None:
+              resp.raise_for_status()
+              print("Paused sos polling.")
+          else:
+              print(
+                  "Skipped pause for sos (connector_found="
+                  f"{connector_found}, poll_enabled={poll_enabled})."
+              )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"connector_found={'1' if connector_found else '0'}\n")
+              handle.write(f"poll_was_enabled={'1' if poll_enabled else '0'}\n")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+              handle.write(f"SOS_POLL_WAS_ENABLED={'1' if poll_enabled else '0'}\n")
+          PY
+
+      - name: Discover UK-AIR SOS timeseries
+        id: discover_sos_timeseries
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          set +e
+          python3 scripts/sos/sos_ingest.py --discover
+          exit_code=$?
+          set -e
+          if [ "$exit_code" -eq 75 ]; then
+            echo "upstream_unavailable=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Resume UK-AIR SOS polling
+        id: resume_sos_polling
+        if: always() && steps.pause_sos_polling.outputs.poll_was_enabled == '1'
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import requests
+
+          supabase_url = os.environ.get("SUPABASE_URL")
+          supabase_key = os.environ.get("SB_SECRET_KEY")
+          if not supabase_url or not supabase_key:
+              raise SystemExit("SUPABASE_URL and SB_SECRET_KEY are required.")
+          url = f"{supabase_url}/rest/v1/connectors"
+          resp = requests.patch(
+              url,
+              params={"connector_code": "eq.sos"},
+              headers={
+                  "apikey": supabase_key,
+                  "Authorization": f"Bearer {supabase_key}",
+                  "Content-Type": "application/json",
+                  "Accept-Profile": "uk_aq_core",
+                  "Content-Profile": "uk_aq_core",
+              },
+              json={"poll_enabled": True},
+              timeout=30,
+          )
+          resp.raise_for_status()
+          print("Resumed sos polling.")
+          PY
+
+      - name: Keep UK-AIR SOS polling unchanged
+        if: always() && (steps.pause_sos_polling.outputs.connector_found != '1' || steps.pause_sos_polling.outputs.poll_was_enabled != '1')
+        run: |
+          echo "Leaving UK-AIR SOS polling unchanged (workflow did not pause it)."
+
+      - name: Reject non-isolated UK-AIR SOS timeseries discovery failure
+        if: >-
+          always() &&
+          steps.discover_sos_timeseries.outcome == 'failure' &&
+          steps.discover_sos_timeseries.outputs.upstream_unavailable != 'true'
+        run: |
+          echo "ERROR: UK-AIR SOS timeseries discovery failed for a non-isolated reason."
+          exit 1
+
+      - name: Refresh UK-AIR Black Carbon reference metadata
+        if: always() && job.status == 'success'
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+          UKAIR_BC_SITE_SEARCH_URL: ${{ vars.UKAIR_BC_SITE_SEARCH_URL }}
+        run: |
+          python3 scripts/ukair_bc/ukair_bc_reference_refresh.py --to-supabase
+
+      - name: Sync Breathe London Communities stations
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+          BLONDON_COMMUNITIES_API_KEY: ${{ secrets.BLONDON_COMMUNITIES_API_KEY }}
+        run: |
+          python3 scripts/blondon_communities/blondon_communities_list_stations.py --to-supabase
+
+      - name: Discover Breathe London Communities timeseries
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          node scripts/blondon_communities/blondon_communities_discover_timeseries.mjs
+
+      - name: Sync Breathe London Nodes stations
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+          BLONDON_NODES_API_KEY: ${{ secrets.BLONDON_NODES_API_KEY }}
+        run: |
+          python3 scripts/blondon_nodes/blondon_nodes_list_stations.py --to-supabase
+
+      - name: Discover Breathe London Nodes timeseries
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 scripts/blondon_nodes/blondon_nodes_discover_timeseries.py
+
+      # Script needs updating before LAQN can start polling
+      # - name: Sync LAQN stations
+      #   env:
+      #     SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      #     SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+      #   run: |
+      #     python3 scripts/erg_laqn/erg_laqn_list_stations.py --to-supabase
+
+      - name: Sync OpenAQ stations
+        id: sync_openaq_stations
+        if: steps.pause_openaq_polling.outputs.connector_found == '1' && steps.pause_openaq_polling.outputs.poll_was_enabled == '1'
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL || secrets.DATABASE_URL }}
+          OPENAQ_API_KEY: ${{ secrets.OPENAQ_API_KEY }}
+          OPENAQ_RATE_LIMIT_PER_MIN: ${{ vars.OPENAQ_RATE_LIMIT_PER_MIN || '60' }}
+          OPENAQ_SHARED_BUDGET_ENFORCE: ${{ vars.OPENAQ_SHARED_BUDGET_ENFORCE || 'true' }}
+          OPENAQ_SHARED_BUDGET_KEY: ${{ vars.OPENAQ_SHARED_BUDGET_KEY || 'openaq' }}
+          OPENAQ_SHARED_BUDGET_MINUTE_LIMIT: ${{ vars.OPENAQ_SHARED_BUDGET_MINUTE_LIMIT || '50' }}
+          OPENAQ_SHARED_BUDGET_HOUR_LIMIT: ${{ vars.OPENAQ_SHARED_BUDGET_HOUR_LIMIT || '1900' }}
+          OPENAQ_SHARED_BUDGET_FAIL_OPEN: ${{ vars.OPENAQ_SHARED_BUDGET_FAIL_OPEN || 'false' }}
+        run: |
+          python3 scripts/openaq/openaq_list_stations.py --to-supabase
+
+      - name: Skip OpenAQ stations sync (polling already off or connector missing)
+        if: steps.pause_openaq_polling.outputs.connector_found != '1' || steps.pause_openaq_polling.outputs.poll_was_enabled != '1'
+        run: |
+          echo "Skipping OpenAQ stations sync because connector missing or polling was already off."
+
+      - name: Resume OpenAQ polling
+        id: resume_openaq_polling
+        if: always() && steps.pause_openaq_polling.outputs.poll_was_enabled == '1'
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import requests
+
+          supabase_url = os.environ.get("SUPABASE_URL")
+          supabase_key = os.environ.get("SB_SECRET_KEY")
+          if not supabase_url or not supabase_key:
+              raise SystemExit("SUPABASE_URL and SB_SECRET_KEY are required.")
+          url = f"{supabase_url}/rest/v1/connectors"
+          resp = requests.patch(
+              url,
+              params={"connector_code": "eq.openaq"},
+              headers={
+                  "apikey": supabase_key,
+                  "Authorization": f"Bearer {supabase_key}",
+                  "Content-Type": "application/json",
+                  "Accept-Profile": "uk_aq_core",
+                  "Content-Profile": "uk_aq_core",
+              },
+              json={"poll_enabled": True},
+              timeout=30,
+          )
+          resp.raise_for_status()
+          print("Resumed openaq polling.")
+          PY
+
+      - name: Keep OpenAQ polling unchanged
+        if: always() && (steps.pause_openaq_polling.outputs.connector_found != '1' || steps.pause_openaq_polling.outputs.poll_was_enabled != '1')
+        run: |
+          echo "Leaving OpenAQ polling unchanged (workflow did not pause it)."
+
+      - name: Guard OpenAQ pause path requires sync and resume
+        if: >
+          always() &&
+          job.status == 'success' &&
+          steps.pause_openaq_polling.outputs.connector_found == '1' &&
+          steps.pause_openaq_polling.outputs.poll_was_enabled == '1'
+        run: |
+          echo "sync_openaq_stations conclusion: ${{ steps.sync_openaq_stations.conclusion }}"
+          echo "resume_openaq_polling conclusion: ${{ steps.resume_openaq_polling.conclusion }}"
+          if [ "${{ steps.sync_openaq_stations.conclusion }}" = "skipped" ]; then
+            echo "ERROR: OpenAQ polling was paused, but Sync OpenAQ stations was skipped."
+            exit 1
+          fi
+          if [ "${{ steps.resume_openaq_polling.conclusion }}" = "skipped" ]; then
+            echo "ERROR: OpenAQ polling was paused, but Resume OpenAQ polling was skipped."
+            exit 1
+          fi
+
+      - name: Discover Sensor.Community stations (optional)
+        if: env.RUN_SCOMM_STATIONS_EXPORT == '1'
+        run: |
+          python3 scripts/sensorcommunity/sensorcommunity_list_stations.py \
+            --output "${SCOMM_CONNECTOR_CODE}_stations.json"
+
+
+      - name: Backfill Sensor.Community timeseries phenomena
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 scripts/sensorcommunity/sensorcommunity_backfill_timeseries_phenomena.py
+
+      - name: Refresh station PCON/LA from R2 shards
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+          UK_AQ_DOMAIN_CLOUDFLARE_ACCOUNT_ID: ${{ vars.UK_AQ_DOMAIN_CLOUDFLARE_ACCOUNT_ID }}
+          UK_AQ_DOMAIN_CLOUDFLARE_API_TOKEN: ${{ secrets.UK_AQ_DOMAIN_CLOUDFLARE_API_TOKEN }}
+        run: |
+          python3 scripts/uk_aq_refresh_station_geo_r2.py
+
+      - name: Check null station_name
+        id: check_null_station_name
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import requests
+
+          supabase_url = os.environ.get("SUPABASE_URL")
+          supabase_key = os.environ.get("SB_SECRET_KEY")
+          core_schema = os.environ.get("UK_AQ_CORE_SCHEMA", "uk_aq_core")
+          if not supabase_url or not supabase_key:
+            raise SystemExit("SUPABASE_URL and SB_SECRET_KEY are required.")
+
+          def count_null(field, require_geometry=False, label=None):
+            params = [f"select=id", f"{field}=is.null"]
+            if require_geometry:
+              params.append("geometry=not.is.null")
+            url = f"{supabase_url}/rest/v1/stations?{'&'.join(params)}"
+            resp = requests.get(
+              url,
+              headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+                "Prefer": "count=exact",
+                "Accept-Profile": core_schema,
+                "Content-Profile": core_schema,
+              },
+              timeout=30,
+            )
+            if label:
+              print(f"{label} url={url} status={resp.status_code}")
+            resp.raise_for_status()
+            content_range = resp.headers.get("content-range", "")
+            if label:
+              print(f"{label} content-range={content_range!r}")
+            match = re.search(r"/(\d+)$", content_range)
+            if not match:
+              return 0
+            return int(match.group(1))
+
+          project_ref = None
+          match = re.search(r"https?://([^./]+)\.supabase\.(co|in)", supabase_url)
+          if match:
+            project_ref = match.group(1)
+          print(f"Supabase project ref: {project_ref or '<unknown>'}")
+
+          station_name_missing_all = count_null(
+            "station_name",
+            require_geometry=False,
+            label="station_name_null_all",
+          )
+          station_name_missing = count_null(
+            "station_name",
+            require_geometry=True,
+            label="station_name_null_with_geometry",
+          )
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
+            handle.write(f"STATION_NAME_NULL_COUNT={station_name_missing}\n")
+            handle.write(f"STATION_NAME_NULL_COUNT_ALL={station_name_missing_all}\n")
+            handle.write(f"STATION_NAME_SHOULD_RUN={'1' if station_name_missing > 0 else '0'}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+            handle.write(f"station_name_null_count={station_name_missing}\n")
+            handle.write(f"station_name_null_count_all={station_name_missing_all}\n")
+            handle.write(f"station_name_should_run={'1' if station_name_missing > 0 else '0'}\n")
+
+          print(
+            "Missing station_name:",
+            station_name_missing,
+            "(all rows:",
+            station_name_missing_all,
+            ")",
+          )
+          PY
+
+      - name: Debug station_name outputs
+        run: |
+          echo "station_name_null_count=${{ steps.check_null_station_name.outputs.station_name_null_count }}"
+          echo "station_name_null_count_all=${{ steps.check_null_station_name.outputs.station_name_null_count_all }}"
+          echo "station_name_should_run=${{ steps.check_null_station_name.outputs.station_name_should_run }}"
+          echo "STATION_NAME_NULL_COUNT=$STATION_NAME_NULL_COUNT"
+          echo "STATION_NAME_NULL_COUNT_ALL=$STATION_NAME_NULL_COUNT_ALL"
+          echo "STATION_NAME_SHOULD_RUN=$STATION_NAME_SHOULD_RUN"
+
+      - name: Enrich station names
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+          DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+          DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+          UK_AQ_OS_OPEN_NAMES_GB_DROPBOX_PATH: ${{ secrets.UK_AQ_OS_OPEN_NAMES_GB_DROPBOX_PATH }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import requests
+
+          supabase_url = os.environ.get("SUPABASE_URL")
+          supabase_key = os.environ.get("SB_SECRET_KEY")
+          core_schema = os.environ.get("UK_AQ_CORE_SCHEMA", "uk_aq_core")
+          if not supabase_url or not supabase_key:
+            raise SystemExit("SUPABASE_URL and SB_SECRET_KEY are required.")
+
+          def count_null(field, require_geometry=False):
+            params = [f"select=id", f"{field}=is.null"]
+            if require_geometry:
+              params.append("geometry=not.is.null")
+            url = f"{supabase_url}/rest/v1/stations?{'&'.join(params)}"
+            resp = requests.get(
+              url,
+              headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+                "Prefer": "count=exact",
+                "Accept-Profile": core_schema,
+                "Content-Profile": core_schema,
+              },
+              timeout=30,
+            )
+            resp.raise_for_status()
+            content_range = resp.headers.get("content-range", "")
+            match = re.search(r"/(\d+)$", content_range)
+            if not match:
+              return 0
+            return int(match.group(1))
+
+          missing_with_geometry = count_null("station_name", require_geometry=True)
+          should_run = 1 if missing_with_geometry > 0 else 0
+          with open("station_name_should_run.env", "w", encoding="utf-8") as handle:
+            handle.write(f"STATION_NAME_SHOULD_RUN={should_run}\n")
+          print(f"station_name_missing_with_geometry={missing_with_geometry}")
+          print(f"station_name_should_run={should_run}")
+          PY
+          source station_name_should_run.env
+          if [ "$STATION_NAME_SHOULD_RUN" != "1" ]; then
+            echo "No missing station_name with geometry; skipping enrichment."
+            exit 0
+          fi
+          python3 scripts/uk_aq_enrich_station_names.py --apply
+
+      - name: Export stations to Dropbox
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL || secrets.DATABASE_URL }}
+          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+          DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+          DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+          UK_AQ_DROPBOX_ROOT: ${{ vars.UK_AQ_DROPBOX_ROOT }}
+        run: |
+          python3 scripts/uk_aq_export_stations_dropbox.py
+
+      - name: Sync uk_aq_core reference tables to Obs AQI DB
+        env:
+          SRC_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SRC_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+          DST_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
+          DST_SECRET_KEY: ${{ secrets.OBS_AQIDB_SECRET_KEY }}
+          SYNC_TARGET_LABEL: obs_aqidb
+          SYNC_CALLER_PREFIX: stations_daily_sync_obs_aqidb
+          OBS_AQIDB_REPAIR_OBSERVED_PROPERTY_IDS: ${{ vars.OBS_AQIDB_REPAIR_OBSERVED_PROPERTY_IDS }}
+        run: |
+          python3 scripts/stations_daily/sync_obs_aqidb_uk_aq_core.py
+
+      - name: Build isolated UK-AIR SOS warning summary
+        if: always()
+        env:
+          SYNC_SOS_STATIONS_OUTCOME: ${{ steps.sync_sos_stations.outcome }}
+          SYNC_SOS_STATIONS_UPSTREAM_UNAVAILABLE: ${{ steps.sync_sos_stations.outputs.upstream_unavailable }}
+          DISCOVER_SOS_TIMESERIES_OUTCOME: ${{ steps.discover_sos_timeseries.outcome }}
+          DISCOVER_SOS_TIMESERIES_UPSTREAM_UNAVAILABLE: ${{ steps.discover_sos_timeseries.outputs.upstream_unavailable }}
+          SUPPLEMENTAL_SUMMARY_FILE: ${{ runner.temp }}/daily-stations-health-summary.json
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const stages = [
+            ["sync_sos_stations", process.env.SYNC_SOS_STATIONS_OUTCOME, process.env.SYNC_SOS_STATIONS_UPSTREAM_UNAVAILABLE],
+            ["discover_sos_timeseries", process.env.DISCOVER_SOS_TIMESERIES_OUTCOME, process.env.DISCOVER_SOS_TIMESERIES_UPSTREAM_UNAVAILABLE],
+          ]
+            .filter(([, outcome, unavailable]) => outcome === "failure" && unavailable === "true")
+            .map(([stage]) => stage);
+
+          const summary = stages.length === 0 ? {} : {
+            warnings: [{
+              code: "uk_air_sos_reference_refresh_failed",
+              reason: "UK-AIR SOS station/reference refresh was unavailable; existing SOS reference data was retained.",
+              connector_code: "sos",
+              stages,
+            }],
+          };
+          fs.writeFileSync(process.env.SUPPLEMENTAL_SUMMARY_FILE, JSON.stringify(summary));
+          if (stages.length > 0) {
+            console.warn(`UK-AIR SOS reference refresh warning recorded for: ${stages.join(", ")}.`);
+          }
+          NODE
+
+      - name: Report daily task health
+        if: always()
+        env:
+          SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.OBS_AQIDB_SECRET_KEY }}
+          DAILY_TASK_KEY: ingest.stations_daily
+          DAILY_TASK_HEALTH_REPORT_STAGE: final
+          DAILY_TASK_HEALTH_RUN_ID: ${{ steps.daily_task_health_started.outputs.health_run_id }}
+          DAILY_TASK_HEALTH_SUPPLEMENTAL_SUMMARY_FILE: ${{ runner.temp }}/daily-stations-health-summary.json
+          JOB_STATUS: ${{ job.status }}
+        run: node scripts/report_daily_task_health.mjs
