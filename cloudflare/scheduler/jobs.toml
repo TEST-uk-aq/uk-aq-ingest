@@ -69,7 +69,7 @@ target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
 dry_run = false
-notes = "WAQN ingest trigger; disabled until TEST source validation and connector enablement"
+notes = "WAQN ingest trigger;"
 
 [jobs.uk_aq_saqn]
 enabled = true
@@ -78,13 +78,13 @@ target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
 dry_run = false
-notes = "SAQN ingest trigger; disabled until TEST source validation and connector enablement"
+notes = "SAQN ingest trigger;"
 
 [jobs.uk_aq_ni]
-enabled = true
+enabled = false
 cron_expr = "*/5 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
 dry_run = false
-notes = "Northern Ireland Air ingest trigger; disabled until TEST SOS validation and connector enablement"
+notes = "Northern Ireland Air ingest trigger;"
