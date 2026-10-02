@@ -42,14 +42,12 @@ def parse_embedded_graph_data(html: str) -> GraphPayload:
         raise GraphDataError("graphData marker not found")
     start += len(marker)
 
-    end = html.find(";</script>", start)
-    if end < 0:
-        end = html.find(";</script", start)
-    if end < 0:
-        raise GraphDataError("graphData end marker not found")
+    source = html[start:].lstrip()
+    if not source:
+        raise GraphDataError("graphData value missing")
 
     try:
-        outer = json.loads(html[start:end].strip())
+        outer, _ = json.JSONDecoder().raw_decode(source)
     except json.JSONDecodeError as exc:
         raise GraphDataError(f"graphData outer JSON invalid: {exc}") from exc
 
