@@ -287,7 +287,9 @@ def build_reference_rows(
     today = datetime.now(timezone.utc).date()
     by_site: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for row in source_rows:
-        site_code = _text(row.get("site_id") or row.get("code"))
+        site_code = _text(row.get("site_id"))
+        if not site_code:
+            site_code = _text(row.get("code"))
         if site_code:
             by_site[site_code.upper()].append(row)
 
@@ -300,7 +302,7 @@ def build_reference_rows(
             (
                 value
                 for value in (
-                    _text(row.get("site_name") or row.get("site"))
+                    (_text(row.get("site_name")) or _text(row.get("site")))
                     for row in rows
                 )
                 if value
@@ -319,7 +321,7 @@ def build_reference_rows(
             (
                 value
                 for value in (
-                    _text(row.get("location_type") or row.get("site_type"))
+                    (_text(row.get("location_type")) or _text(row.get("site_type")))
                     for row in rows
                 )
                 if value
@@ -350,16 +352,20 @@ def build_reference_rows(
                 if latitude is not None and longitude is not None
                 else None
             ),
-            "last_seen_at": datetime.now(timezone.utc).isoformat() if active else None,
             "removed_at": None if active else _iso_midnight(max(ends) if ends else None),
             "priority": 10,
         }
         if starts:
             station_row["first_seen_at"] = _iso_midnight(min(starts))
+        if active:
+            station_row["last_seen_at"] = datetime.now(timezone.utc).isoformat()
         station_rows.append(station_row)
 
         for row in rows:
-            spec = pollutant_spec_for_openair(row.get("parameter") or row.get("variable"))
+            source_variable = _text(row.get("parameter"))
+            if not source_variable:
+                source_variable = _text(row.get("variable"))
+            spec = pollutant_spec_for_openair(source_variable)
             if spec is None:
                 continue
             used_specs.append(spec)
