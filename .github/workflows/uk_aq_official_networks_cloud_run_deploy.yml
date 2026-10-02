@@ -1,0 +1,199 @@
+name: Deploy Devolved Official Network Cloud Run Services
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "workers/uk_aq_official_network_cloud_run/**"
+      - "scripts/official_networks/**"
+      - "scripts/gov_uk_waqn/**"
+      - "scripts/gov_uk_saqn/**"
+      - "scripts/gov_uk_ni/**"
+      - "scripts/uk_aq_supabase.py"
+      - "scripts/uk_aq_service_egress_metrics.py"
+      - "scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"
+      - ".github/workflows/uk_aq_official_networks_cloud_run_deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: uk-aq-ingest-cloud-run-shared-secret-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - connector_code: waqn
+            service_name: uk-aq-waqn-ingest
+            scheduler_job_key: uk_aq_waqn
+          - connector_code: saqn
+            service_name: uk-aq-saqn-ingest
+            scheduler_job_key: uk_aq_saqn
+          - connector_code: ni
+            service_name: uk-aq-ni-ingest
+            scheduler_job_key: uk_aq_ni
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
+      REPO: ${{ vars.GCP_ARTIFACT_REPO || 'uk-aq' }}
+      SERVICE_NAME: ${{ matrix.service_name }}
+      CONNECTOR_CODE: ${{ matrix.connector_code }}
+      SCHEDULER_D1_JOB_KEY: ${{ matrix.scheduler_job_key }}
+      SERVICE_ACCOUNT: ${{ vars.GCP_SOS_SERVICE_ACCOUNT || vars.GCP_SOS_JOB_SERVICE_ACCOUNT || '' }}
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
+      UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
+      OBS_AQIDB_RPC_SCHEMA: ${{ vars.OBS_AQIDB_RPC_SCHEMA || 'uk_aq_public' }}
+      OBSERVS_WRITE_MODE: ${{ vars.OBSERVS_WRITE_MODE || 'pubsub_only' }}
+      GCP_OBSERVS_PUBSUB_TOPIC: ${{ vars.GCP_OBSERVS_PUBSUB_TOPIC || 'uk-aq-observs-observations' }}
+      OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE: ${{ vars.OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE || '500' }}
+      SB_SECRET_KEY_SECRET_NAME: ${{ vars.SB_SECRET_KEY_SECRET_NAME || 'SB_SECRET_KEY' }}
+      OBS_AQIDB_SECRET_KEY_SECRET_NAME: ${{ vars.OBS_AQIDB_SECRET_KEY_SECRET_NAME || 'OBS_AQIDB_SECRET_KEY' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      SERVICE_TIMEOUT_SECONDS: "900"
+      SERVICE_CPU: "0.25"
+      SERVICE_MEMORY: "256Mi"
+      SERVICE_CONCURRENCY: "1"
+      SERVICE_MAX_INSTANCES: "1"
+      SERVICE_MIN_INSTANCES: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required configuration
+        run: |
+          set -euo pipefail
+          if [ -z "${PROJECT_ID:-}" ]; then
+            echo "Missing GCP_PROJECT_ID"
+            exit 1
+          fi
+          if [ -z "${SERVICE_ACCOUNT:-}" ]; then
+            echo "Missing GCP_SOS_SERVICE_ACCOUNT (shared official-network runtime account)."
+            exit 1
+          fi
+          if [[ "${SERVICE_ACCOUNT}" == *"-compute@developer.gserviceaccount.com" ]]; then
+            echo "Default compute service account is not allowed."
+            exit 1
+          fi
+          if [ -z "${SUPABASE_URL:-}" ]; then
+            echo "Missing SUPABASE_URL"
+            exit 1
+          fi
+          case "${CONNECTOR_CODE}" in
+            waqn|saqn|ni) ;;
+            *) echo "Unsupported connector code: ${CONNECTOR_CODE}"; exit 1 ;;
+          esac
+
+      - name: Authenticate to Google Cloud (WIF)
+        if: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && env.GCP_SERVICE_ACCOUNT != '' }}
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to Google Cloud (Service Account Key fallback)
+        if: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER == '' || env.GCP_SERVICE_ACCOUNT == '' }}
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed
+        with:
+          credentials_json: ${{ env.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+
+      - name: Configure gcloud
+        run: |
+          gcloud config set project "${PROJECT_ID}"
+          gcloud config set run/region "${REGION}"
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push image
+        id: build
+        run: |
+          set -euo pipefail
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/uk-aq-${CONNECTOR_CODE}-ingest:${GITHUB_SHA::12}"
+          echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"
+          docker build -f workers/uk_aq_official_network_cloud_run/Dockerfile -t "${IMAGE}" .
+          docker push "${IMAGE}"
+
+      - name: Ensure Pub/Sub publisher access
+        if: ${{ env.OBSERVS_WRITE_MODE == 'pubsub_only' }}
+        run: |
+          set -euo pipefail
+          if ! gcloud pubsub topics describe "${GCP_OBSERVS_PUBSUB_TOPIC}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+            gcloud pubsub topics create "${GCP_OBSERVS_PUBSUB_TOPIC}" --project "${PROJECT_ID}"
+          fi
+          gcloud pubsub topics add-iam-policy-binding "${GCP_OBSERVS_PUBSUB_TOPIC}"             --project "${PROJECT_ID}"             --member "serviceAccount:${SERVICE_ACCOUNT}"             --role "roles/pubsub.publisher" >/dev/null
+
+      - name: Build Cloud Run env and secret args
+        id: args
+        run: |
+          set -euo pipefail
+          if ! gcloud secrets describe "${SB_SECRET_KEY_SECRET_NAME}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "Required Secret Manager secret missing: ${SB_SECRET_KEY_SECRET_NAME}"
+            exit 1
+          fi
+          if ! gcloud secrets describe "UK_AQ_EDGE_UPSTREAM_SECRET" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "Required Secret Manager secret missing: UK_AQ_EDGE_UPSTREAM_SECRET"
+            exit 1
+          fi
+
+          ENV_FILE="${RUNNER_TEMP}/uk-aq-${CONNECTOR_CODE}-env.yaml"
+          python3 - "${ENV_FILE}" <<'PY'
+          import json, os, sys
+          path = sys.argv[1]
+          values = {
+              "SUPABASE_URL": os.environ["SUPABASE_URL"],
+              "UK_AQ_CORE_SCHEMA": os.environ["UK_AQ_CORE_SCHEMA"],
+              "OBSERVS_WRITE_MODE": os.environ["OBSERVS_WRITE_MODE"],
+              "GCP_OBSERVS_PUBSUB_TOPIC": os.environ["GCP_OBSERVS_PUBSUB_TOPIC"],
+              "OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE": os.environ["OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE"],
+              "GCP_PROJECT_ID": os.environ["PROJECT_ID"],
+              "UK_AQ_OFFICIAL_NETWORK_CONNECTOR_CODE": os.environ["CONNECTOR_CODE"],
+              "OFFICIAL_NETWORK_MAX_RUNTIME_SECONDS": "900",
+              "OFFICIAL_NETWORK_IN_FLIGHT_TIMEOUT_MINUTES": "30",
+              "OFFICIAL_NETWORK_CLAIM_TIMEOUT_MINUTES": "30",
+          }
+          if os.environ.get("OBS_AQIDB_SUPABASE_URL"):
+              values["OBS_AQIDB_SUPABASE_URL"] = os.environ["OBS_AQIDB_SUPABASE_URL"]
+              values["OBS_AQIDB_RPC_SCHEMA"] = os.environ["OBS_AQIDB_RPC_SCHEMA"]
+          with open(path, "w", encoding="utf-8") as handle:
+              for key, value in values.items():
+                  print(f"{key}: {json.dumps(value)}", file=handle)
+          PY
+
+          SECRETS="SB_SECRET_KEY=${SB_SECRET_KEY_SECRET_NAME}:latest,UK_AQ_EDGE_UPSTREAM_SECRET=UK_AQ_EDGE_UPSTREAM_SECRET:latest"
+          if [ "${OBSERVS_WRITE_MODE}" = "direct" ]; then
+            if ! gcloud secrets describe "${OBS_AQIDB_SECRET_KEY_SECRET_NAME}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+              echo "Direct mode requires Secret Manager secret: ${OBS_AQIDB_SECRET_KEY_SECRET_NAME}"
+              exit 1
+            fi
+            SECRETS="${SECRETS},OBS_AQIDB_SECRET_KEY=${OBS_AQIDB_SECRET_KEY_SECRET_NAME}:latest"
+          fi
+          echo "env_file=${ENV_FILE}" >> "${GITHUB_OUTPUT}"
+          echo "secrets=${SECRETS}" >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy Cloud Run service
+        run: |
+          set -euo pipefail
+          gcloud run deploy "${SERVICE_NAME}"             --region "${REGION}"             --image "${{ steps.build.outputs.image }}"             --service-account "${SERVICE_ACCOUNT}"             --timeout "${SERVICE_TIMEOUT_SECONDS}"             --cpu "${SERVICE_CPU}"             --memory "${SERVICE_MEMORY}"             --concurrency "${SERVICE_CONCURRENCY}"             --max-instances "${SERVICE_MAX_INSTANCES}"             --min-instances "${SERVICE_MIN_INSTANCES}"             --no-cpu-boost             --cpu-throttling             --labels "job_name=uk-aq-${CONNECTOR_CODE}-ingest-service"             --allow-unauthenticated             --env-vars-file "${{ steps.args.outputs.env_file }}"             --set-secrets "${{ steps.args.outputs.secrets }}"
+
+      - name: Reconcile service URL in ingest scheduler D1
+        run: |
+          set -euo pipefail
+          service_uri="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format='value(status.url)')"
+          scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh "${SCHEDULER_D1_JOB_KEY}" "${service_uri}"
+
+      - name: Show deployed service
+        run: |
+          gcloud run services describe "${SERVICE_NAME}"             --region "${REGION}"             --format="yaml(metadata.name,metadata.labels,spec.template.spec.serviceAccountName,spec.template.spec.containerConcurrency,spec.template.spec.containers[0].image,status.url)"
