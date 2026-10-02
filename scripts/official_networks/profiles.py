@@ -29,6 +29,14 @@ GRAPH_SERIES_TO_PROPERTY: Dict[str, str] = {
     spec.source_series.upper(): spec.observed_property_code
     for spec in POLLUTANT_SPECS.values()
 }
+GRAPH_SERIES_TO_PROPERTY.update(
+    {
+        # Ricardo portal hourly channel names used by WAQN/SAQN site graphs.
+        "GE10": "pm10",
+        "PM25": "pm25",
+        "NOXASNO2": "nox_as_no2",
+    }
+)
 
 PROPERTY_TO_SPEC: Dict[str, PollutantSpec] = {
     spec.observed_property_code: spec for spec in POLLUTANT_SPECS.values()
