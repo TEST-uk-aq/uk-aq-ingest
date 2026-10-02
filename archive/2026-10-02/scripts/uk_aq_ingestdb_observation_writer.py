@@ -121,14 +121,9 @@ def _failure_fields(error: Exception) -> dict[str, Any]:
             if text:
                 messages.append(text)
         if code is None:
-            for key in ("code", "sqlstate", "pgcode"):
-                candidate = source.get(key) if isinstance(source, Mapping) else None
-                if candidate is None and not isinstance(current, Mapping):
-                    candidate = getattr(current, key, None)
-                if candidate is not None:
-                    code = str(candidate).strip().upper() or None
-                    if code is not None:
-                        break
+            candidate = source.get("code") if isinstance(source, Mapping) else None
+            if candidate is not None:
+                code = str(candidate).strip().upper() or None
         if http_status is None:
             for key in ("http_status", "status_code", "status"):
                 candidate = source.get(key) if isinstance(source, Mapping) else None
@@ -184,14 +179,9 @@ def classify_failure(error: Exception) -> dict[str, Any]:
     ):
         return {"classification": "serialization_failure", "retryable": True, **fields}
     if (
-        code
-        and (
-            code == "CONNECT_TIMEOUT"
-            or code.startswith("08")
-            or code in {"57P01", "57P02", "57P03"}
-        )
+        code and (code.startswith("08") or code in {"57P01", "57P02", "57P03"})
     ) or re.search(
-        r"connection (?:terminated|reset|closed|refused|timeout|timed out)|connect timeout|econnreset|socket hang up|temporary network|network error|network request failed|fetch failed|error sending request|request timed out|operation was aborted",
+        r"connection (?:terminated|reset|closed|refused)|econnreset|socket hang up|temporary network|network error|network request failed|fetch failed|error sending request|request timed out|operation was aborted",
         message,
         re.IGNORECASE,
     ):

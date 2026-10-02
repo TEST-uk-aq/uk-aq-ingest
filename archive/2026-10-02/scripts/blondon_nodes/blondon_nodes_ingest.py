@@ -34,7 +34,6 @@ from scripts.uk_aq_service_egress_metrics import (
 )
 
 configure_service_egress_metrics("ingest.blondon_nodes")
-from scripts.blondon_nodes.blondon_nodes_database import BlondonNodesDatabase
 from scripts.blondon_nodes.blondon_nodes_reference_data import (
     DEFAULT_SPECIES,
     SPECIES_CONFIG,
@@ -317,20 +316,6 @@ class ObservsWriter:
 
 class SupabaseWriter:
     def __init__(self) -> None:
-        requested_transport = os.getenv("BLONDON_NODES_INGESTDB_WRITE_TRANSPORT")
-        self.ingestdb_write_transport = (
-            "postgrest" if requested_transport is None else requested_transport
-        )
-        if self.ingestdb_write_transport not in {"postgrest", "database"}:
-            raise RuntimeError(
-                "BLONDON_NODES_INGESTDB_WRITE_TRANSPORT must be exactly "
-                "postgrest or database."
-            )
-        self.observation_database = (
-            BlondonNodesDatabase.from_environment()
-            if self.ingestdb_write_transport == "database"
-            else None
-        )
         self.client: Client = create_supabase_client()
         schemas = SupabaseSchemas.from_client(self.client)
         self.core = schemas.core
@@ -454,14 +439,10 @@ class SupabaseWriter:
         ]
 
         def write_chunk(chunk: Sequence[Dict[str, Any]]) -> None:
-            arguments = build_compact_observation_rpc_args(chunk)
-            if self.observation_database is not None:
-                self.observation_database.upsert_compact_observations_v1(arguments)
-            else:
-                self.public.rpc(
-                    "uk_aq_rpc_observations_compact_upsert_v1",
-                    arguments,
-                ).execute()
+            self.public.rpc(
+                "uk_aq_rpc_observations_compact_upsert_v1",
+                build_compact_observation_rpc_args(chunk),
+            ).execute()
 
         try:
             stats = write_observations(

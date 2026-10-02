@@ -3,3 +3,4 @@ requests
 supabase==2.31.0
 postgrest==2.31.0
 httpx==0.28.1
+psycopg[binary]==3.2.10

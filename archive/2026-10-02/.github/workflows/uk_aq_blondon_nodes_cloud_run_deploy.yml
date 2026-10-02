@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - "workers/uk_aq_blondon_nodes_cloud_run/**"
-      - "scripts/blondon_nodes/blondon_nodes_database.py"
       - "scripts/blondon_nodes/blondon_nodes_ingest.py"
       - "scripts/blondon_nodes/blondon_nodes_raw_capture.py"
       - "scripts/blondon_nodes/blondon_nodes_reference_data.py"
@@ -62,7 +61,6 @@ jobs:
       BLONDON_NODES_MAX_RUNTIME_SECONDS: ${{ vars.BLONDON_NODES_MAX_RUNTIME_SECONDS || '780' }}
       BLONDON_NODES_IN_FLIGHT_TIMEOUT_MINUTES: ${{ vars.BLONDON_NODES_IN_FLIGHT_TIMEOUT_MINUTES || '14' }}
       BLONDON_NODES_CLAIM_TIMEOUT_MINUTES: ${{ vars.BLONDON_NODES_CLAIM_TIMEOUT_MINUTES || '14' }}
-      BLONDON_NODES_INGESTDB_WRITE_TRANSPORT: ${{ vars.BLONDON_NODES_INGESTDB_WRITE_TRANSPORT || 'postgrest' }}
       BLONDON_NODES_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.BLONDON_NODES_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
       UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
       BLONDON_NODES_ERROR_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.BLONDON_NODES_ERROR_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
@@ -72,7 +70,6 @@ jobs:
       UK_AIR_ERROR_DROPBOX_FOLDER: ${{ vars.UK_AIR_ERROR_DROPBOX_FOLDER || 'error_log' }}
       SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
       OBS_AQIDB_SECRET_KEY: ${{ secrets.OBS_AQIDB_SECRET_KEY }}
-      UK_AQ_GCP_CLOUD_RUN_DATABASE_URL: ${{ secrets.UK_AQ_GCP_CLOUD_RUN_DATABASE_URL }}
       BLONDON_NODES_API_KEY: ${{ secrets.BLONDON_NODES_API_KEY }}
       SB_UK_AQ_CRON_SECRET: ${{ secrets.SB_UK_AQ_CRON_SECRET }}
       DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
@@ -80,7 +77,6 @@ jobs:
       DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
       SB_SECRET_KEY_SECRET_NAME: ${{ vars.SB_SECRET_KEY_SECRET_NAME || 'SB_SECRET_KEY' }}
       OBS_AQIDB_SECRET_KEY_SECRET_NAME: ${{ vars.OBS_AQIDB_SECRET_KEY_SECRET_NAME || 'OBS_AQIDB_SECRET_KEY' }}
-      UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME: ${{ vars.UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME || 'UK_AQ_GCP_CLOUD_RUN_DATABASE_URL' }}
       UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY_SECRET_NAME: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY_SECRET_NAME || vars.OBS_AQIDB_SECRET_KEY_SECRET_NAME || 'OBS_AQIDB_SECRET_KEY' }}
       BLONDON_NODES_API_KEY_SECRET_NAME: ${{ vars.BLONDON_NODES_API_KEY_SECRET_NAME || 'BLONDON_NODES_API_KEY' }}
       SB_UK_AQ_CRON_SECRET_SECRET_NAME: ${{ vars.SB_UK_AQ_CRON_SECRET_SECRET_NAME || 'SB_UK_AQ_CRON_SECRET' }}
@@ -121,24 +117,6 @@ jobs:
             echo "Use connector_code=blondon_nodes for Breathe London Nodes. network_code/service_ref may remain breathelondon."
             exit 1
           fi
-          case "${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT}" in
-            postgrest)
-              ;;
-            database)
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL:-}" ]; then
-                echo "BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
-                exit 1
-              fi
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME:-}" ]; then
-                echo "BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
-                exit 1
-              fi
-              ;;
-            *)
-              echo "BLONDON_NODES_INGESTDB_WRITE_TRANSPORT must be exactly postgrest or database."
-              exit 1
-              ;;
-          esac
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "pubsub_only" ] && [ -z "${GCP_OBSERVS_PUBSUB_TOPIC:-}" ]; then
             echo "OBSERVS_WRITE_MODE=pubsub_only requires GCP_OBSERVS_PUBSUB_TOPIC."
@@ -276,11 +254,6 @@ jobs:
           upsert_secret "UK_AQ_EDGE_UPSTREAM_SECRET" "${UK_AQ_EDGE_UPSTREAM_SECRET}" 1
           upsert_secret "${BLONDON_NODES_API_KEY_SECRET_NAME}" "${BLONDON_NODES_API_KEY}" 1
           upsert_secret "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" "${SB_UK_AQ_CRON_SECRET}" 0
-          if [ "${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT}" = "database" ]; then
-            upsert_secret "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL}" 1
-          else
-            echo "Skipping shared database secret sync (BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT})."
-          fi
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "direct" ]; then
             upsert_secret "${OBS_AQIDB_SECRET_KEY_SECRET_NAME}" "${OBS_AQIDB_SECRET_KEY}" 1
@@ -363,7 +336,6 @@ jobs:
           add_env BLONDON_NODES_MAX_RUNTIME_SECONDS
           add_env BLONDON_NODES_IN_FLIGHT_TIMEOUT_MINUTES
           add_env BLONDON_NODES_CLAIM_TIMEOUT_MINUTES
-          add_env BLONDON_NODES_INGESTDB_WRITE_TRANSPORT
           add_env BLONDON_NODES_RAW_DROPBOX_ALLOWED_SUPABASE_URL
           add_env UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL
           add_env BLONDON_NODES_ERROR_DROPBOX_ALLOWED_SUPABASE_URL
@@ -383,11 +355,6 @@ jobs:
           add_secret_binding "UK_AQ_EDGE_UPSTREAM_SECRET" "UK_AQ_EDGE_UPSTREAM_SECRET" 1
           add_secret_binding "SB_SECRET_KEY" "${SB_SECRET_KEY_SECRET_NAME}" 1
           add_secret_binding "BLONDON_NODES_API_KEY" "${BLONDON_NODES_API_KEY_SECRET_NAME}" 1
-          if [ "${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT}" = "database" ]; then
-            add_secret_binding "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" 1
-          else
-            echo "Skipping shared database secret binding (BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT})."
-          fi
           if [ -n "${SB_UK_AQ_CRON_SECRET:-}" ]; then
             add_secret_binding "SB_UK_AQ_CRON_SECRET" "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" 0
           fi
