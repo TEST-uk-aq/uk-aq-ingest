@@ -113,15 +113,6 @@ jobs:
           docker build -f workers/uk_aq_official_network_cloud_run/Dockerfile -t "${IMAGE}" .
           docker push "${IMAGE}"
 
-      - name: Ensure Pub/Sub publisher access
-        if: ${{ env.OBSERVS_WRITE_MODE == 'pubsub_only' }}
-        run: |
-          set -euo pipefail
-          if ! gcloud pubsub topics describe "${GCP_OBSERVS_PUBSUB_TOPIC}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-            gcloud pubsub topics create "${GCP_OBSERVS_PUBSUB_TOPIC}" --project "${PROJECT_ID}"
-          fi
-          gcloud pubsub topics add-iam-policy-binding "${GCP_OBSERVS_PUBSUB_TOPIC}"             --project "${PROJECT_ID}"             --member "serviceAccount:${SERVICE_ACCOUNT}"             --role "roles/pubsub.publisher" >/dev/null
-
       - name: Build Cloud Run env and secret args
         id: args
         run: |
