@@ -62,3 +62,29 @@ cloud_run_method = "POST"
 dry_run = false
 notes = "UK-AIR SOS ingest trigger"
 
+[jobs.uk_aq_waqn]
+enabled = false
+cron_expr = "7 * * * *"
+target_type = "cloud_run"
+cloud_run_url_managed_by_deploy = true
+cloud_run_method = "POST"
+dry_run = false
+notes = "WAQN ingest trigger; disabled until TEST source validation and connector enablement"
+
+[jobs.uk_aq_saqn]
+enabled = false
+cron_expr = "17 * * * *"
+target_type = "cloud_run"
+cloud_run_url_managed_by_deploy = true
+cloud_run_method = "POST"
+dry_run = false
+notes = "SAQN ingest trigger; disabled until TEST source validation and connector enablement"
+
+[jobs.uk_aq_ni]
+enabled = false
+cron_expr = "27 * * * *"
+target_type = "cloud_run"
+cloud_run_url_managed_by_deploy = true
+cloud_run_method = "POST"
+dry_run = false
+notes = "Northern Ireland Air ingest trigger; disabled until TEST SOS validation and connector enablement"
