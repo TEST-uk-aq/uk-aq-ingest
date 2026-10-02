@@ -55,7 +55,7 @@ jobs:
       - name: Install dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install requests python-dotenv supabase pyproj psycopg2-binary
+          python3 -m pip install requests python-dotenv supabase pyproj psycopg2-binary pyreadr
 
       - name: Validate SUPABASE_DB_URL for pooler
         env:
@@ -429,6 +429,33 @@ jobs:
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
         run: |
           python3 scripts/sensorcommunity/sensorcommunity_backfill_timeseries_phenomena.py
+
+      - name: Refresh WAQN references from OpenAir metadata
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 scripts/official_networks/openair_reference.py \
+            --connector-code waqn \
+            --skip-if-unconfigured
+
+      - name: Refresh SAQN references from OpenAir metadata
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 scripts/official_networks/openair_reference.py \
+            --connector-code saqn \
+            --skip-if-unconfigured
+
+      - name: Refresh Northern Ireland references from OpenAir metadata
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+        run: |
+          python3 scripts/official_networks/openair_reference.py \
+            --connector-code ni \
+            --skip-if-unconfigured
 
       - name: Refresh station PCON/LA from R2 shards
         env:
