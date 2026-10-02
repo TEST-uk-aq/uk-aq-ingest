@@ -1,19 +1,6 @@
 name: Deploy Devolved Official Network Cloud Run Services
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "workers/uk_aq_official_network_cloud_run/**"
-      - "scripts/official_networks/**"
-      - "scripts/gov_uk_waqn/**"
-      - "scripts/gov_uk_saqn/**"
-      - "scripts/gov_uk_ni/**"
-      - "scripts/uk_aq_supabase.py"
-      - "scripts/uk_aq_service_egress_metrics.py"
-      - "scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"
-      - ".github/workflows/uk_aq_official_networks_cloud_run_deploy.yml"
   workflow_dispatch:
 
 concurrency:
@@ -22,7 +9,6 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
