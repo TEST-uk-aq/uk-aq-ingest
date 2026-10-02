@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from .profiles import pollutant_code_for_graph_series
-from .ricardo_time import ricardo_wall_clock_epoch_ms_to_utc
 
 
 class GraphDataError(RuntimeError):
@@ -124,8 +124,8 @@ def parse_embedded_graph_data(html: str) -> GraphPayload:
             if not math.isfinite(float(timestamp_ms)) or not math.isfinite(float(raw_value)):
                 continue
             try:
-                observed = ricardo_wall_clock_epoch_ms_to_utc(
-                    float(timestamp_ms)
+                observed = datetime.fromtimestamp(
+                    float(timestamp_ms) / 1000.0, tz=timezone.utc
                 )
             except (OverflowError, OSError, ValueError):
                 continue

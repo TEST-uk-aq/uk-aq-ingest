@@ -55,19 +55,9 @@ class OfficialNetworkProfile:
     site_page_url_template: str
     site_graph_html_supported: bool
     openair_metadata_url: str
-    site_graph_url_template: Optional[str] = None
 
     def site_url(self, site_code: str) -> str:
         return self.site_page_url_template.format(site_code=site_code.upper())
-
-    def site_graph_url(self, site_code: str, days: int) -> str:
-        if not self.site_graph_url_template:
-            raise ValueError(
-                f"{self.connector_code} has no separate site graph endpoint"
-            )
-        return self.site_graph_url_template.format(
-            site_code=site_code.upper(), days=days
-        )
 
 
 PROFILES: Dict[str, OfficialNetworkProfile] = {
@@ -112,14 +102,11 @@ PROFILES: Dict[str, OfficialNetworkProfile] = {
         network_id=9,
         display_name="Northern Ireland Air",
         sos_base_url="https://www.airqualityni.co.uk/sos-ni/api/v1",
-        sos_probe_enabled=False,
+        sos_probe_enabled=True,
         site_page_url_template="https://www.airqualityni.co.uk/site/{site_code}",
-        site_graph_html_supported=True,
+        site_graph_html_supported=False,
         openair_metadata_url=(
             "https://www.airqualityni.co.uk/openair/R_data/NI_metadata.RData"
-        ),
-        site_graph_url_template=(
-            "https://www.airqualityni.co.uk/api/site/graph/{site_code}/{days}"
         ),
     ),
 }

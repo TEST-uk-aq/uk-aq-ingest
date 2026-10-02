@@ -24,7 +24,6 @@ from scripts.official_networks.graph_parser import (
     GraphDataError,
     parse_embedded_graph_data,
 )
-from scripts.official_networks.ni_parser import acquire_ni_observations
 from scripts.official_networks.profiles import (
     PROPERTY_TO_SPEC,
     OfficialNetworkProfile,
@@ -690,7 +689,6 @@ def run_ingest(
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     profile = get_profile(connector_code)
-    connector_code = profile.connector_code
     db = IngestDatabase(profile)
     connector = db.connector()
     config = connector.get("config") if isinstance(connector.get("config"), dict) else {}
@@ -737,69 +735,49 @@ def run_ingest(
             by_station[int(row["station_id"])][property_code] = row
 
     http = HttpClient()
+    sos_enabled = bool(config.get("sos_probe_enabled", profile.sos_probe_enabled))
+    graph_supported = bool(
+        config.get("site_graph_html_supported", profile.site_graph_html_supported)
+    )
     acquisition_method: str
     warnings: List[str] = []
 
-    if connector_code == "ni":
-        observations, stats, source_warnings = acquire_ni_observations(
-            profile,
-            http,
-            stations,
-            by_station,
-            start,
-            end,
-            source_pollutant_from_text,
-        )
-        acquisition_method = "site_graph_html"
-        warnings.extend(source_warnings)
-    else:
-        sos_enabled = bool(
-            config.get("sos_probe_enabled", profile.sos_probe_enabled)
-        )
-        graph_supported = bool(
-            config.get(
-                "site_graph_html_supported", profile.site_graph_html_supported
+    if sos_enabled:
+        try:
+            observations, stats, source_warnings = sos_observations(
+                profile,
+                SosRestClient(
+                    str(config.get("sos_base_url") or profile.sos_base_url),
+                    http,
+                ),
+                stations,
+                by_station,
+                start,
+                end,
             )
-        )
-
-        if sos_enabled:
-            try:
-                observations, stats, source_warnings = sos_observations(
-                    profile,
-                    SosRestClient(
-                        str(config.get("sos_base_url") or profile.sos_base_url),
-                        http,
-                    ),
-                    stations,
-                    by_station,
-                    start,
-                    end,
-                )
-                acquisition_method = "sos"
-                warnings.extend(source_warnings)
-                if not observations and graph_supported:
-                    raise RuntimeError("SOS returned no eligible observations")
-            except Exception as exc:
-                if not graph_supported:
-                    raise
-                warnings.append(
-                    f"SOS primary unavailable: {type(exc).__name__}: {exc}"
-                )
-                observations, stats, source_warnings = html_observations(
-                    profile, http, stations, by_station, start, end
-                )
-                acquisition_method = "site_graph_html"
-                warnings.extend(source_warnings)
-        elif graph_supported:
+            acquisition_method = "sos"
+            warnings.extend(source_warnings)
+            if not observations and graph_supported:
+                raise RuntimeError("SOS returned no eligible observations")
+        except Exception as exc:
+            if not graph_supported:
+                raise
+            warnings.append(f"SOS primary unavailable: {type(exc).__name__}: {exc}")
             observations, stats, source_warnings = html_observations(
                 profile, http, stations, by_station, start, end
             )
             acquisition_method = "site_graph_html"
             warnings.extend(source_warnings)
-        else:
-            raise RuntimeError(
-                f"{connector_code} has no enabled current observation acquisition route"
-            )
+    elif graph_supported:
+        observations, stats, source_warnings = html_observations(
+            profile, http, stations, by_station, start, end
+        )
+        acquisition_method = "site_graph_html"
+        warnings.extend(source_warnings)
+    else:
+        raise RuntimeError(
+            f"{connector_code} has no enabled current observation acquisition route"
+        )
 
     observations = dedupe_observations(observations)
     if stats.get("stations_attempted", 0) and (
@@ -807,11 +785,7 @@ def run_ingest(
     ) and not observations:
         run_status = "failed"
         ok = False
-    elif (
-        stats.get("stations_failed", 0)
-        or stats.get("series_failed", 0)
-        or stats.get("source_failures", 0)
-    ):
+    elif stats.get("stations_failed", 0) or stats.get("series_failed", 0):
         run_status = "partial"
         ok = True
     else:
@@ -832,19 +806,11 @@ def run_ingest(
         max(str(row["observed_at"]) for row in observations)
         if observations else None
     )
-    if connector_code == "ni":
-        message = (
-            f"{acquisition_method}: {len(observations)} observations, "
-            f"{stats.get('series_polled', 0)} series, "
-            f"{stats.get('stations_failed', 0)} station failures, "
-            f"{stats.get('source_failures', 0)} source failures"
-        )
-    else:
-        message = (
-            f"{acquisition_method}: {len(observations)} observations, "
-            f"{stats.get('series_polled', 0)} series, "
-            f"{stats.get('stations_failed', 0)} station failures"
-        )
+    message = (
+        f"{acquisition_method}: {len(observations)} observations, "
+        f"{stats.get('series_polled', 0)} series, "
+        f"{stats.get('stations_failed', 0)} station failures"
+    )
     return {
         "ok": ok,
         "connector_id": profile.connector_id,
@@ -862,8 +828,6 @@ def run_ingest(
         "timeseries_updated": timeseries_updated,
         "series_polled": stats.get("series_polled", 0),
         "series_failed": stats.get("series_failed", 0),
-        "source_failures": stats.get("source_failures", 0),
-        "graph_period_days": stats.get("graph_period_days"),
         "last_observed_at": last_observed_at,
         "secondary": secondary,
         "warnings": warnings[:50],
