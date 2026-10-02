@@ -55,7 +55,7 @@ jobs:
       - name: Install dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install requests python-dotenv supabase pyproj psycopg2-binary pyreadr
+          python3 -m pip install requests python-dotenv supabase pyproj psycopg2-binary pandas pyreadr
 
       - name: Validate SUPABASE_DB_URL for pooler
         env:
