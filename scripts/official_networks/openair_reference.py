@@ -482,8 +482,21 @@ def main() -> int:
     )
     parser.add_argument("--connector-code", required=True, choices=("waqn", "saqn", "ni"))
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--skip-if-unconfigured", action="store_true")
     args = parser.parse_args()
-    summary = refresh(args.connector_code, dry_run=args.dry_run)
+    try:
+        summary = refresh(args.connector_code, dry_run=args.dry_run)
+    except RuntimeError as exc:
+        if args.skip_if_unconfigured and str(exc).startswith(
+            "Missing connector/network reference"
+        ):
+            summary = {
+                "connector_code": args.connector_code,
+                "skipped": True,
+                "reason": "connector_or_network_not_configured",
+            }
+        else:
+            raise
     print("REFERENCE_SUMMARY_JSON " + __import__("json").dumps(summary, sort_keys=True))
     return 0
 
