@@ -18,10 +18,11 @@ on:
 
 concurrency:
   group: uk-aq-ingest-cloud-run-shared-secret-deploy
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
