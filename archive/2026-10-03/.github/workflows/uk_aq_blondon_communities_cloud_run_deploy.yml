@@ -61,7 +61,6 @@ jobs:
       BLONDON_COMMUNITIES_SERVICE_LABEL: ${{ vars.BLONDON_COMMUNITIES_SERVICE_LABEL || 'Breathe London' }}
       BLONDON_COMMUNITIES_USER_AGENT: ${{ vars.BLONDON_COMMUNITIES_USER_AGENT || 'uk-air-quality-networks' }}
       BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS: ${{ vars.BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS || '300' }}
-      BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT: ${{ vars.BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT || 'postgrest' }}
       BLONDON_COMMUNITIES_IN_FLIGHT_TIMEOUT_MINUTES: ${{ vars.BLONDON_COMMUNITIES_IN_FLIGHT_TIMEOUT_MINUTES || '14' }}
       BLONDON_COMMUNITIES_CLAIM_TIMEOUT_MINUTES: ${{ vars.BLONDON_COMMUNITIES_CLAIM_TIMEOUT_MINUTES || '14' }}
       BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
@@ -78,7 +77,6 @@ jobs:
       DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
       DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
       DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
-      UK_AQ_GCP_CLOUD_RUN_DATABASE_URL: ${{ secrets.UK_AQ_GCP_CLOUD_RUN_DATABASE_URL }}
       SB_SECRET_KEY_SECRET_NAME: ${{ vars.SB_SECRET_KEY_SECRET_NAME || 'SB_SECRET_KEY' }}
       OBS_AQIDB_SECRET_KEY_SECRET_NAME: ${{ vars.OBS_AQIDB_SECRET_KEY_SECRET_NAME || 'OBS_AQIDB_SECRET_KEY' }}
       UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY_SECRET_NAME: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY_SECRET_NAME || vars.OBS_AQIDB_SECRET_KEY_SECRET_NAME || 'OBS_AQIDB_SECRET_KEY' }}
@@ -87,7 +85,6 @@ jobs:
       DROPBOX_APP_KEY_SECRET_NAME: ${{ vars.DROPBOX_APP_KEY_SECRET_NAME || 'DROPBOX_APP_KEY' }}
       DROPBOX_APP_SECRET_SECRET_NAME: ${{ vars.DROPBOX_APP_SECRET_SECRET_NAME || 'DROPBOX_APP_SECRET' }}
       DROPBOX_REFRESH_TOKEN_SECRET_NAME: ${{ vars.DROPBOX_REFRESH_TOKEN_SECRET_NAME || 'DROPBOX_REFRESH_TOKEN' }}
-      UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME: ${{ vars.UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME || 'UK_AQ_GCP_CLOUD_RUN_DATABASE_URL' }}
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
       GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
@@ -122,23 +119,6 @@ jobs:
             echo "Use connector_code=blondon_communities for Breathe London Communities. network_code/service_ref may remain breathelondon."
             exit 1
           fi
-          case "${BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT}" in
-            postgrest) ;;
-            database)
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL:-}" ]; then
-                echo "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
-                exit 1
-              fi
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME:-}" ]; then
-                echo "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
-                exit 1
-              fi
-              ;;
-            *)
-              echo "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT must be exactly postgrest or database."
-              exit 1
-              ;;
-          esac
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "pubsub_only" ] && [ -z "${GCP_OBSERVS_PUBSUB_TOPIC:-}" ]; then
             echo "OBSERVS_WRITE_MODE=pubsub_only requires GCP_OBSERVS_PUBSUB_TOPIC."
@@ -276,11 +256,6 @@ jobs:
           upsert_secret "UK_AQ_EDGE_UPSTREAM_SECRET" "${UK_AQ_EDGE_UPSTREAM_SECRET}" 1
           upsert_secret "${BLONDON_COMMUNITIES_API_KEY_SECRET_NAME}" "${BLONDON_COMMUNITIES_API_KEY}" 1
           upsert_secret "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" "${SB_UK_AQ_CRON_SECRET}" 0
-          if [ "${BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT}" = "database" ]; then
-            upsert_secret "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL}" 1
-          else
-            echo "Skipping shared database secret sync (BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT=${BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT})."
-          fi
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "direct" ]; then
             upsert_secret "${OBS_AQIDB_SECRET_KEY_SECRET_NAME}" "${OBS_AQIDB_SECRET_KEY}" 1
@@ -361,7 +336,6 @@ jobs:
           add_env BLONDON_COMMUNITIES_SERVICE_LABEL
           add_env BLONDON_COMMUNITIES_USER_AGENT
           add_env BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS
-          add_env BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT
           add_env BLONDON_COMMUNITIES_IN_FLIGHT_TIMEOUT_MINUTES
           add_env BLONDON_COMMUNITIES_CLAIM_TIMEOUT_MINUTES
           add_env BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL
@@ -383,11 +357,6 @@ jobs:
           add_secret_binding "UK_AQ_EDGE_UPSTREAM_SECRET" "UK_AQ_EDGE_UPSTREAM_SECRET" 1
           add_secret_binding "SB_SECRET_KEY" "${SB_SECRET_KEY_SECRET_NAME}" 1
           add_secret_binding "BLONDON_COMMUNITIES_API_KEY" "${BLONDON_COMMUNITIES_API_KEY_SECRET_NAME}" 1
-          if [ "${BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT}" = "database" ]; then
-            add_secret_binding "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" 1
-          else
-            echo "Skipping shared database secret binding (BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT=${BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT})."
-          fi
           if [ -n "${SB_UK_AQ_CRON_SECRET:-}" ]; then
             add_secret_binding "SB_UK_AQ_CRON_SECRET" "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" 0
           fi

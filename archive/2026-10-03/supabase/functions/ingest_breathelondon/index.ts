@@ -29,7 +29,6 @@ import {
   canonicalCommunitiesMappings,
   classifyCommunitiesTimeseriesRows,
 } from "../../../shared/blondon_communities_reference.mjs";
-import { upsertCommunitiesObservationsViaDatabase } from "./breathelondon_database.ts";
 
 configureServiceEgressMetrics("ingest.blondon_communities");
 configureObservsPostgrestFetch(serviceEgressPostgrestFetch);
@@ -191,16 +190,6 @@ const BLONDON_COMMUNITIES_USER_AGENT = Deno.env.get("BLONDON_COMMUNITIES_USER_AG
 const BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS = Number(
   Deno.env.get("BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS") ?? DEFAULT_MAX_RUNTIME_SECONDS,
 );
-const BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT = (() => {
-  const value = (Deno.env.get("BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT") ??
-    "postgrest").trim();
-  if (value !== "postgrest" && value !== "database") {
-    throw new Error(
-      "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT must be exactly postgrest or database.",
-    );
-  }
-  return value;
-})();
 
 function resolveCommunitiesConnectorCode(raw: unknown): string {
   const value = typeof raw === "string" ? raw.trim() : "";
@@ -1108,16 +1097,11 @@ async function upsertObservations(
     requestBodyBytes: (chunk: Record<string, unknown>[]) =>
       serializedJsonUtf8Bytes(buildCompactObservationRpcArgs(chunk)),
     writeChunk: async (chunk: Record<string, unknown>[]) => {
-      const arguments_ = buildCompactObservationRpcArgs(chunk);
-      if (BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT === "database") {
-        await upsertCommunitiesObservationsViaDatabase(arguments_);
-        return;
-      }
       const { error } = await postgrestRequest(
         "POST",
         "rpc/uk_aq_rpc_observations_compact_upsert_v1",
         {},
-        arguments_,
+        buildCompactObservationRpcArgs(chunk),
         undefined,
         "uk_aq_public",
       );

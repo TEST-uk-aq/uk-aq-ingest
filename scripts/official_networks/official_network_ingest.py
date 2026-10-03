@@ -25,6 +25,7 @@ from scripts.official_networks.graph_parser import (
     parse_embedded_graph_data,
 )
 from scripts.official_networks.ni_parser import acquire_ni_observations
+from scripts.official_networks.official_network_database import OfficialNetworkDatabase
 from scripts.official_networks.profiles import (
     PROPERTY_TO_SPEC,
     OfficialNetworkProfile,
@@ -403,6 +404,20 @@ class ObservsWriter:
 class IngestDatabase:
     def __init__(self, profile: OfficialNetworkProfile) -> None:
         self.profile = profile
+        requested_transport = os.getenv("OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT")
+        self.ingestdb_write_transport = (
+            "postgrest" if requested_transport is None else requested_transport.strip()
+        )
+        if self.ingestdb_write_transport not in {"postgrest", "database"}:
+            raise RuntimeError(
+                "OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT must be exactly "
+                "postgrest or database."
+            )
+        self.observation_database = (
+            OfficialNetworkDatabase.from_environment()
+            if self.ingestdb_write_transport == "database"
+            else None
+        )
         self.client = create_supabase_client()
         schemas = SupabaseSchemas.from_client(self.client)
         self.core = schemas.core
@@ -481,14 +496,23 @@ class IngestDatabase:
         changed = 0
         for offset in range(0, len(rows), 500):
             chunk = list(rows[offset : offset + 500])
+            arguments: Dict[str, Any] = {
+                "timeseries_ids": [row["timeseries_id"] for row in chunk],
+                "observed_ats": [row["observed_at"] for row in chunk],
+                "values": [row["value"] for row in chunk],
+                "acquisition_method": acquisition_method,
+            }
+            statuses = [row.get("status") for row in chunk]
+            if any(status is not None for status in statuses):
+                arguments["statuses"] = statuses
+            if self.observation_database is not None:
+                changed += self.observation_database.upsert_compact_observations_v2(
+                    arguments
+                )
+                continue
             response = self.public.rpc(
                 "uk_aq_rpc_observations_compact_upsert_v2",
-                {
-                    "timeseries_ids": [row["timeseries_id"] for row in chunk],
-                    "observed_ats": [row["observed_at"] for row in chunk],
-                    "values": [row["value"] for row in chunk],
-                    "acquisition_method": acquisition_method,
-                },
+                arguments,
             ).execute()
             values = response_rows(response)
             if values and values[0].get("observations_upserted") is not None:

@@ -9,7 +9,6 @@ on:
       - "scripts/uk_aq_supabase.py"
       - "scripts/uk_aq_service_egress_metrics.py"
       - "workers/uk_aq_official_network_cloud_run/**"
-      - "scripts/gcp/**"
       - "scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"
       - ".github/workflows/uk_aq_official_networks_cloud_run_deploy.yml"
   workflow_dispatch:
@@ -52,11 +51,8 @@ jobs:
       OBSERVS_WRITE_MODE: ${{ vars.OBSERVS_WRITE_MODE || 'pubsub_only' }}
       GCP_OBSERVS_PUBSUB_TOPIC: ${{ vars.GCP_OBSERVS_PUBSUB_TOPIC || 'uk-aq-observs-observations' }}
       OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE: ${{ vars.OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE || '500' }}
-      OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT: ${{ vars.OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT || 'postgrest' }}
       SB_SECRET_KEY_SECRET_NAME: ${{ vars.SB_SECRET_KEY_SECRET_NAME || 'SB_SECRET_KEY' }}
       OBS_AQIDB_SECRET_KEY_SECRET_NAME: ${{ vars.OBS_AQIDB_SECRET_KEY_SECRET_NAME || 'OBS_AQIDB_SECRET_KEY' }}
-      UK_AQ_GCP_CLOUD_RUN_DATABASE_URL: ${{ secrets.UK_AQ_GCP_CLOUD_RUN_DATABASE_URL }}
-      UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME: ${{ vars.UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME || 'UK_AQ_GCP_CLOUD_RUN_DATABASE_URL' }}
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
       GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
@@ -95,23 +91,6 @@ jobs:
             waqn|saqn|ni) ;;
             *) echo "Unsupported connector code: ${CONNECTOR_CODE}"; exit 1 ;;
           esac
-          case "${OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT}" in
-            postgrest) ;;
-            database)
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL:-}" ]; then
-                echo "OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
-                exit 1
-              fi
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME:-}" ]; then
-                echo "OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
-                exit 1
-              fi
-              ;;
-            *)
-              echo "OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT must be exactly postgrest or database."
-              exit 1
-              ;;
-          esac
 
       - name: Authenticate to Google Cloud (WIF)
         if: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && env.GCP_SERVICE_ACCOUNT != '' }}
@@ -144,18 +123,6 @@ jobs:
           docker build -f workers/uk_aq_official_network_cloud_run/Dockerfile -t "${IMAGE}" .
           docker push "${IMAGE}"
 
-      - name: Sync shared database secret to GCP Secret Manager
-        if: ${{ env.OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT == 'database' }}
-        run: |
-          set -euo pipefail
-          printf '%s' "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL}" | \
-            scripts/gcp/uk_aq_secret_upsert_if_changed.sh \
-              --project "${PROJECT_ID}" \
-              --region "${REGION}" \
-              --secret "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" \
-              --required 1 \
-              --apply
-
       - name: Build Cloud Run env and secret args
         id: args
         run: |
@@ -166,11 +133,6 @@ jobs:
           fi
           if ! gcloud secrets describe "UK_AQ_EDGE_UPSTREAM_SECRET" --project "${PROJECT_ID}" >/dev/null 2>&1; then
             echo "Required Secret Manager secret missing: UK_AQ_EDGE_UPSTREAM_SECRET"
-            exit 1
-          fi
-          if [ "${OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT}" = "database" ] && \
-             ! gcloud secrets describe "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
-            echo "Required Secret Manager secret missing: ${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}"
             exit 1
           fi
 
@@ -184,7 +146,6 @@ jobs:
               "OBSERVS_WRITE_MODE": os.environ["OBSERVS_WRITE_MODE"],
               "GCP_OBSERVS_PUBSUB_TOPIC": os.environ["GCP_OBSERVS_PUBSUB_TOPIC"],
               "OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE": os.environ["OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE"],
-              "OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT": os.environ["OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT"],
               "GCP_PROJECT_ID": os.environ["PROJECT_ID"],
               "UK_AQ_OFFICIAL_NETWORK_CONNECTOR_CODE": os.environ["CONNECTOR_CODE"],
               "OFFICIAL_NETWORK_MAX_RUNTIME_SECONDS": "900",
@@ -200,9 +161,6 @@ jobs:
           PY
 
           SECRETS="SB_SECRET_KEY=${SB_SECRET_KEY_SECRET_NAME}:latest,UK_AQ_EDGE_UPSTREAM_SECRET=UK_AQ_EDGE_UPSTREAM_SECRET:latest"
-          if [ "${OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT}" = "database" ]; then
-            SECRETS="${SECRETS},UK_AQ_GCP_CLOUD_RUN_DATABASE_URL=${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}:latest"
-          fi
           if [ "${OBSERVS_WRITE_MODE}" = "direct" ]; then
             if ! gcloud secrets describe "${OBS_AQIDB_SECRET_KEY_SECRET_NAME}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
               echo "Direct mode requires Secret Manager secret: ${OBS_AQIDB_SECRET_KEY_SECRET_NAME}"
