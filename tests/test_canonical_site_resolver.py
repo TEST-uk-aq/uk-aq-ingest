@@ -2,6 +2,7 @@ from scripts.official_networks.canonical_site_resolver import (
     choose_regional_match,
     coordinates_identical,
     merge_member_evidence,
+    schema_prerequisite_message,
 )
 
 
@@ -91,6 +92,25 @@ def test_closed_aurn_site_is_not_a_different_code_candidate():
 
     assert decision.status == "unmatched"
     assert decision.evidence["reason"] == "no_candidate_within_50m"
+
+
+def test_removed_regional_station_is_not_given_a_new_match():
+    decision = choose_regional_match(
+        _station(removed_at="2026-10-01T00:00:00Z"),
+        [_site()],
+    )
+
+    assert decision.status == "skipped_removed"
+    assert decision.uk_air_ref is None
+
+
+def test_missing_canonical_identity_schema_has_actionable_prerequisite_message():
+    message = schema_prerequisite_message(
+        RuntimeError("PGRST204: Could not find the 'uk_air_ref' column of 'station_matches'")
+    )
+
+    assert message is not None
+    assert "20261003_001_ingest_canonical_physical_site_identity.sql" in message
 
 
 def test_refresh_retains_previous_accepted_alias_evidence():

@@ -30,7 +30,6 @@ AURN_NETWORK = "Automatic Urban and Rural Monitoring Network (AURN)"
 REGIONAL_CONNECTOR_CODES = ("waqn", "saqn", "ni")
 MAX_DIFFERENT_CODE_DISTANCE_M = 50.0
 COORDINATE_TOLERANCE = 1e-9
-SCHEMA_MIGRATION = "20261003_001_ingest_canonical_physical_site_identity.sql"
 
 
 def _rows(response: Any) -> List[Dict[str, Any]]:
@@ -132,11 +131,6 @@ def choose_regional_match(
     official_evidence: Optional[OfficialEvidence] = None,
 ) -> MatchDecision:
     """Return one conservative canonical-site decision for a regional station."""
-    if _text(station.get("removed_at")):
-        return MatchDecision(
-            status="skipped_removed",
-            evidence={"reason": "regional_station_already_removed"},
-        )
     station_ref = _upper(station.get("station_ref"))
     exact = [site for site in aurn_sites if _upper(site.get("site_ref")) == station_ref]
     if len(exact) == 1:
@@ -320,33 +314,6 @@ def merge_member_evidence(
     ]
 
 
-def schema_prerequisite_message(error: BaseException) -> Optional[str]:
-    """Translate missing canonical identity objects into an operator action."""
-    text = str(error).lower()
-    has_schema_identifier = any(
-        identifier in text for identifier in ("station_matches", "uk_air_ref", "match_id")
-    )
-    has_missing_object_signal = any(
-        signal in text
-        for signal in (
-            "pgrst204",
-            "42p01",
-            "42703",
-            "could not find",
-            "does not exist",
-            "undefined column",
-            "undefined table",
-        )
-    )
-    if not (has_schema_identifier and has_missing_object_signal):
-        return None
-    return (
-        "Canonical physical-site schema is not ready. Apply ingest migration "
-        f"{SCHEMA_MIGRATION} to TEST, refresh the PostgREST schema cache if needed, "
-        "then rerun Daily Stations."
-    )
-
-
 class CanonicalSiteResolver:
     def __init__(self, *, dry_run: bool = False) -> None:
         self.schemas = SupabaseSchemas.from_client(create_supabase_client())
@@ -428,10 +395,7 @@ class CanonicalSiteResolver:
             return []
         return _all_rows(
             lambda: self.core.table("stations")
-                .select(
-                    "id,connector_id,station_ref,station_name,label,latitude,longitude,"
-                    "match_id,removed_at"
-                )
+                .select("id,connector_id,station_ref,station_name,label,latitude,longitude,match_id")
                 .in_("connector_id", list(connector_ids))
                 .order("id")
         )
@@ -631,8 +595,6 @@ class CanonicalSiteResolver:
         match_id_by_ref: Dict[str, Optional[int]] = {}
         current_member_ids_by_ref: Dict[str, set[int]] = {}
         for station_id, station in stations_by_id.items():
-            if _text(station.get("removed_at")):
-                continue
             current_match_id = station.get("match_id")
             if current_match_id is None:
                 continue
@@ -640,8 +602,6 @@ class CanonicalSiteResolver:
             if current_ref:
                 current_member_ids_by_ref.setdefault(current_ref, set()).add(station_id)
         for station_id, target_ref in target_ref_by_station.items():
-            if _text(stations_by_id[station_id].get("removed_at")):
-                continue
             current_member_ids_by_ref.setdefault(target_ref, set()).add(station_id)
         for uk_air_ref in sorted(evidence_by_ref):
             site = sites_by_ref.get(uk_air_ref)
@@ -709,13 +669,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    try:
-        result = CanonicalSiteResolver(dry_run=args.dry_run).run()
-    except Exception as error:
-        prerequisite = schema_prerequisite_message(error)
-        if prerequisite:
-            raise RuntimeError(prerequisite) from error
-        raise
+    result = CanonicalSiteResolver(dry_run=args.dry_run).run()
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
 
 
