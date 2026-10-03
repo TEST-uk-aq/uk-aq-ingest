@@ -457,13 +457,6 @@ jobs:
             --connector-code ni \
             --skip-if-unconfigured
 
-      - name: Resolve canonical physical monitoring sites
-        env:
-          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
-        run: |
-          python3 scripts/official_networks/canonical_site_resolver.py
-
       - name: Refresh station PCON/LA from R2 shards
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
