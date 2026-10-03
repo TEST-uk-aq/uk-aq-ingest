@@ -1,11 +1,21 @@
 name: Deploy Devolved Official Network Cloud Run Services
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/official_networks/**"
+      - "scripts/uk_aq_supabase.py"
+      - "scripts/uk_aq_service_egress_metrics.py"
+      - "workers/uk_aq_official_network_cloud_run/**"
+      - "scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"
+      - ".github/workflows/uk_aq_official_networks_cloud_run_deploy.yml"
   workflow_dispatch:
 
 concurrency:
   group: uk-aq-ingest-cloud-run-shared-secret-deploy
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
