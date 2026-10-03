@@ -836,8 +836,6 @@ def run_ingest(
         message = (
             f"{acquisition_method}: {len(observations)} observations, "
             f"{stats.get('series_polled', 0)} series, "
-            f"{stats.get('stations_no_usable_observations', 0)} stations "
-            "with no usable observations, "
             f"{stats.get('stations_failed', 0)} station failures, "
             f"{stats.get('source_failures', 0)} source failures"
         )
@@ -858,15 +856,6 @@ def run_ingest(
         "stations_updated": 0,
         "stations_attempted": stats.get("stations_attempted", 0),
         "stations_no_recent_graph": stats.get("stations_no_recent_graph", 0),
-        **(
-            {
-                "stations_no_usable_observations": stats.get(
-                    "stations_no_usable_observations", 0
-                )
-            }
-            if connector_code == "ni"
-            else {}
-        ),
         "stations_failed": stats.get("stations_failed", 0),
         "observations_selected": len(observations),
         "observations_upserted": observations_upserted,

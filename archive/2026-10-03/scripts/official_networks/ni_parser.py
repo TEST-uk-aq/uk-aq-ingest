@@ -67,8 +67,6 @@ def choose_graph_period(start: datetime, end: datetime) -> Tuple[int, bool]:
 def parse_graph_payload(payload: object) -> NiGraphPayload:
     if not isinstance(payload, list):
         raise NiDataError("NI graph response is not a list")
-    if not payload:
-        return NiGraphPayload(series=[], unknown_series_names=[], warnings=[])
 
     points_by_pollutant: Dict[str, Dict[str, NiGraphPoint]] = {}
     source_names: Dict[str, str] = {}
@@ -345,7 +343,6 @@ def acquire_ni_observations(
     stats = {
         "stations_attempted": 0,
         "stations_no_recent_graph": 0,
-        "stations_no_usable_observations": 0,
         "stations_failed": 0,
         "series_polled": 0,
         "series_failed": 0,
@@ -365,7 +362,6 @@ def acquire_ni_observations(
         destination = timeseries_by_station.get(station_id) or {}
         stats["stations_attempted"] += 1
         graph_parsed = False
-        html_parsed = False
         graph_usable = False
         html_usable = False
         graph_rows: List[Dict[str, Any]] = []
@@ -433,7 +429,6 @@ def acquire_ni_observations(
                 f"{site_code} HTML unavailable: {type(exc).__name__}: {exc}"
             )
         else:
-            html_parsed = True
             for warning in latest_payload.warnings:
                 warnings.append(f"{site_code} HTML: {warning}")
             for latest in latest_payload.rows:
@@ -472,14 +467,7 @@ def acquire_ni_observations(
                     f"{site_code} HTML: no recognised mapped hourly-mean data"
                 )
 
-        if (
-            graph_parsed
-            and html_parsed
-            and not graph_usable
-            and not html_usable
-        ):
-            stats["stations_no_usable_observations"] += 1
-        elif not graph_usable and not html_usable:
+        if not graph_usable and not html_usable:
             stats["stations_failed"] += 1
         stats["series_polled"] += len(polled_timeseries)
         observations.extend(graph_rows)
