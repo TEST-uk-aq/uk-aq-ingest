@@ -33,9 +33,15 @@ Unless explicitly requested, do **not**:
 
 When external work is required but not authorised, make repository changes only and provide exact manual commands, expected output, rollback notes and real TEST validation steps.
 
-## Commit and push confirmation
+## Git and pull-request authorisation
 
-A prompt or task brief that asks for a commit or push does not, by itself, authorise either operation. After implementation and local validation are ready, stop and ask the user again for explicit confirmation before running `git commit`, `git commit --amend` or `git push`. The confirming reply must separately follow that request and explicitly name each authorised operation (commit, push or both); wording in an initial prompt, attachment, plan or handover does not count. Confirmation from an earlier task does not carry forward. Until the required confirmation is received, leave changes uncommitted and unpushed.
+For TEST work, an explicit request in the current task to create a pull request authorises the coding agent to create a working branch, commit the completed changes, push that branch and open the requested PR in the same TEST repository. No second post-implementation confirmation is required for those PR-enabling Git operations.
+
+That PR authorisation does **not** authorise pushing directly to `main`, merging the PR, deploying, or making any change in LIVE. Those actions still require explicit authorisation in the current task.
+
+If the current task explicitly asks for particular Git operations without asking for a PR, perform only the named operations. If the current task does not explicitly request Git operations or a PR, leave implementation changes uncommitted in the working tree for review.
+
+Authorisation from an earlier task does not carry forward.
 
 ## Validation policy
 
