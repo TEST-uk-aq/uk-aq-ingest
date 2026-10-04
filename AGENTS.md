@@ -8,15 +8,13 @@ This file is the active repository-level agent instruction set. `AGENTS_BASE.md`
 - Keep work bounded to the requested connector/subsystem.
 - Before implementation read:
   1. this file;
-  2. if the sibling system-doc repository is available, `../TEST-uk-aq-system-docs/system_docs/SYSTEM_OVERVIEW.md`;
-  3. if that sibling path is unavailable in a single-repository workspace such as Codex Cloud, `ref_docs/system_docs/REF_DOCS_INDEX.md` and then `ref_docs/system_docs/SYSTEM_OVERVIEW.md`;
-  4. the relevant area `README.md` from the same documentation source selected above;
-  5. only the broad/narrow contracts selected by that router;
-  6. the implementation files actually in scope.
+  2. the `TEST-uk-aq/uk-aq-system-docs` repository in the current multi-repository workspace, starting at `system_docs/SYSTEM_OVERVIEW.md`;
+  3. the relevant area `README.md` selected by that router;
+  4. only the broad/narrow contracts selected by that router;
+  5. the implementation files actually in scope.
 - Do not recursively preload all system docs, legacy docs, plans, drafts or archive material.
 - Active `system_docs/` contracts are authoritative. Report conflicts with code/user requests rather than silently overriding them.
-- `ref_docs/system_docs/` is a read-only convenience mirror for single-repository workspaces. If the authoritative sibling is available and differs from the mirror, use the sibling and report that the mirror needs refresh.
-- Coding agents may read authoritative `system_docs/` and the repository reference mirror but MUST NOT edit/move/rename/delete either. Provide a concise Chat-mode documentation handover when implementation changes require contract updates.
+- Coding agents may read authoritative `system_docs/` in `TEST-uk-aq/uk-aq-system-docs` but MUST NOT edit/move/rename/delete it. If that repository is unavailable in the current workspace, report the missing prerequisite rather than using a copied fallback. Provide a concise Chat-mode documentation handover when implementation changes require contract updates.
 
 ## Default operating mode
 
