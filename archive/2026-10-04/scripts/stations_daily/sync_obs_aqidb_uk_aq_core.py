@@ -2,9 +2,9 @@
 """Run the Obs AQI core mirror with bounded delete RPC batches.
 
 The wrapper also extends the legacy mirror implementation with the canonical
-`networks` and `station_matches` tables. IngestDB owns both authoritative
-identity sets. Their stable numeric IDs are mirrored before dependent rows and
-deleted only after those dependants.
+`networks` table. IngestDB owns the authoritative network catalogue, including
+stable numeric IDs and mutable display/enablement/priority fields. Networks are
+upserted before connector/station rows and deleted only after dependent rows.
 """
 
 from __future__ import annotations
@@ -66,24 +66,6 @@ _NETWORKS_TABLE_META = {
     ],
 }
 
-_STATION_MATCHES_TABLE_META = {
-    "pk": ["id"],
-    "columns": [
-        {"column_name": "id", "udt_name": "int8", "is_nullable": "NO", "column_default": None, "ordinal_position": 1},
-        {"column_name": "uk_air_ref", "udt_name": "text", "is_nullable": "YES", "column_default": None, "ordinal_position": 2},
-        {"column_name": "match_name", "udt_name": "text", "is_nullable": "YES", "column_default": None, "ordinal_position": 3},
-        {"column_name": "latitude", "udt_name": "float8", "is_nullable": "YES", "column_default": None, "ordinal_position": 4},
-        {"column_name": "longitude", "udt_name": "float8", "is_nullable": "YES", "column_default": None, "ordinal_position": 5},
-        {"column_name": "geometry", "udt_name": "geography", "is_nullable": "YES", "column_default": None, "ordinal_position": 6},
-        {"column_name": "match_method", "udt_name": "text", "is_nullable": "YES", "column_default": None, "ordinal_position": 7},
-        {"column_name": "match_confidence", "udt_name": "numeric", "is_nullable": "YES", "column_default": None, "ordinal_position": 8},
-        {"column_name": "notes", "udt_name": "text", "is_nullable": "YES", "column_default": None, "ordinal_position": 9},
-        {"column_name": "metadata", "udt_name": "jsonb", "is_nullable": "NO", "column_default": "'{}'::jsonb", "ordinal_position": 10},
-        {"column_name": "created_at", "udt_name": "timestamptz", "is_nullable": "NO", "column_default": "now()", "ordinal_position": 11},
-        {"column_name": "updated_at", "udt_name": "timestamptz", "is_nullable": "NO", "column_default": "now()", "ordinal_position": 12},
-    ],
-}
-
 if "networks" not in _legacy.PRIMARY_TABLES:
     _legacy.PRIMARY_TABLES.insert(0, "networks")
 if "networks" not in _legacy.SYNC_TABLES:
@@ -91,23 +73,6 @@ if "networks" not in _legacy.SYNC_TABLES:
 if "networks" not in _legacy.DELETE_ORDER:
     _legacy.DELETE_ORDER.append("networks")
 _legacy.STATIC_SOURCE_TABLE_META["networks"] = _NETWORKS_TABLE_META
-
-if "station_matches" not in _legacy.PRIMARY_TABLES:
-    _legacy.PRIMARY_TABLES.insert(
-        _legacy.PRIMARY_TABLES.index("stations"),
-        "station_matches",
-    )
-if "station_matches" not in _legacy.SYNC_TABLES:
-    _legacy.SYNC_TABLES.insert(
-        _legacy.SYNC_TABLES.index("stations"),
-        "station_matches",
-    )
-if "station_matches" not in _legacy.DELETE_ORDER:
-    _legacy.DELETE_ORDER.insert(
-        _legacy.DELETE_ORDER.index("stations") + 1,
-        "station_matches",
-    )
-_legacy.STATIC_SOURCE_TABLE_META["station_matches"] = _STATION_MATCHES_TABLE_META
 
 
 def _parse_delete_batch_size(raw: str | None = None) -> int:

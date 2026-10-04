@@ -471,3 +471,84 @@ def test_verify_schema_matches_still_blocks_real_schema_differences(dest_cols, m
 
     with pytest.raises(sync_mod.SyncError, match=match_text):
         verify_single_table(source_cols, dest_cols)
+
+
+def test_station_matches_is_mirrored_before_stations() -> None:
+    assert "station_matches" in sync_mod.SYNC_TABLES
+    assert sync_mod.SYNC_TABLES.index("station_matches") < sync_mod.SYNC_TABLES.index("stations")
+    assert "station_matches" in sync_mod.PRIMARY_TABLES
+
+
+def test_station_matches_is_deleted_after_stations() -> None:
+    assert "station_matches" in sync_mod.DELETE_ORDER
+    assert sync_mod.DELETE_ORDER.index("station_matches") > sync_mod.DELETE_ORDER.index("stations")
+
+
+def test_station_matches_static_metadata_matches_canonical_source_shape() -> None:
+    metadata = sync_mod.STATIC_SOURCE_TABLE_META["station_matches"]
+
+    assert metadata["pk"] == ["id"]
+    assert [column["column_name"] for column in metadata["columns"]] == [
+        "id",
+        "uk_air_ref",
+        "match_name",
+        "latitude",
+        "longitude",
+        "geometry",
+        "match_method",
+        "match_confidence",
+        "notes",
+        "metadata",
+        "created_at",
+        "updated_at",
+    ]
+    assert metadata["columns"][0] == {
+        "column_name": "id",
+        "udt_name": "int8",
+        "is_nullable": "NO",
+        "column_default": None,
+        "ordinal_position": 1,
+    }
+
+
+def test_station_matches_upsert_preserves_explicit_source_id() -> None:
+    metadata = sync_mod.STATIC_SOURCE_TABLE_META["station_matches"]
+    client = make_client()
+    calls = []
+
+    def fake_rpc(name, *, profile, args):
+        calls.append({"name": name, "profile": profile, "args": args})
+        return [{"rows_upserted": 1}]
+
+    client.rpc = fake_rpc
+    row = {
+        "id": 160,
+        "uk_air_ref": "UKA00933",
+        "match_name": "Example canonical site",
+        "latitude": 51.5,
+        "longitude": -0.1,
+        "geometry": None,
+        "match_method": "uk_air_canonical_reference",
+        "match_confidence": 1,
+        "notes": None,
+        "metadata": {},
+        "created_at": "2026-10-04T00:00:00+00:00",
+        "updated_at": "2026-10-04T00:00:00+00:00",
+    }
+
+    assert client.upsert_core_rows_via_rpc(
+        "station_matches",
+        rows=[row],
+        on_conflict_columns=metadata["pk"],
+    ) == 1
+    assert calls == [
+        {
+            "name": sync_mod.CORE_UPSERT_RPC,
+            "profile": sync_mod.PUBLIC_SCHEMA,
+            "args": {
+                "p_table_name": "station_matches",
+                "p_rows": [row],
+                "p_on_conflict_columns": ["id"],
+            },
+        }
+    ]
