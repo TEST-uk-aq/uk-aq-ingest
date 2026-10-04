@@ -14,12 +14,18 @@ import json
 import logging
 import math
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import requests
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.official_networks.profiles import get_profile
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
