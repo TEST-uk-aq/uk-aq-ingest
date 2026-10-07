@@ -66,21 +66,24 @@ For agents operating in Codex Cloud:
 For ChatGPT operating in Chat mode with repository/GitHub tools:
 
 - A request to implement, fix, change or update TEST code, configuration or documentation authorises the bounded repository edits and commits needed for that task without further confirmation.
-- By default, create or use a non-`main` working branch, commit the intended changes, push that branch and create a pull request targeting the TEST repository's `main` branch.
-- If the task is already associated with an open pull request, update that existing PR branch instead of creating another PR.
-- No separate confirmation is required for those branch, commit, push and PR operations.
-- Never commit or push directly to `main` unless the user explicitly asks for that in the current task.
+- For small, bounded, low-risk TEST changes, commit and push directly to the repository's `main` branch by default. No separate confirmation is required.
+- Do not create a pull request by default. Create a PR only when the user explicitly asks for one in the current task.
+- For larger, substantial, high-risk or broad cross-repository changes, do not write directly to `main` by default. Use a non-`main` branch, commit and push the changes there, then stop and report the branch unless the user explicitly authorises another Git action.
+- If it is genuinely unclear whether a change is small and low-risk enough for direct `main`, prefer the non-`main` branch path.
 - Never merge a pull request unless the user explicitly asks for the merge in the current task.
 - Never deploy or perform remote operational/data mutations merely because repository changes were requested.
-- Stop after the PR has been created or updated unless the user explicitly requested a further authorised Git or operational action.
 
 ### Common restrictions
 
-Local/editor agents, Codex Cloud agents and ChatGPT in Chat mode must not push directly to `main`, merge a PR, deploy, modify LIVE, or perform remote operational/data mutations unless the user explicitly authorises that specific exceptional action in the current task.
+Local/editor agents and Codex Cloud agents must not push directly to `main` unless the user explicitly authorises that specific action in the current task.
 
-The user may explicitly narrow the permitted Git behaviour for the current task; a narrower current-task instruction takes precedence over the defaults above.
+ChatGPT in Chat mode may push small, bounded, low-risk TEST changes directly to `main` under the standing rule above. Direct-`main` writes for larger, substantial, high-risk or broad cross-repository changes still require explicit current-task authorisation.
 
-Authorisation from an earlier task does not carry forward for exceptional operations such as direct-`main` writes, merging, deployment, LIVE work or remote operational mutation.
+No agent may merge a PR, deploy, modify LIVE, or perform remote operational/data mutations unless the user explicitly authorises that specific action in the current task.
+
+The user may explicitly narrow the permitted Git behaviour for the current task; a narrower current-task instruction takes precedence over these defaults.
+
+Authorisation from an earlier task does not carry forward for exceptional operations such as larger direct-`main` writes, merging, deployment, LIVE work or remote operational mutation.
 
 ## Validation policy
 
