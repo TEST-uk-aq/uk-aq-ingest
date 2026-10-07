@@ -20,9 +20,9 @@ This file is the active repository-level agent instruction set. `AGENTS_BASE.md`
 
 Default is focused code/schema/non-system-doc implementation only.
 
-Unless explicitly requested, do **not**:
+Unless permitted by the environment-specific Git rules below or explicitly authorised for that specific operation, do **not**:
 
-- create/amend commits, push, create branches or PRs;
+- create/amend commits, push, create branches or PRs except as permitted by the environment-specific Git rules below;
 - execute SQL or apply migrations against TEST/LIVE databases;
 - deploy Supabase functions, Cloud Run, Workers or workflows;
 - run backfills, reconciliations, bulk/long-running jobs or destructive data operations;
@@ -33,13 +33,54 @@ When external work is required but not authorised, make repository changes only 
 
 ## Git and pull-request authorisation
 
-For TEST work, an explicit request in the current task to create a pull request authorises the coding agent to create a working branch, commit the completed changes, push that branch and open the requested PR in the same TEST repository. No second post-implementation confirmation is required for those PR-enabling Git operations.
+The permitted Git workflow depends on where the agent is running.
 
-That PR authorisation does **not** authorise pushing directly to `main`, merging the PR, deploying, or making any change in LIVE. Those actions still require explicit authorisation in the current task.
+### Local/editor agents
 
-If the current task explicitly asks for particular Git operations without asking for a PR, perform only the named operations. If the current task does not explicitly request Git operations or a PR, leave implementation changes uncommitted in the working tree for review.
+For agents operating in a local checkout, including VS Code Codex:
 
-Authorisation from an earlier task does not carry forward.
+- A request to implement, fix, change or update code authorises the required bounded TEST working-tree edits without further confirmation.
+- Leave implementation changes uncommitted in the local working tree for the user to inspect.
+- Do not create or amend commits.
+- Do not push any local commit or branch to GitHub.
+- Do not create a pull request from the local checkout.
+- Do not push directly to `main`.
+- Fetching from remotes, inspecting remote branches and checking out an existing branch are permitted when needed for the requested task, provided unrelated local work is not overwritten or discarded.
+- If the user explicitly requests a particular local Git operation in the current task, perform only that named operation. A request to implement code alone never authorises commit or push.
+
+### Codex Cloud agents
+
+For agents operating in Codex Cloud:
+
+- A request to implement, fix, change or update TEST code authorises the bounded cloud working-tree edits needed for that task without further confirmation.
+- For completed implementation work, create a working branch, commit the intended changes, push that branch and create a pull request targeting the TEST repository's `main` branch.
+- If the task is already associated with an open pull request, update that existing PR branch instead of creating another PR.
+- No separate post-implementation confirmation is required to create or update the PR.
+- Never push directly to `main`.
+- Never merge the pull request.
+- Never deploy as a consequence of creating or updating the pull request.
+- Stop after the PR has been created or updated and report the PR, branch and commit details.
+
+### ChatGPT in Chat mode
+
+For ChatGPT operating in Chat mode with repository/GitHub tools:
+
+- A request to implement, fix, change or update TEST code, configuration or documentation authorises the bounded repository edits and commits needed for that task without further confirmation.
+- By default, create or use a non-`main` working branch, commit the intended changes, push that branch and create a pull request targeting the TEST repository's `main` branch.
+- If the task is already associated with an open pull request, update that existing PR branch instead of creating another PR.
+- No separate confirmation is required for those branch, commit, push and PR operations.
+- Never commit or push directly to `main` unless the user explicitly asks for that in the current task.
+- Never merge a pull request unless the user explicitly asks for the merge in the current task.
+- Never deploy or perform remote operational/data mutations merely because repository changes were requested.
+- Stop after the PR has been created or updated unless the user explicitly requested a further authorised Git or operational action.
+
+### Common restrictions
+
+Local/editor agents, Codex Cloud agents and ChatGPT in Chat mode must not push directly to `main`, merge a PR, deploy, modify LIVE, or perform remote operational/data mutations unless the user explicitly authorises that specific exceptional action in the current task.
+
+The user may explicitly narrow the permitted Git behaviour for the current task; a narrower current-task instruction takes precedence over the defaults above.
+
+Authorisation from an earlier task does not carry forward for exceptional operations such as direct-`main` writes, merging, deployment, LIVE work or remote operational mutation.
 
 ## Validation policy
 
