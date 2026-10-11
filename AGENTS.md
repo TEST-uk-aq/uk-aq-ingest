@@ -66,10 +66,9 @@ For agents operating in Codex Cloud:
 For ChatGPT operating in Chat mode with repository/GitHub tools:
 
 - A request to implement, fix, change or update TEST code, configuration or documentation authorises the bounded repository edits and commits needed for that task without further confirmation.
-- For small, bounded, low-risk TEST changes, commit and push directly to the repository's `main` branch by default. No separate confirmation is required.
-- Do not create a pull request by default. Create a PR only when the user explicitly asks for one in the current task.
-- For larger, substantial, high-risk or broad cross-repository changes, do not write directly to `main` by default. Use a non-`main` branch, commit and push the changes there, then stop and report the branch unless the user explicitly authorises another Git action.
-- If it is genuinely unclear whether a change is small and low-risk enough for direct `main`, prefer the non-`main` branch path.
+- **Whenever ChatGPT in Chat mode commits and pushes to an online repository, it MUST commit and push to that repository's `main` branch, irrespective of change size.** This is the user's standing project instruction; never create or push a non-`main` branch for ChatGPT's own commits.
+- A bounded user request to update TEST code, configuration or authoritative documentation authorises the necessary Chat-mode GitHub edits and direct-`main` commits without separate confirmation. Preserve existing safeguards for repository scope, high-risk implementation, pre-change reports and operational actions.
+- Do not create a pull request by default. Create a PR only when the user explicitly asks for one in the current task. If a requested change cannot safely be committed directly to `main`, stop and report the blocker rather than silently switching to a different branch.
 - Never merge a pull request unless the user explicitly asks for the merge in the current task.
 - Never deploy or perform remote operational/data mutations merely because repository changes were requested.
 
@@ -77,7 +76,7 @@ For ChatGPT operating in Chat mode with repository/GitHub tools:
 
 Local/editor agents and Codex Cloud agents must not push directly to `main` unless the user explicitly authorises that specific action in the current task.
 
-ChatGPT in Chat mode may push small, bounded, low-risk TEST changes directly to `main` under the standing rule above. Direct-`main` writes for larger, substantial, high-risk or broad cross-repository changes still require explicit current-task authorisation.
+ChatGPT in Chat mode uses `main` for every authorised GitHub commit/push, including substantial changes. This standing project instruction does not authorise merging PRs, deploying, altering LIVE or performing remote operational/data mutations; those actions remain separately gated.
 
 No agent may merge a PR, deploy, modify LIVE, or perform remote operational/data mutations unless the user explicitly authorises that specific action in the current task.
 
