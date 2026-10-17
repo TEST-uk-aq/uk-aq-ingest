@@ -52,6 +52,8 @@ FLAT_FILES_URL = f"{UK_AIR_BASE_URL}/data/flat_files"
 DEFAULT_USER_AGENT = "Mozilla/5.0 (ukair_bc_reference_refresh)"
 PAGE_SIZE = 500
 UPSERT_BATCH_SIZE = 200
+UPSTREAM_UNAVAILABLE_EXIT_CODE = 75
+RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
 REQUIRED_CATALOGUE_COLUMNS = frozenset(
     {
@@ -108,6 +110,40 @@ PROPERTY_CONFIG: Dict[str, Dict[str, Any]] = {
 
 class SourceFormatError(RuntimeError):
     """Raised when an official UK-AIR response is structurally incompatible."""
+
+
+class SourceAcquisitionUnavailable(RuntimeError):
+    """An official source request exhausted its bounded temporary-failure retries."""
+
+    def __init__(
+        self, url: str, failure_class: str, attempts: int, http_status: Optional[int] = None
+    ) -> None:
+        parsed = urlparse(url)
+        # Keep diagnostics bounded and omit query/user information.
+        self.source_url = f"{UK_AIR_BASE_URL}{parsed.path[:200]}"
+        self.failure_class = failure_class
+        self.attempts = attempts
+        self.http_status = http_status
+        detail = f"HTTP {http_status}" if http_status is not None else failure_class
+        super().__init__(
+            f"UK-AIR source unavailable ({detail}) after {attempts} attempts: "
+            f"{self.source_url}"
+        )
+
+
+class RetainedReferenceSourceUnavailable(SourceAcquisitionUnavailable):
+    """A pre-write source outage with independently verified retained references."""
+
+
+def is_official_source_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "uk-air.defra.gov.uk"
+        and parsed.port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+    )
 
 
 class LinkParser(HTMLParser):
@@ -315,20 +351,42 @@ def request_with_retry(
     timeout: int,
     retries: int,
 ) -> requests.Response:
+    if not is_official_source_url(url):
+        raise SourceFormatError("Reference acquisition requires an official HTTPS UK-AIR URL")
+    endpoint = f"{UK_AIR_BASE_URL}{urlparse(url).path[:200]}"
     for attempt in range(1, retries + 1):
+        status = None
         try:
             response = session.get(url, timeout=timeout)
-            if response.status_code == 429 or response.status_code >= 500:
-                response.raise_for_status()
-            if response.status_code >= 400:
-                response.raise_for_status()
-            return response
-        except requests.RequestException:
-            if attempt == retries:
-                raise
-            delay = min(8.0, float(2 ** (attempt - 1)))
-            LOG.warning("UK-AIR request failed (%s/%s): %s", attempt, retries, url)
-            time.sleep(delay)
+            if not is_official_source_url(response.url):
+                raise SourceFormatError("UK-AIR acquisition redirected outside the official source")
+            status = response.status_code
+            if status not in RETRYABLE_HTTP_STATUSES:
+                if status >= 400:
+                    raise RuntimeError(f"Non-retryable UK-AIR HTTP {status}: {endpoint}")
+                return response
+            failure_class = f"http_{status}" if status < 500 else "http_5xx"
+            response.close()
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            # TLS/proxy configuration errors are not evidence of a temporary source outage.
+            if isinstance(exc, (requests.exceptions.SSLError, requests.exceptions.ProxyError)):
+                raise RuntimeError(f"UK-AIR {type(exc).__name__}: {endpoint}") from exc
+            failed_url = getattr(getattr(exc, "request", None), "url", None) or url
+            if not is_official_source_url(failed_url):
+                raise RuntimeError("Connection failure outside the official UK-AIR source") from exc
+            failure_class = (
+                "upstream_timeout" if isinstance(exc, requests.Timeout) else "upstream_connection"
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Non-retryable UK-AIR {type(exc).__name__}: {endpoint}") from exc
+        LOG.warning(
+            "UK-AIR request failed (%s/%s, %s, HTTP %s): %s",
+            attempt, retries, failure_class, status, endpoint,
+        )
+        if attempt == retries:
+            raise SourceAcquisitionUnavailable(endpoint, failure_class, attempt, status)
+        # No Retry-After override: remote headers cannot extend this bounded backoff.
+        time.sleep(min(8.0, float(2 ** min(attempt - 1, 3))))
     raise AssertionError("unreachable")
 
 
@@ -872,17 +930,195 @@ def count_existing_phenomena(core: Any, connector_id: int) -> int:
     )
 
 
+def retained_reference_rows(query: Any, context: str) -> List[Dict[str, Any]]:
+    """Read the complete ordered reference set, without a default API row-limit gap."""
+    found: List[Dict[str, Any]] = []
+    while True:
+        offset = len(found)
+        rows = response_rows(query.range(offset, offset + PAGE_SIZE - 1).execute(), context)
+        found.extend(rows)
+        if len(rows) < PAGE_SIZE:
+            return found
+
+
+def verify_retained_reference_state(
+    schemas: SupabaseSchemas, catalogue: Sequence[CatalogueStation] = ()
+) -> None:
+    """Prove existing authority is safe to retain; never repair or invent references.
+
+    Only called after a source-acquisition failure, before any refresh writes.
+    Missing bootstrap state, database errors and inconsistent identities stay fatal.
+    Unresolved routing is allowed only for a station with no supported timeseries,
+    as in the accepted reference contract. Historical unlisted timeseries survive.
+    """
+    metadata = resolve_metadata(schemas)
+    connector_id = int(metadata["connector"]["id"])
+    network_id = int(metadata["network"]["id"])
+    station_rows = retained_reference_rows(
+        schemas.core.table("stations")
+        .select("id,connector_id,network_id,service_ref,station_ref,label")
+        .eq("connector_id", connector_id).order("id"),
+        "retained Black Carbon stations",
+    )
+    stations: Dict[int, str] = {}
+    for row in station_rows:
+        ref = normalize_uka(row.get("station_ref"))
+        if (
+            row.get("station_ref") != ref
+            or row.get("service_ref") != SERVICE_REF
+            or int(row.get("network_id") or 0) != network_id
+            or not clean_str(row.get("label"))
+            or ref in stations.values()
+        ):
+            raise RuntimeError("Unsafe retained Black Carbon station identity/metadata")
+        stations[int(row["id"])] = ref
+    catalogue_refs = {station.uk_air_ref for station in catalogue}
+    if not stations or not catalogue_refs.issubset(set(stations.values())):
+        raise RuntimeError("Required retained Black Carbon stations are missing")
+
+    phenomena = response_rows(
+        schemas.core.table("phenomena").select("id,source_label,observed_property_id")
+        .eq("connector_id", connector_id)
+        .in_("source_label", [config["source_label"] for config in PROPERTY_CONFIG.values()])
+        .execute(),
+        "retained Black Carbon phenomena",
+    )
+    phenomenon_ids: Dict[str, int] = {}
+    for code, config in PROPERTY_CONFIG.items():
+        matches = [row for row in phenomena if row.get("source_label") == config["source_label"]]
+        if len(matches) != 1 or int(matches[0].get("observed_property_id") or 0) != int(
+            metadata["properties_by_code"][code]["id"]
+        ):
+            raise RuntimeError("Required retained Black Carbon phenomenon mapping is missing/invalid")
+        phenomenon_ids[code] = int(matches[0]["id"])
+
+    bridges = retained_reference_rows(
+        schemas.raw.table("ukair_bc_station_refs")
+        .select(
+            "station_id,uk_air_ref,site_ref,site_ref_source_url,site_ref_source_checked_at,"
+            "source_snapshot_at,raw_payload"
+        )
+        .order("station_id"),
+        "retained Black Carbon routing bridges",
+    )
+    sos_rows = fetch_sos_site_refs(schemas.raw, list(stations.values()))
+    by_station: Dict[int, Dict[str, Any]] = {}
+    expected_refs: Set[str] = set()
+    for bridge in bridges:
+        station_id = int(bridge["station_id"])
+        ref = stations.get(station_id)
+        if ref is None or bridge.get("uk_air_ref") != ref or station_id in by_station:
+            raise RuntimeError("Unsafe retained Black Carbon routing identity")
+        # Retaining a bridge must not conceal contradictory authoritative mappings.
+        choose_existing_site_ref(ref, bridge, sos_rows.get(ref))
+        site_ref = normalize_site_ref(bridge.get("site_ref"))
+        payload = bridge.get("raw_payload")
+        if not isinstance(payload, dict) or not isinstance(payload.get("catalogue_row"), dict):
+            raise RuntimeError("Retained Black Carbon source evidence is missing")
+        source_row = payload["catalogue_row"]
+        if (
+            normalize_uka(source_row.get("UK-AIR ID")) != ref
+            or not has_black_carbon_membership(split_networks(source_row.get("Networks")))
+            or not clean_str(source_row.get("Site Name"))
+            or not is_official_source_url(str(payload.get("catalogue_source_url") or ""))
+            or not clean_str(payload.get("site_ref_provenance"))
+        ):
+            raise RuntimeError("Invalid retained Black Carbon catalogue evidence")
+        snapshot = datetime.fromisoformat(
+            str(bridge.get("source_snapshot_at") or "").replace("Z", "+00:00")
+        )
+        if snapshot.tzinfo is None:
+            raise RuntimeError("Retained Black Carbon source snapshot lacks a timezone")
+        if site_ref and (
+            bridge.get("site_ref") != site_ref
+            or not is_official_source_url(str(bridge.get("site_ref_source_url") or ""))
+            or not clean_str(bridge.get("site_ref_source_checked_at"))
+        ):
+            raise RuntimeError("Retained Black Carbon routing provenance is missing/invalid")
+        supported = payload.get("supported_properties")
+        files = payload.get("supporting_files")
+        if (
+            not isinstance(supported, list)
+            or any(not isinstance(code, str) or code not in PROPERTY_CONFIG for code in supported)
+            or len(set(supported)) != len(supported)
+            or not isinstance(files, dict)
+            or set(files) != set(supported)
+            or (supported and not site_ref)
+        ):
+            raise RuntimeError("Retained Black Carbon property evidence is missing/invalid")
+        for code in supported:
+            token = re.escape(PROPERTY_CONFIG[code]["filename_token"])
+            pattern = rf"{re.escape(site_ref)}_{token}_([0-9]{{4}})\.csv"
+            if not isinstance(files[code], list) or not files[code]:
+                raise RuntimeError("Retained Black Carbon supporting files are missing")
+            for filename in files[code]:
+                match = (
+                    re.fullmatch(pattern, filename, re.IGNORECASE)
+                    if isinstance(filename, str) else None
+                )
+                if not match or int(match.group(1)) < SUPPORTED_FROM.year:
+                    raise RuntimeError("Invalid retained Black Carbon supporting file identity")
+            expected_refs.add(timeseries_ref(ref, code))
+        by_station[station_id] = bridge
+    if set(by_station) != set(stations) or not expected_refs:
+        raise RuntimeError("Required retained Black Carbon routing/property evidence is missing")
+
+    stored_timeseries = retained_reference_rows(
+        schemas.core.table("timeseries")
+        .select("id,station_id,service_ref,timeseries_ref,uom,phenomenon_id,observed_property_id,extras")
+        .eq("connector_id", connector_id).order("id"),
+        "retained Black Carbon timeseries",
+    )
+    found_refs: Set[str] = set()
+    for row in stored_timeseries:
+        station_id = int(row["station_id"])
+        ref = str(row.get("timeseries_ref") or "")
+        code = ref.rsplit(":", 1)[-1]
+        if station_id not in stations or code not in PROPERTY_CONFIG or ref in found_refs:
+            raise RuntimeError("Invalid retained Black Carbon timeseries identity")
+        bridge = by_station[station_id]
+        expected = {
+            "service_ref": SERVICE_REF,
+            "timeseries_ref": timeseries_ref(stations[station_id], code),
+            "uom": "ug/m3",
+            "phenomenon_id": phenomenon_ids[code],
+            "observed_property_id": int(metadata["properties_by_code"][code]["id"]),
+        }
+        extras = row.get("extras")
+        if (
+            not bridge.get("site_ref")
+            or not owned_row_matches(row, expected)
+            or not isinstance(extras, dict)
+            or not owned_row_matches(extras, {
+                "uk_air_ref": stations[station_id],
+                "site_ref": bridge["site_ref"],
+                "source_property": code,
+            })
+        ):
+            raise RuntimeError("Unsafe retained Black Carbon timeseries mapping")
+        found_refs.add(ref)
+    if not expected_refs.issubset(found_refs):
+        raise RuntimeError("Required retained Black Carbon timeseries are missing")
+
+
 def run_refresh(args: argparse.Namespace) -> Dict[str, Any]:
     session = requests.Session()
     session.headers.update({"User-Agent": args.user_agent})
-    catalogue, catalogue_source_url, snapshot_at = acquire_catalogue(
-        session,
-        search_url=args.search_url,
-        csv_url=args.csv_url,
-        catalogue_csv=args.catalogue_csv,
-        timeout=args.timeout,
-        retries=args.retries,
-    )
+    try:
+        catalogue, catalogue_source_url, snapshot_at = acquire_catalogue(
+            session,
+            search_url=args.search_url,
+            csv_url=args.csv_url,
+            catalogue_csv=args.catalogue_csv,
+            timeout=args.timeout,
+            retries=args.retries,
+        )
+    except SourceAcquisitionUnavailable as exc:
+        schemas = SupabaseSchemas.from_client(create_supabase_client())
+        verify_retained_reference_state(schemas)
+        raise RetainedReferenceSourceUnavailable(
+            exc.source_url, exc.failure_class, exc.attempts, exc.http_status
+        ) from exc
     relevant = sorted((station for station in catalogue if station.relevant), key=lambda item: item.uk_air_ref)
     if not relevant:
         raise RuntimeError("Black Carbon catalogue contains no stations relevant to 2020 onwards")
@@ -892,14 +1128,20 @@ def run_refresh(args: argparse.Namespace) -> Dict[str, Any]:
     refs = [station.uk_air_ref for station in relevant]
     bridge_rows = fetch_existing_bridge_rows(schemas.raw, refs)
     sos_rows = fetch_sos_site_refs(schemas.raw, refs)
-    planned, site_ref_counts = plan_source_evidence(
-        session,
-        relevant,
-        bridge_rows,
-        sos_rows,
-        timeout=args.timeout,
-        retries=args.retries,
-    )
+    try:
+        planned, site_ref_counts = plan_source_evidence(
+            session,
+            relevant,
+            bridge_rows,
+            sos_rows,
+            timeout=args.timeout,
+            retries=args.retries,
+        )
+    except SourceAcquisitionUnavailable as exc:
+        verify_retained_reference_state(schemas, relevant)
+        raise RetainedReferenceSourceUnavailable(
+            exc.source_url, exc.failure_class, exc.attempts, exc.http_status
+        ) from exc
     metadata = resolve_metadata(schemas)
     connector_id = int(metadata["connector"]["id"])
     network_id = int(metadata["network"]["id"])
@@ -1103,6 +1345,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     try:
         summary = run_refresh(args)
+    except RetainedReferenceSourceUnavailable as exc:
+        LOG.warning("%s; existing reference state verified safe to retain", exc)
+        emit_summary({
+            "mode": "to_supabase" if args.to_supabase else "dry_run",
+            "ok": False,
+            "error": str(exc),
+            "failure_class": exc.failure_class,
+            "source_url": exc.source_url,
+            "attempts": exc.attempts,
+            **({"http_status": exc.http_status} if exc.http_status is not None else {}),
+            "reference_state_retained": True,
+        })
+        if os.getenv("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+                handle.write(f"failure_class={exc.failure_class}\n")
+        return UPSTREAM_UNAVAILABLE_EXIT_CODE
     except Exception as exc:
         LOG.error("UK-AIR Black Carbon reference refresh failed: %s", exc)
         emit_summary(
