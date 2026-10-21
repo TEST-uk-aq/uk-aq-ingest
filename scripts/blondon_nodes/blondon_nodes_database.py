@@ -8,6 +8,7 @@ from typing import Any
 
 import psycopg
 from psycopg.conninfo import conninfo_to_dict
+from psycopg.types.json import Jsonb
 
 DATABASE_URL_ENV = "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL"
 APPLICATION_NAME = "uk_aq_blondon_nodes_ingest"
@@ -61,6 +62,35 @@ class BlondonNodesDatabase:
 
     def close(self) -> None:
         self._discard_connection()
+
+    def recover_observations(
+        self, rows: Sequence[Mapping[str, Any]], config: Mapping[str, Any],
+        retention_days: int, claim_token: str,
+    ) -> dict[str, Any]:
+        """Recovery-only function; no normal compact-v1 or transport fallback."""
+        connection = self._connect()
+        try:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL statement_timeout = '10s'")
+                    cursor.execute(
+                        """select uk_aq_public.uk_aq_rpc_blondon_nodes_recovery_insert_v1(
+                            %s::integer[], %s::timestamptz[], %s::double precision[],
+                            %s::text[], %s::jsonb, %s::integer, %s::uuid
+                        )""",
+                        ([row["timeseries_id"] for row in rows],
+                         [row["observed_at"] for row in rows],
+                         [row["value"] for row in rows],
+                         [row.get("status") for row in rows],
+                         Jsonb(dict(config)), retention_days, claim_token),
+                    )
+                    result = cursor.fetchone()
+            if result is None or not isinstance(result[0], dict):
+                raise RuntimeError("Unexpected Nodes recovery database result")
+            return result[0]
+        except Exception:
+            self._discard_connection()
+            raise
 
     def upsert_compact_observations_v1(
         self, arguments: Mapping[str, Sequence[Any] | None]

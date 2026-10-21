@@ -18,10 +18,17 @@ RPC uses a separate unmetered client and cannot fail the ingest run.
 Required secret:
 - `BLONDON_NODES_API_KEY` (no sensible default; add to `.env`/GitHub secrets/Secret Manager).
 
+Normal and recovery requests use the common Breathe London upstream
+`https://breathe-london-7x54d7qf.ew.gateway.dev`, defined by
+`SHARED_BLONDON_NODES_API_BASE_URL` in the ingest module. This is shared by TEST
+and LIVE and requires no GitHub Actions endpoint variable. See
+[`RECOVERY_OPERATIONS.md`](RECOVERY_OPERATIONS.md) for the decision, provider
+endpoint changes and the remaining external configuration prerequisites.
+
 Defaults that do not require `.env` rows:
-- `BLONDON_NODES_BASE_URL=https://breathe-london-7x54d7qf.ew.gateway.dev`
 - `BLONDON_NODES_SERVICE_REF=breathelondon`
-- `GCP_OBSERVS_PUBSUB_TOPIC=uk-aq-observs-observations`
+
+For Pub/Sub delivery, supply `GCP_OBSERVS_PUBSUB_TOPIC` externally.
 
 Optional service-egress metrics configuration:
 
@@ -31,7 +38,7 @@ Optional service-egress metrics configuration:
 - `UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA` (default `uk_aq_public`)
 - `UK_AQ_SERVICE_EGRESS_METRICS_RPC` (default
   `uk_aq_rpc_service_egress_metrics_batch_upsert`)
-- `UKAQ_ENV_NAME` (default `TEST` in this TEST repository)
+- `UKAQ_ENV_NAME` (externally supplied environment name)
 - `UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY` (required when enabled; the
   workflow binds the existing OBS/AQI secret)
 
