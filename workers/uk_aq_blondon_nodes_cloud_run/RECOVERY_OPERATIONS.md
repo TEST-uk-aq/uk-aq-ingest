@@ -20,6 +20,16 @@ The separate pooled writer validates Nodes identity, claim membership/expiry, ac
 
 Normal and recovery source responses use the same recorder and at most one existing ZIP/JSONL archive per invocation. Recovery source responses are captured before filtering. No archive format, secret gate or retention change is introduced.
 
+## Shared upstream endpoint
+
+The user confirms that TEST and LIVE share the Breathe London Nodes upstream `https://breathe-london-7x54d7qf.ew.gateway.dev`. Normal polling and recovery both construct the same `BreatheLondonNodesClient`, whose default base URL is the single `SHARED_BLONDON_NODES_API_BASE_URL` constant in `scripts/blondon_nodes/blondon_nodes_ingest.py`. Neither path reads `BLONDON_NODES_BASE_URL`; there is no replacement variable or environment-dependent fallback.
+
+Repository evidence identifies this URL as the source API: the Nodes station client uses its `/ListSensors` route with `X-API-KEY`, and the ingest client uses `/SensorData` with the same authentication scheme. The Cloud Run deployment destination is separate: the workflow resolves its own service URL through `gcloud run services describe` and reconciles that URL into the scheduler. Together with the user's explicit shared-endpoint confirmation, this supports treating the upstream as an invariant rather than a TEST/LIVE deployment setting. No LIVE inspection or live source probe was performed.
+
+If Breathe London changes the provider endpoint, verify its shared-upstream identity and request/authentication contract, update this constant through a reviewed and archived code change, and update the authoritative source contract separately. Deploy the same complete application files through the authorised TEST-first process and subsequent separately authorised LIVE promotion; do not introduce environment branches or endpoint variables. Review the standalone station-discovery/probe tools' existing source defaults separately if the provider change affects them too. Their optional local overrides are unchanged by this PR and are not needed by their default scheduled use.
+
+All credentials, API keys, database URLs, Cloud Run deployment destinations, project/account identifiers, environment labels, Pub/Sub configuration and other environment-specific settings remain externally supplied. This one common upstream decision does not authorise hard-coding those values.
+
 ## Configuration and ownership prerequisites
 
 `BLONDON_NODES_RECOVERY_CONFIG` is an external non-secret JSON variable. Missing/empty or `{"enabled":false}` disables recovery. Enabled configuration requires every field; there are no application defaults for recovery limits. One conservative initial configuration is:
@@ -45,13 +55,15 @@ Before enabling recovery, separately deploy and validate the TEST Prune safeguar
 Also supply:
 
 - Existing `BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=database` and the environment's existing shared database secret/binding.
-- Existing `BLONDON_NODES_BASE_URL`, `UKAQ_ENV_NAME` and, for Pub/Sub, `GCP_OBSERVS_PUBSUB_TOPIC`. The source endpoint, environment-label and topic literal fallbacks have been removed; deployment checks require explicit settings where needed.
+- Existing `UKAQ_ENV_NAME` and, for Pub/Sub, `GCP_OBSERVS_PUBSUB_TOPIC`. Environment-label and topic settings remain explicit; the common upstream endpoint needs no GitHub Actions variable.
 
 Eligibility begins at the latest of `now - horizon`, the attested midnight, and UTC midnight minus **two days**, obtained by passing 3 to both existing SQL functions. Prune's earliest permitted deletion cutoff is also UTC midnight minus two days, which is never later than the start of a rolling 48-hour lookback. At exactly 00:00 UTC the cutoffs coincide: **there is no extra safety margin**. The scan and writer still exclude every matching history candidate or connector/day gate, including consumed/false gates. These checks supplement the external historical boundary; they do not discover all R2 authority or coordinate an operator's concurrent Integrity operation. The independently verified `not_before_utc` R2 barrier remains mandatory.
 
 Safety ceilings: horizon 48h; lag 2–24h; scan/request caps 16; contiguous request span 6h; recovery budget 75–90s; cooldown 60–1440min; daily attempts 1–24. Recovery reserves 45s of the existing child budget for finalisation and starts requests only with conservative write/delivery headroom. Shorter remaining time produces a deferral. The outer service timeout must exceed the child budget plus cleanup headroom. Source concurrency is one.
 
 Both ingest and Ops GitHub target mappings list the new variable and reused settings. Per the user's task instruction, the Ops mapping replaces the unavailable ignored master CSV for this change. `INGESTDB_RETENTION_DAYS` remains in shared catalogues for legitimate Prune/other consumers, but Nodes neither reads it nor injects it through its Cloud Run deployment workflow. No remote variables or secrets were changed.
+
+The ingest mapping no longer routes `BLONDON_NODES_BASE_URL`: the Nodes deploy workflow was its only Actions consumer, and Daily Stations already uses the station client's common default without injecting that variable. The standalone station/probe scripts still accept optional local overrides, so their local interfaces are preserved. Corresponding separate TEST Ops catalogue cleanup is to remove the obsolete `BLONDON_NODES_BASE_URL,variable` row from `config/uk_aq_github_env_targets.csv` and any operator-maintained catalogue row that exists solely for the retired Actions setting. TEST Ops was inspected read-only; no other repository or remote variable was changed in this PR.
 
 ## Manual TEST order
 
@@ -63,7 +75,7 @@ Both ingest and Ops GitHub target mappings list the new variable and reused sett
 
    Expected: the already-existing state/helper/scan/writer objects and six-function runtime grant surface pass the verifier. The pooled runtime remains without core/raw table access.
 2. Separately deploy and validate the two-day Prune safeguard from TEST Ops `main` commit `fee4089`, or explicitly attest the same minimum across every actively used Prune path, including overrides/legacy revisions. Recovery must remain disabled until this guarantee is established; source merge alone is insufficient.
-3. Verify historical ownership, current API endpoint, environment label, Pub/Sub topic, shared secret binding and service/child timeout headroom. Supply required external settings and the complete JSON with `horizon_hours <= 48` and the authenticated R2 `not_before_utc` boundary. Do not supply or synchronise a Nodes retention variable.
+3. Verify historical ownership, environment label, Pub/Sub topic, shared secret binding and service/child timeout headroom. Supply required external settings and the complete JSON with `horizon_hours <= 48` and the authenticated R2 `not_before_utc` boundary. The common upstream comes from the application constant; do not supply or synchronise a Nodes endpoint or retention variable. Have ChatGPT reconcile the endpoint contract as described below before deployment review.
 4. Only after separate deployment authorisation, merge the ingest PR. **Its changed paths automatically trigger the Nodes Cloud Run deployment workflow on `main`.** Schema and configuration must be ready first. If deployment is separately approved later, retain disabled JSON until that approval and trigger the same workflow manually when approved:
 
    ```sh
@@ -77,6 +89,8 @@ Both ingest and Ops GitHub target mappings list the new variable and reused sett
 The original PR preparation checked Python syntax/imports with the pinned Nodes dependencies; workflow YAML/Bash syntax; SQL/PLpgSQL parsing and canonical/migration alignment; CSV consistency; protected normal-function ASTs; and a narrow local PostgreSQL conflict-safety check. Those checks do not establish TEST operational or source acceptance.
 
 This retention-only amendment uses focused Python/workflow syntax and configuration-boundary checks, verifies that both existing SQL calls receive the fixed argument 3, and confirms that Nodes no longer depends on the retention variable. No schema changes, migration application, live source probe or functional recovery test accompanies this amendment. Real TEST verification must establish the deployed Prune floor, source availability, concurrency and costs after separately authorised deployment.
+
+The shared-endpoint amendment uses focused Python/workflow syntax and client-construction checks with no source requests. It verifies that normal and recovery clients resolve the same constant regardless of an absent or stale endpoint variable, checks that request/capture and recovery logic are unchanged, and confirms the obsolete Actions injection/mapping is gone. Same-day archives are reused unchanged. Functional acceptance remains through real TEST operations after separately authorised deployment.
 
 ## Expected overhead and acceptance
 
@@ -95,3 +109,15 @@ Disable recovery with `{"enabled":false}` and redeploy the same service through 
 Missing source values that never become numeric, ambiguous timestamps, unsupported/insufficient cadence, unbracketed edges, work expiring outside bounds and already-published historical days require separate assessment. No Integrity invocation or historical repair is automatic, and the source may never supply the measurement.
 
 Chat-mode documentation handover: update `system_docs/ingest/blondon_nodes_recent_hourly_gap_recovery_contract.md` with the exact implemented eligibility/pacing/grouping/retention and external historical-boundary semantics, the new schema interfaces, config and limitations while retaining future/not-accepted status. After real TEST acceptance only, update that status and the ingest README; extend `blondon_nodes_database_transport_contract.md`, `gcp_cloud_run_database_runtime_contract.md` and the canonical apply-order description for the sixth exact grant; clarify in `blondon_nodes_raw_capture_contract.md` that a normal no-due run may capture recovery responses; cross-reference this recovery route from source-normalisation/compact transport docs without changing normal semantics. Record measured costs, authentic recovery evidence (if any), UTC/DST evidence, unresolved historical scopes and rollback evidence. This task did not edit authoritative documentation.
+
+## Precise Chat-mode endpoint contract amendment
+
+The current authoritative recovery contract still requires an externally configured endpoint. The user's explicit common-upstream decision authorises this implementation exception; ChatGPT must reconcile the prose separately in TEST system-docs. Do not generalise the exception to any environment-specific service or credential.
+
+In `system_docs/ingest/blondon_nodes_recent_hourly_gap_recovery_contract.md`, replace the first bullet under **Responsibility and authorised source**, which currently says “with the environment-configured API endpoint and key”, with:
+
+> Recovery MUST use the existing Breathe London Nodes `/SensorData` API at the common provider upstream `https://breathe-london-7x54d7qf.ew.gateway.dev`. Normal Nodes ingestion and recovery resolve this upstream through the single `SHARED_BLONDON_NODES_API_BASE_URL` constant in `scripts/blondon_nodes/blondon_nodes_ingest.py`, identically in TEST and LIVE. `BLONDON_NODES_BASE_URL` is not a required runtime or GitHub Actions setting. `BLONDON_NODES_API_KEY` remains an externally supplied secret. Only request source station/species/time windows that the current API supports.
+
+Under **Proposed bounds, pacing and run integration**, replace “environment-configured source endpoint, environment name and appropriate secondary-delivery topic” with “the shared provider-upstream constant, plus externally configured environment name and appropriate secondary-delivery topic”. Retain the existing pooled-transport/secret prerequisite and the prohibition on TEST/LIVE endpoint/account defaults for all environment-specific settings.
+
+Under **Operational separation and implementation boundaries**, record this narrow provider invariant and require a reviewed common code/contract update if the provider endpoint changes. Preserve the two-day minimum, SQL argument 3, maximum 48-hour horizon, historical barriers, permissions and all source/transport/capture semantics. Update the implementation/rollout record to identify the amended PR commit, remove the obsolete endpoint-variable prerequisite, and retain future/not-operationally-accepted status until real TEST evidence exists. No authoritative documentation was edited here.

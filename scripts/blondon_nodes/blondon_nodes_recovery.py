@@ -52,8 +52,6 @@ def recovery_config() -> dict[str, Any] | None:
         raise ValueError("Recovery not_before_utc must be explicit UTC midnight")
     if os.getenv("BLONDON_NODES_INGESTDB_WRITE_TRANSPORT") != "database":
         raise ValueError("Recovery requires the configured pooled database transport")
-    if not (os.getenv("BLONDON_NODES_BASE_URL") or "").strip():
-        raise ValueError("BLONDON_NODES_BASE_URL is required; no endpoint fallback is permitted")
     return config
 
 

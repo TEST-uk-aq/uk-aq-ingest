@@ -62,7 +62,9 @@ logging.getLogger("postgrest").setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logg
 
 CONNECTOR_CODE = "blondon_nodes"
 SERVICE_REF = os.getenv("BLONDON_NODES_SERVICE_REF", "breathelondon")
-BASE_URL = (os.getenv("BLONDON_NODES_BASE_URL") or "").strip().rstrip("/")
+# Provider-owned upstream shared by TEST and LIVE, independent of our deployed
+# service URLs. Change this invariant here if Breathe London moves its API.
+SHARED_BLONDON_NODES_API_BASE_URL = "https://breathe-london-7x54d7qf.ew.gateway.dev"
 DEFAULT_BATCH_SIZE = 500
 DEFAULT_OVERLAP_MINUTES = 10
 DEFAULT_SLEEP_SECONDS = 0.1
@@ -151,7 +153,7 @@ class BreatheLondonNodesClient:
     def __init__(
         self,
         api_key: str,
-        base_url: str = BASE_URL,
+        base_url: str = SHARED_BLONDON_NODES_API_BASE_URL,
         timeout: int | tuple[float, float] = 60,
         retries: int = 3,
         raw_capture: Optional[NodesRawCapture] = None,
@@ -159,7 +161,7 @@ class BreatheLondonNodesClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         if not self.base_url:
-            raise RuntimeError("BLONDON_NODES_BASE_URL is required; no endpoint fallback is permitted.")
+            raise RuntimeError("Nodes API base URL must not be empty.")
         self.timeout = timeout
         self.retries = retries
         self.raw_capture = raw_capture

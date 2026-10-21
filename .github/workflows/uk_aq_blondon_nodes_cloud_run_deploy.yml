@@ -55,7 +55,6 @@ jobs:
       OBSERVS_WRITE_MODE: ${{ vars.BLONDON_NODES_OBSERVS_WRITE_MODE || vars.OBSERVS_WRITE_MODE || 'pubsub_only' }}
       GCP_OBSERVS_PUBSUB_TOPIC: ${{ vars.GCP_OBSERVS_PUBSUB_TOPIC }}
       OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE: ${{ vars.OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE || '500' }}
-      BLONDON_NODES_BASE_URL: ${{ vars.BLONDON_NODES_BASE_URL }}
       BLONDON_NODES_RECOVERY_CONFIG: ${{ vars.BLONDON_NODES_RECOVERY_CONFIG }}
       BLONDON_NODES_CONNECTOR_CODE: ${{ vars.BLONDON_NODES_CONNECTOR_CODE || 'blondon_nodes' }}
       BLONDON_NODES_SERVICE_REF: ${{ vars.BLONDON_NODES_SERVICE_REF || 'breathelondon' }}
@@ -119,7 +118,7 @@ jobs:
             echo "Missing required secret: SUPABASE_URL"
             exit 1
           fi
-          for key in BLONDON_NODES_BASE_URL UKAQ_ENV_NAME; do
+          for key in UKAQ_ENV_NAME; do
             if [ -z "${!key:-}" ]; then
               echo "Missing required environment configuration: ${key}"
               exit 1
@@ -388,7 +387,6 @@ jobs:
           add_env OBSERVS_WRITE_MODE
           add_env GCP_OBSERVS_PUBSUB_TOPIC
           add_env OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE
-          add_env BLONDON_NODES_BASE_URL
           # Explicitly clear any previously enabled revision when the variable is removed.
           env_updates+=("BLONDON_NODES_RECOVERY_CONFIG=${BLONDON_NODES_RECOVERY_CONFIG:-}")
           add_env BLONDON_NODES_CONNECTOR_CODE
