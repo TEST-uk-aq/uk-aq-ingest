@@ -1,6 +1,6 @@
 # Nodes recent-hour recovery: implementation handover
 
-Companion PRs: [schema #14](https://github.com/TEST-uk-aq/uk-aq-schema/pull/14), [Ops mapping #116](https://github.com/TEST-uk-aq/uk-aq-ops/pull/116).
+Companion PRs: [schema #14](https://github.com/TEST-uk-aq/uk-aq-schema/pull/14) and [Ops mapping #116](https://github.com/TEST-uk-aq/uk-aq-ops/pull/116) are merged into TEST `main`. The approved two-day minimum is implemented in TEST Ops `main` commit `fee4089`; its deployment and operational acceptance remain separate prerequisites.
 
 Implementation only. No TEST deployment, migration application, source recovery or functional acceptance is established by this change. Authoritative prose remains in `TEST-uk-aq/uk-aq-system-docs`; this file describes the implementation and operator prerequisites.
 
@@ -30,30 +30,40 @@ Normal and recovery source responses use the same recorder and at most one exist
 
 The placeholder must be replaced with a real UTC date after establishing that no Nodes connector/day on or after that date is already canonical historical R2 authority. Do not enable with an assumed date. History can exist without a Prune gate; gate absence alone is insufficient. Before a separately authorised historical operation enters the recovery window, disable recovery, let active invocations finish and move this boundary forward before re-enabling.
 
+Nodes uses the fixed approved Prune minimum, rather than the changing `INGESTDB_RETENTION_DAYS` environment variable:
+
+```text
+MIN_PRUNE_RETENTION_DAYS = 2
+RECOVERY_SQL_RETENTION_ARGUMENT_DAYS = MIN_PRUNE_RETENTION_DAYS + 1 = 3
+existing SQL cutoff = UTC midnight - (3 - 1) days = UTC midnight - 2 days
+```
+
+The existing SQL helper subtracts one day from its retention argument, so both the service-role scan and pooled recovery writer receive **3**, not 2. Passing 2 would truncate the rolling 48-hour lookback at yesterday's UTC midnight. The application and deployment validators reject enabled horizons above **48 hours**, even though the unchanged SQL helper accepts up to 72 hours. No SQL function, signature, privilege, verifier or migration changes are required for this amendment.
+
+Before enabling recovery, separately deploy and validate the TEST Prune safeguard from `fee4089`, or attest that every active Prune path retains at least two UTC days. Include direct invocation overrides and legacy service revisions: a source commit alone does not establish the deployed guarantee. The safeguard rejects retention below two rather than silently clamping it. Actual Prune retention can be 2, 4, 5 or higher without synchronising a Nodes variable or redeploying Nodes for that change.
+
 Also supply:
 
-- `INGESTDB_RETENTION_DAYS`: exactly the effective TEST Prune policy, including any workflow override. The checked-in Ops fallback is five days; it does not establish the deployed setting. This task could not read Actions variables (HTTP 403) and had no database credentials.
 - Existing `BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=database` and the environment's existing shared database secret/binding.
 - Existing `BLONDON_NODES_BASE_URL`, `UKAQ_ENV_NAME` and, for Pub/Sub, `GCP_OBSERVS_PUBSUB_TOPIC`. The source endpoint, environment-label and topic literal fallbacks have been removed; deployment checks require explicit settings where needed.
 
-Eligibility begins at the latest of `now - horizon`, the attested midnight, and UTC midnight minus `(retention_days - 1)` days. This stays a full day inside Prune's deletion boundary. The scan and writer exclude every matching history candidate or connector/day gate, including consumed/false gates. These checks supplement the external historical boundary; they do not discover all R2 authority or coordinate an operator's concurrent Integrity operation.
+Eligibility begins at the latest of `now - horizon`, the attested midnight, and UTC midnight minus **two days**, obtained by passing 3 to both existing SQL functions. Prune's earliest permitted deletion cutoff is also UTC midnight minus two days, which is never later than the start of a rolling 48-hour lookback. At exactly 00:00 UTC the cutoffs coincide: **there is no extra safety margin**. The scan and writer still exclude every matching history candidate or connector/day gate, including consumed/false gates. These checks supplement the external historical boundary; they do not discover all R2 authority or coordinate an operator's concurrent Integrity operation. The independently verified `not_before_utc` R2 barrier remains mandatory.
 
-Safety ceilings: horizon 72h; lag 2–24h; scan/request caps 16; contiguous request span 6h; recovery budget 75–90s; cooldown 60–1440min; daily attempts 1–24. Recovery reserves 45s of the existing child budget for finalisation and starts requests only with conservative write/delivery headroom. Shorter remaining time produces a deferral. The outer service timeout must exceed the child budget plus cleanup headroom. Source concurrency is one.
+Safety ceilings: horizon 48h; lag 2–24h; scan/request caps 16; contiguous request span 6h; recovery budget 75–90s; cooldown 60–1440min; daily attempts 1–24. Recovery reserves 45s of the existing child budget for finalisation and starts requests only with conservative write/delivery headroom. Shorter remaining time produces a deferral. The outer service timeout must exceed the child budget plus cleanup headroom. Source concurrency is one.
 
-Both ingest and Ops GitHub target mappings list the new variable and reused settings. Per the user's task instruction, the Ops mapping replaces the unavailable ignored master CSV for this change. No remote variables or secrets were changed.
+Both ingest and Ops GitHub target mappings list the new variable and reused settings. Per the user's task instruction, the Ops mapping replaces the unavailable ignored master CSV for this change. `INGESTDB_RETENTION_DAYS` remains in shared catalogues for legitimate Prune/other consumers, but Nodes neither reads it nor injects it through its Cloud Run deployment workflow. No remote variables or secrets were changed.
 
 ## Manual TEST order
 
-1. Review/merge the additive schema PR and the Ops mapping PR. Neither applies a migration or enables recovery.
-2. With an explicitly selected TEST **administrator** DSN, run from the schema checkout:
+1. Confirm the existing Schema #14 recovery interfaces, matching canonical verifier and Ops mapping are available. This retention-only amendment requires **no new migration or reapplication of the existing migration**. With an explicitly selected TEST administrator DSN, the existing read-only schema verifier can be run from the schema checkout:
 
    ```sh
-   psql "$TEST_INGESTDB_ADMIN_DSN" -v ON_ERROR_STOP=1 -f schemas/migrations/20261021_002_ingest_blondon_nodes_recent_recovery.sql
    psql "$TEST_INGESTDB_ADMIN_DSN" -v ON_ERROR_STOP=1 -f schemas/ingest_db/verify_canonical_ingest_db.sql
    ```
 
-   Expected: additive state/helper/scan/writer objects, one extra exact runtime EXECUTE grant, schema reload notification and a successful canonical verifier. The pooled runtime remains without core/raw table access; its explicit public function surface is six.
-3. Verify actual retention and historical ownership, current API endpoint, environment label, Pub/Sub topic, shared secret binding and service/child timeout headroom. Supply required external settings. Keep recovery disabled until these prerequisites are satisfied; then set the complete JSON using the normal environment-sync process.
+   Expected: the already-existing state/helper/scan/writer objects and six-function runtime grant surface pass the verifier. The pooled runtime remains without core/raw table access.
+2. Separately deploy and validate the two-day Prune safeguard from TEST Ops `main` commit `fee4089`, or explicitly attest the same minimum across every actively used Prune path, including overrides/legacy revisions. Recovery must remain disabled until this guarantee is established; source merge alone is insufficient.
+3. Verify historical ownership, current API endpoint, environment label, Pub/Sub topic, shared secret binding and service/child timeout headroom. Supply required external settings and the complete JSON with `horizon_hours <= 48` and the authenticated R2 `not_before_utc` boundary. Do not supply or synchronise a Nodes retention variable.
 4. Only after separate deployment authorisation, merge the ingest PR. **Its changed paths automatically trigger the Nodes Cloud Run deployment workflow on `main`.** Schema and configuration must be ready first. If deployment is separately approved later, retain disabled JSON until that approval and trigger the same workflow manually when approved:
 
    ```sh
@@ -64,7 +74,9 @@ Both ingest and Ops GitHub target mappings list the new variable and reused sett
 
 ## Structural checks
 
-The 21 October recovery contract was fetched from TEST system-docs `main` before implementation. Checks covered Python syntax/imports with the pinned Nodes runtime dependencies; workflow YAML and embedded Bash syntax; canonical SQL, PL/pgSQL and migration parsing; canonical/migration definition alignment; CSV target consistency; and unchanged ASTs for normal `build_rows`, duplicate selection and due selection. A single local PostgreSQL-engine safety check installed the additive migration and demonstrated null filling, preservation of a newer primary value/status/provenance on replay, history-gate rejection and the writer-only pooled grant. This is structural/safety evidence, not TEST operational or source acceptance. No live source-capability probe was required or performed. Actual database retention, source availability, concurrency and costs still require real TEST verification.
+The original PR preparation checked Python syntax/imports with the pinned Nodes dependencies; workflow YAML/Bash syntax; SQL/PLpgSQL parsing and canonical/migration alignment; CSV consistency; protected normal-function ASTs; and a narrow local PostgreSQL conflict-safety check. Those checks do not establish TEST operational or source acceptance.
+
+This retention-only amendment uses focused Python/workflow syntax and configuration-boundary checks, verifies that both existing SQL calls receive the fixed argument 3, and confirms that Nodes no longer depends on the retention variable. No schema changes, migration application, live source probe or functional recovery test accompanies this amendment. Real TEST verification must establish the deployed Prune floor, source availability, concurrency and costs after separately authorised deployment.
 
 ## Expected overhead and acceptance
 
@@ -74,7 +86,7 @@ Small configured secondary batches can require more than one delivery call; rema
 
 Acceptance must demonstrate unchanged normal selection/four-series writes/checkpoints/latest state and duplicate winners; actual missing keys despite newer observations; exact authentic source recovery once; concurrent valid primary data surviving recovery; truthful null/omission/failure/ambiguous-write and secondary diagnostics; cooldown/attempt/fairness/cap behaviour; raw evidence with no secrets; and normal later Prune publication without recreating historical days. Observe complete UTC-day usage and report remaining due timeseries instead of claiming network coverage from one scan.
 
-Verify both UTC midnight and the next real GMT/BST transition (25 October 2026 at 01:00 UTC if deployment precedes it): no shifted, duplicated or invented hours. Offset-free source timestamps deliberately remain unconfirmed. Check UTC-day retry reset independently from local clock changes.
+Verify the full 48-hour rolling window remains eligible, subject to source evidence and the historical exclusions, including at UTC midnight when the minimum cutoffs coincide. Also verify the next real GMT/BST transition (25 October 2026 at 01:00 UTC if deployment precedes it): no shifted, duplicated or invented hours. Offset-free source timestamps deliberately remain unconfirmed. Check UTC-day retry reset independently from local clock changes.
 
 ## Rollback and outstanding work
 

@@ -57,7 +57,6 @@ jobs:
       OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE: ${{ vars.OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE || '500' }}
       BLONDON_NODES_BASE_URL: ${{ vars.BLONDON_NODES_BASE_URL }}
       BLONDON_NODES_RECOVERY_CONFIG: ${{ vars.BLONDON_NODES_RECOVERY_CONFIG }}
-      INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS }}
       BLONDON_NODES_CONNECTOR_CODE: ${{ vars.BLONDON_NODES_CONNECTOR_CODE || 'blondon_nodes' }}
       BLONDON_NODES_SERVICE_REF: ${{ vars.BLONDON_NODES_SERVICE_REF || 'breathelondon' }}
       BLONDON_NODES_SERVICE_LABEL: ${{ vars.BLONDON_NODES_SERVICE_LABEL || 'Breathe London Nodes' }}
@@ -134,12 +133,9 @@ jobs:
           if config["enabled"]:
               if os.environ["BLONDON_NODES_INGESTDB_WRITE_TRANSPORT"] != "database":
                   raise SystemExit("Recovery requires database transport and the additive schema migration")
-              retention = int(os.environ.get("INGESTDB_RETENTION_DAYS") or "0")
-              if not 1 <= retention <= 30:
-                  raise SystemExit("Recovery requires explicit Prune-matching INGESTDB_RETENTION_DAYS (1..30)")
               from datetime import datetime, timedelta
               for key, low, high in [
-                  ("horizon_hours", 1, 72), ("lag_hours", 2, 24),
+                  ("horizon_hours", 1, 48), ("lag_hours", 2, 24),
                   ("scan_limit", 1, 16), ("request_limit", 1, 16), ("request_span_hours", 1, 6),
                   ("runtime_seconds", 75, 90), ("cooldown_minutes", 60, 1440),
                   ("max_attempts_per_day", 1, 24),
@@ -393,7 +389,6 @@ jobs:
           add_env GCP_OBSERVS_PUBSUB_TOPIC
           add_env OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE
           add_env BLONDON_NODES_BASE_URL
-          add_env INGESTDB_RETENTION_DAYS
           # Explicitly clear any previously enabled revision when the variable is removed.
           env_updates+=("BLONDON_NODES_RECOVERY_CONFIG=${BLONDON_NODES_RECOVERY_CONFIG:-}")
           add_env BLONDON_NODES_CONNECTOR_CODE

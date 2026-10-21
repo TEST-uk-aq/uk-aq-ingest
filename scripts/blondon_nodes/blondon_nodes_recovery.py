@@ -18,6 +18,10 @@ from scripts.blondon_nodes.blondon_nodes_database import BlondonNodesDatabase
 from scripts.uk_aq_service_egress_metrics import configured_service_egress_metrics
 
 CONFIG_ENV = "BLONDON_NODES_RECOVERY_CONFIG"
+# The approved Prune minimum is two UTC days. The existing recovery SQL helper
+# subtracts (p_retention_days - 1), so pass 3 to retain the full 48-hour window.
+MIN_PRUNE_RETENTION_DAYS = 2
+RECOVERY_SQL_RETENTION_ARGUMENT_DAYS = MIN_PRUNE_RETENTION_DAYS + 1
 
 
 def recovery_config() -> dict[str, Any] | None:
@@ -30,7 +34,7 @@ def recovery_config() -> dict[str, Any] | None:
     if not config["enabled"]:
         return None
     limits = {
-        "horizon_hours": (1, 72), "lag_hours": (2, 24),
+        "horizon_hours": (1, 48), "lag_hours": (2, 24),
         "scan_limit": (1, 16), "request_limit": (1, 16),
         "request_span_hours": (1, 6),
         "runtime_seconds": (75, 90), "cooldown_minutes": (60, 1440),
@@ -46,10 +50,6 @@ def recovery_config() -> dict[str, Any] | None:
         (floor.hour, floor.minute, floor.second, floor.microsecond)
     ):
         raise ValueError("Recovery not_before_utc must be explicit UTC midnight")
-    # Reuse Prune's environment setting, never its application default.
-    retention = int(os.environ["INGESTDB_RETENTION_DAYS"])
-    if not 1 <= retention <= 30:
-        raise ValueError("Recovery requires INGESTDB_RETENTION_DAYS in 1..30")
     if os.getenv("BLONDON_NODES_INGESTDB_WRITE_TRANSPORT") != "database":
         raise ValueError("Recovery requires the configured pooled database transport")
     if not (os.getenv("BLONDON_NODES_BASE_URL") or "").strip():
@@ -117,7 +117,6 @@ def run_recent_recovery(
             report["limits_reached"].append("runtime")
             return report
         token = str(uuid.uuid4())
-        retention = int(os.environ["INGESTDB_RETENTION_DAYS"])
         with ExitStack() as stack:
             public = bounded_public(
                 stack, os.getenv("SUPABASE_URL") or "",
@@ -128,7 +127,9 @@ def run_recent_recovery(
             stack.callback(database.close)
             phase = "scan"
             scan = public.rpc("uk_aq_rpc_blondon_nodes_recovery_scan_v1", {
-                "p_config": config, "p_retention_days": retention, "p_claim_token": token,
+                "p_config": config,
+                "p_retention_days": RECOVERY_SQL_RETENTION_ARGUMENT_DAYS,
+                "p_claim_token": token,
             }).execute().data
             if not isinstance(scan, dict):
                 raise ValueError("Unexpected recovery scan result")
@@ -219,7 +220,9 @@ def run_recent_recovery(
                 phase = "write"
                 # One bounded call, no retry after an ambiguous commit. The
                 # server returns only inserted/null-replaced rows for delivery.
-                result = database.recover_observations(prepared, config, retention, token)
+                result = database.recover_observations(
+                    prepared, config, RECOVERY_SQL_RETENTION_ARGUMENT_DAYS, token
+                )
                 committed = result["rows"]
                 report["authentic_recoveries"] = len(committed)
                 report["existing_values_preserved"] = result["existing_values_preserved"]
