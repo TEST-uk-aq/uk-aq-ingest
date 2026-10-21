@@ -42,6 +42,7 @@ from scripts.blondon_nodes.blondon_nodes_reference_data import (
     upsert_nodes_phenomena,
 )
 from scripts.blondon_nodes.blondon_nodes_raw_capture import NodesRawCapture
+from scripts.blondon_nodes.blondon_nodes_recovery import run_recent_recovery
 from scripts.uk_aq_ingestdb_observation_writer import (
     DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
     IngestDbObservationWriteError,
@@ -61,7 +62,7 @@ logging.getLogger("postgrest").setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logg
 
 CONNECTOR_CODE = "blondon_nodes"
 SERVICE_REF = os.getenv("BLONDON_NODES_SERVICE_REF", "breathelondon")
-BASE_URL = os.getenv("BLONDON_NODES_BASE_URL", "https://breathe-london-7x54d7qf.ew.gateway.dev").rstrip("/")
+BASE_URL = (os.getenv("BLONDON_NODES_BASE_URL") or "").strip().rstrip("/")
 DEFAULT_BATCH_SIZE = 500
 DEFAULT_OVERLAP_MINUTES = 10
 DEFAULT_SLEEP_SECONDS = 0.1
@@ -151,14 +152,18 @@ class BreatheLondonNodesClient:
         self,
         api_key: str,
         base_url: str = BASE_URL,
-        timeout: int = 60,
+        timeout: int | tuple[float, float] = 60,
         retries: int = 3,
         raw_capture: Optional[NodesRawCapture] = None,
+        strict_single_attempt: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        if not self.base_url:
+            raise RuntimeError("BLONDON_NODES_BASE_URL is required; no endpoint fallback is permitted.")
         self.timeout = timeout
         self.retries = retries
         self.raw_capture = raw_capture
+        self.strict_single_attempt = strict_single_attempt
         self.session = requests.Session()
         self.session.headers.update({"X-API-KEY": api_key, "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "uk-air-quality-networks"})
 
@@ -173,8 +178,13 @@ class BreatheLondonNodesClient:
         url = f"{self.base_url}/SensorData"
         for attempt in range(1, self.retries + 1):
             try:
-                resp = self.session.get(url, params=params, timeout=self.timeout)
+                resp = self.session.get(
+                    url, params=params, timeout=self.timeout,
+                    allow_redirects=not self.strict_single_attempt,
+                )
                 if resp.status_code in (429, 500, 502, 503, 504):
+                    if self.strict_single_attempt:
+                        resp.raise_for_status()
                     time.sleep(min(30, 2 ** attempt)); continue
                 resp.raise_for_status()
                 payload = resp.json()
@@ -208,7 +218,9 @@ class BreatheLondonNodesClient:
 class PubSubPublisher:
     def __init__(self) -> None:
         self.project_id = (os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
-        self.observs_topic = (os.getenv("GCP_OBSERVS_PUBSUB_TOPIC") or "uk-aq-observs-observations").strip()
+        self.observs_topic = (os.getenv("GCP_OBSERVS_PUBSUB_TOPIC") or "").strip()
+        if not self.observs_topic:
+            raise RuntimeError("GCP_OBSERVS_PUBSUB_TOPIC is required for Pub/Sub delivery.")
         self.batch_size = int(os.getenv("OBSERVS_PUBSUB_PUBLISH_BATCH_SIZE") or "500")
 
     def _topic_path(self, topic: str) -> str:
@@ -769,6 +781,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
+    run_started = time.monotonic()
     species = parse_species(args.species)
     if not species:
         raise SystemExit("No valid species selected.")
@@ -778,6 +791,18 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
     writer = SupabaseWriter()
     connector = writer.fetch_connector()
     connector_id = int(connector["id"])
+
+    def recent_recovery(skip_reason: Optional[str] = None) -> Dict[str, Any]:
+        if args.dry_run or any((args.site_code, args.start_time, args.end_time,
+                                args.species, args.max_stations, args.max_api_calls)):
+            skip_reason = "manual_or_dry_run"
+        return run_recent_recovery(
+            writer=writer, api_key=api_key, raw_capture=raw_capture,
+            client_factory=BreatheLondonNodesClient, build_rows=build_rows,
+            observs_factory=ObservsWriter, run_started=run_started,
+            skip_reason=skip_reason,
+        )
+
     if connector.get("poll_enabled") is False and not (args.start_time or args.site_code):
         LOG.info("Connector blondon_nodes poll_enabled=false; exiting normal scheduled run.")
         raw_capture.finalize_safely()
@@ -816,6 +841,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
                 "partial": False,
                 "stopped_reason": "poll_disabled",
                 "dry_run": args.dry_run,
+                "recovery": recent_recovery("poll_disabled"),
                 **raw_capture.summary_fields(),
             }
         )
@@ -838,6 +864,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
         len(all_stations),
     )
     if not stations:
+        recovery = recent_recovery()
         raw_capture.finalize_safely()
         emit_run_summary(
             {
@@ -874,6 +901,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
                 "partial": False,
                 "stopped_reason": "no_due_stations",
                 "dry_run": args.dry_run,
+                "recovery": recovery,
                 **raw_capture.summary_fields(),
             }
         )
@@ -1118,6 +1146,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
     secondary_error_message = (
         "; ".join(secondary_errors)[:4000] if secondary_errors else None
     )
+    recovery = recent_recovery("normal_ingest_incomplete" if partial else None)
     raw_capture.finalize_safely()
     summary = {
         "ok": True,
@@ -1160,6 +1189,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
         "reference_repair_errors": writer.reference_repair_errors[:100],
         "stopped_reason": stopped_reason,
         "dry_run": args.dry_run,
+        "recovery": recovery,
         **raw_capture.summary_fields(),
     }
     LOG.info(
