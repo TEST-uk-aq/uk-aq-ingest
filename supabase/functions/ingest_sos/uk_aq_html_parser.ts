@@ -48,6 +48,7 @@ export type UkAirHtmlSeries = {
   points: UkAirHtmlPoint[];
   totalPointCount: number;
   nullPointCount: number;
+  unavailableTimestamps: string[];
   rejectedPointCount: number;
   futurePointCount: number;
   outOfDayPointCount: number;
@@ -219,6 +220,7 @@ function parseSeries(
   const data = Array.isArray(rawData) ? rawData : [];
   const points: UkAirHtmlPoint[] = [];
   let nullPointCount = 0;
+  const unavailableTimestamps: string[] = [];
   let rejectedPointCount = Array.isArray(rawData) ? 0 : 1;
   let futurePointCount = 0;
   let outOfDayPointCount = 0;
@@ -258,6 +260,7 @@ function parseSeries(
     }
     if (point[1] === null) {
       nullPointCount += 1;
+      if (timestampMs % 3_600_000 === 0) unavailableTimestamps.push(observedAtIso);
       continue;
     }
     if (typeof point[1] !== "number" || !Number.isFinite(point[1])) {
@@ -277,6 +280,7 @@ function parseSeries(
     points,
     totalPointCount: data.length,
     nullPointCount,
+    unavailableTimestamps,
     rejectedPointCount,
     futurePointCount,
     outOfDayPointCount,

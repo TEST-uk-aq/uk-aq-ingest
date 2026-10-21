@@ -18,6 +18,31 @@ export type SosCloudRunServiceResult = {
 
 const RESPONSE_KEYS = [
   "status",
+  "primary_sos_available",
+  "acquisition_method",
+  "upstream_error",
+  "recovery_status",
+  "recovery_scope",
+  "recovery_source_first_at",
+  "recovery_source_last_at",
+  "recovery_acquisition_method",
+  "recovery_mapping_unavailable",
+  "recovery_prior_day_points",
+  "recovery_series_checked",
+  "recovery_missing",
+  "recovery_recovered",
+  "recovery_unresolved",
+  "recovery_unresolved_known",
+  "recovery_source_unavailable",
+  "recovery_requests",
+  "recovery_sos_requests",
+  "recovery_html_requests",
+  "recovery_cadence_unconfirmed",
+  "recovery_retention_excluded_hours",
+  "recovery_retries",
+  "recovery_retry_deferred",
+  "recovery_source_failures",
+  "recovery_error",
   "partial",
   "stopped_reason",
   "upstream_status",
@@ -50,6 +75,7 @@ function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 function asInteger(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) ? parsed : null;
 }
@@ -101,6 +127,13 @@ function isValidChildPayload(payload: Record<string, unknown>): boolean {
   if (payload.reason !== undefined && !isBoundedString(payload.reason, 128)) {
     return false;
   }
+  for (const key of ["recovery_status", "recovery_scope", "acquisition_method", "recovery_acquisition_method", "recovery_source_first_at", "recovery_source_last_at"]) {
+    if (payload[key] !== undefined && !isBoundedString(payload[key], 64)) return false;
+  }
+  for (const key of ["recovery_error", "upstream_error"]) {
+    if (payload[key] !== undefined && !isBoundedString(payload[key], 500)) return false;
+  }
+  if (payload.primary_sos_available !== undefined && typeof payload.primary_sos_available !== "boolean") return false;
   if (payload.partial !== undefined && typeof payload.partial !== "boolean") {
     return false;
   }
@@ -131,6 +164,22 @@ function isValidChildPayload(payload: Record<string, unknown>): boolean {
   }
   for (
     const key of [
+      "recovery_mapping_unavailable",
+      "recovery_prior_day_points",
+      "recovery_series_checked",
+      "recovery_missing",
+      "recovery_recovered",
+      "recovery_unresolved",
+      "recovery_unresolved_known",
+      "recovery_source_unavailable",
+      "recovery_requests",
+      "recovery_sos_requests",
+      "recovery_html_requests",
+      "recovery_cadence_unconfirmed",
+      "recovery_retention_excluded_hours",
+      "recovery_retries",
+      "recovery_retry_deferred",
+      "recovery_source_failures",
       "runtime_deadline_failure_count",
       "individual_error_count",
       "stations_selected",

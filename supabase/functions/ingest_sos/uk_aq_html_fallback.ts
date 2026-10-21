@@ -205,13 +205,17 @@ export async function fetchUkAirHtmlPage(
   siteRef: string,
   runtimeDeadline: number,
   initialRequestStart?: UkAirHtmlRequestStart,
+  attempts = FETCH_RETRY_ATTEMPTS,
 ): Promise<{ html: string; status: number; durationMs: number }> {
   const url = new URL(DATA_PLOT_URL);
   url.searchParams.set("site_id", siteRef);
+  if (!Number.isInteger(attempts) || attempts < 1 || attempts > FETCH_RETRY_ATTEMPTS) {
+    throw new Error("Invalid bounded UK-AIR HTML request options.");
+  }
   url.searchParams.set("days", "0");
   const startedAt = Date.now();
 
-  for (let attempt = 1; attempt <= FETCH_RETRY_ATTEMPTS; attempt += 1) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const requestStart = attempt === 1 && initialRequestStart
       ? initialRequestStart
       : prepareUkAirHtmlRequestStart(runtimeDeadline);
@@ -241,13 +245,22 @@ export async function fetchUkAirHtmlPage(
           retryable: true,
         });
       }
-      const html = await response.text();
       if (!response.ok) {
         throw new SosFetchFailureError({
           kind: "http",
           message: `HTTP ${response.status} ${response.statusText}`,
           upstreamStatus: response.status,
           retryable: RETRYABLE_FETCH_STATUSES.has(response.status),
+        });
+      }
+      let html: string;
+      try {
+        html = await response.text();
+      } catch (error) {
+        throw new SosFetchFailureError({
+          kind: controller.signal.aborted ? timeoutKind : "network",
+          message: boundMessage(error),
+          upstreamStatus: response.status,
         });
       }
       return {
@@ -257,7 +270,7 @@ export async function fetchUkAirHtmlPage(
       };
     } catch (error) {
       const failure = asSosFetchFailure(error);
-      if (attempt >= FETCH_RETRY_ATTEMPTS || !failure.retryable) {
+      if (attempt >= attempts || !failure.retryable) {
         throw failure;
       }
       const retryDelayMs = Math.min(
