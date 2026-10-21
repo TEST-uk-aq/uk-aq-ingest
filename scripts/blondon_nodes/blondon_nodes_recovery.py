@@ -33,6 +33,11 @@ def recovery_config() -> dict[str, Any] | None:
         raise ValueError("Recovery config requires a boolean enabled field")
     if not config["enabled"]:
         return None
+    if "not_before_utc" in config:
+        raise ValueError(
+            "Recovery not_before_utc is internal; remove it from "
+            "BLONDON_NODES_RECOVERY_CONFIG"
+        )
     limits = {
         "horizon_hours": (1, 48), "lag_hours": (2, 24),
         "scan_limit": (1, 16), "request_limit": (1, 16),
@@ -45,14 +50,23 @@ def recovery_config() -> dict[str, Any] | None:
             raise ValueError(f"Recovery {key} must be an integer in {low}..{high}")
     if config["lag_hours"] >= config["horizon_hours"]:
         raise ValueError("Recovery lag must be smaller than the horizon")
-    floor = datetime.fromisoformat(str(config["not_before_utc"]).replace("Z", "+00:00"))
-    if floor.tzinfo is None or floor.utcoffset() != timedelta(0) or any(
-        (floor.hour, floor.minute, floor.second, floor.microsecond)
-    ):
-        raise ValueError("Recovery not_before_utc must be explicit UTC midnight")
     if os.getenv("BLONDON_NODES_INGESTDB_WRITE_TRANSPORT") != "database":
         raise ValueError("Recovery requires the configured pooled database transport")
     return config
+
+
+def effective_sql_config(
+    config: dict[str, Any], invocation_started_at: datetime,
+) -> dict[str, Any]:
+    """Supply the existing SQL helper's compatibility field, not R2 authority."""
+    midnight = invocation_started_at.astimezone(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    floor = midnight - timedelta(days=MIN_PRUNE_RETENTION_DAYS)
+    return {
+        **config,
+        "not_before_utc": floor.isoformat().replace("+00:00", "Z"),
+    }
 
 
 def bounded_public(stack: ExitStack, url: str, key: str, schema: str) -> Any:
@@ -86,6 +100,7 @@ def run_recent_recovery(
     build_rows: Callable, observs_factory: Callable, run_started: float,
     skip_reason: str | None = None,
 ) -> dict[str, Any]:
+    invocation_started_at = datetime.now(timezone.utc)
     report: dict[str, Any] = {
         "status": "disabled", "examined_timeseries": 0,
         "candidate_missing_hours": 0, "source_requests": 0,
@@ -108,6 +123,7 @@ def run_recent_recovery(
         if skip_reason:
             report.update(status="skipped", reason=skip_reason)
             return report
+        sql_config = effective_sql_config(config, invocation_started_at)
         remaining = run_started + int(os.getenv("BLONDON_NODES_MAX_RUNTIME_SECONDS") or "780") - 45
         deadline = min(time.monotonic() + config["runtime_seconds"], remaining)
         if deadline - time.monotonic() < 75:
@@ -125,7 +141,7 @@ def run_recent_recovery(
             stack.callback(database.close)
             phase = "scan"
             scan = public.rpc("uk_aq_rpc_blondon_nodes_recovery_scan_v1", {
-                "p_config": config,
+                "p_config": sql_config,
                 "p_retention_days": RECOVERY_SQL_RETENTION_ARGUMENT_DAYS,
                 "p_claim_token": token,
             }).execute().data
@@ -219,7 +235,7 @@ def run_recent_recovery(
                 # One bounded call, no retry after an ambiguous commit. The
                 # server returns only inserted/null-replaced rows for delivery.
                 result = database.recover_observations(
-                    prepared, config, RECOVERY_SQL_RETENTION_ARGUMENT_DAYS, token
+                    prepared, sql_config, RECOVERY_SQL_RETENTION_ARGUMENT_DAYS, token
                 )
                 committed = result["rows"]
                 report["authentic_recoveries"] = len(committed)

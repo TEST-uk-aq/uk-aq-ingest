@@ -130,9 +130,10 @@ jobs:
           if not isinstance(config, dict) or type(config.get("enabled")) is not bool:
               raise SystemExit("BLONDON_NODES_RECOVERY_CONFIG requires boolean enabled")
           if config["enabled"]:
+              if "not_before_utc" in config:
+                  raise SystemExit("Recovery not_before_utc is internal; remove it from BLONDON_NODES_RECOVERY_CONFIG")
               if os.environ["BLONDON_NODES_INGESTDB_WRITE_TRANSPORT"] != "database":
                   raise SystemExit("Recovery requires database transport and the additive schema migration")
-              from datetime import datetime, timedelta
               for key, low, high in [
                   ("horizon_hours", 1, 48), ("lag_hours", 2, 24),
                   ("scan_limit", 1, 16), ("request_limit", 1, 16), ("request_span_hours", 1, 6),
@@ -143,9 +144,6 @@ jobs:
                       raise SystemExit(f"Invalid recovery {key}; required integer {low}..{high}")
               if config["lag_hours"] >= config["horizon_hours"]:
                   raise SystemExit("Recovery lag must be smaller than horizon")
-              floor = datetime.fromisoformat(str(config.get("not_before_utc", "")).replace("Z", "+00:00"))
-              if floor.tzinfo is None or floor.utcoffset() != timedelta(0) or any((floor.hour, floor.minute, floor.second, floor.microsecond)):
-                  raise SystemExit("Recovery requires an attested earliest unowned UTC midnight")
               if int(os.environ["SERVICE_TIMEOUT_SECONDS"]) <= int(os.environ["BLONDON_NODES_MAX_RUNTIME_SECONDS"]) + 30:
                   raise SystemExit("Cloud Run timeout must exceed the child budget with cleanup headroom")
           PYCONFIG
