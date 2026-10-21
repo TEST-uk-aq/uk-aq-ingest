@@ -1,3 +1,4 @@
+import { parseDatapoints } from "./sos_datapoints.ts";
 // trigger deploy 2026-02-09 12:36
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import "../_shared/fetch_egress_patch.ts";
@@ -613,6 +614,8 @@ serve(async (req) => {
           status = connectorHttpStatus;
           responsePayload = {
             status: "upstream_unavailable",
+            acquisition_method: "none",
+            primary_sos_available: false,
             run_message: upstreamStatus === 502
               ? "HTTP 502 Gateway Failure"
               : "Upstream unavailable",
@@ -1503,8 +1506,8 @@ serve(async (req) => {
 
             const hardGateway502Failure = gateway502Failures > 0 && polled === 0;
             const partial = runtimeBudgetExceeded || htmlFallbackIncomplete ||
-              selectedWorkIncomplete;
-            status = hardGateway502Failure ? 502 : errors.length ? 207 : 200;
+              selectedWorkIncomplete || Boolean(htmlFallbackProbeFailure);
+            status = hardGateway502Failure ? 502 : partial || errors.length ? 207 : 200;
             responsePayload = {
               status: hardGateway502Failure ? "gateway_failure" : "ok",
               run_message: hardGateway502Failure
@@ -1514,6 +1517,8 @@ serve(async (req) => {
                   ? "UK-AIR HTML fallback partially recovered SOS probe failure"
                   : "UK-AIR HTML fallback recovered SOS probe failure"
                 : null,
+              acquisition_method: htmlFallbackProbeFailure ? "ukair_html" : "sos",
+              primary_sos_available: !htmlFallbackProbeFailure,
               connector_id: connector.id,
               stations_attempted: attemptedStationIds.size,
               stations_polled: successfullyPolledStationIds.size,
@@ -1535,7 +1540,7 @@ serve(async (req) => {
               partial,
               stopped_reason: runtimeBudgetExceeded
                 ? "runtime_budget_exceeded"
-                : null,
+                : htmlFallbackProbeFailure ? "primary_sos_unavailable" : null,
               ...(htmlFallbackProbeFailure
                 ? {
                   upstream_status: htmlFallbackProbeFailure.upstreamStatus,
@@ -2622,16 +2627,13 @@ async function fetchJson(
         throw new SosFetchFailure({
           kind: "network",
           message: boundMessage(err),
+          retryable: true,
         });
       }
-      const contentType = resp.headers.get("content-type") || "";
-      const payload = contentType.includes("application/json")
-        ? await resp.json()
-        : await resp.text();
-      if (recorder) {
-        recorder.recordResponse(path, params, resp.status, payload);
-      }
       if (!resp.ok) {
+        // Classify the HTTP response before attempting to decode an error body.
+        // A malformed/slow error body must not erase a real upstream HTTP status.
+        try { await resp.body?.cancel(); } catch { /* retain HTTP failure */ }
         throw new SosFetchFailure({
           kind: "http",
           message: `HTTP ${resp.status} ${resp.statusText}`,
@@ -2639,6 +2641,19 @@ async function fetchJson(
           retryable: RETRYABLE_FETCH_STATUSES.has(resp.status),
         });
       }
+      let payload: unknown;
+      try {
+        const contentType = resp.headers.get("content-type") || "";
+        payload = contentType.includes("application/json")
+          ? await resp.json()
+          : await resp.text();
+      } catch (error) {
+        throw new SosFetchFailure({
+          kind: controller.signal.aborted ? timeoutKind : "unknown",
+          message: `SOS response body failed (HTTP ${resp.status} headers received): ${boundMessage(error)}`,
+        });
+      }
+      if (recorder) recorder.recordResponse(path, params, resp.status, payload);
       return payload;
     } catch (err) {
       const failure = asSosFetchFailure(err);
@@ -2682,7 +2697,10 @@ async function probeSosUpstream(
   | { ok: false; failure: SosFetchFailure }
 > {
   try {
-    await fetchJson(baseUrl, "/services", {}, recorder, { attempts: 2, deadlineMs: runtimeDeadline });
+    await fetchJson(baseUrl, "/services", {}, recorder, {
+      attempts: 1,
+      deadlineMs: runtimeDeadline,
+    });
     return { ok: true, status: 200 };
   } catch (err) {
     return {
@@ -2711,136 +2729,6 @@ async function loadUkAirHtmlBridgeRows(
     throw new Error(`UK-AIR HTML bridge lookup failed: ${error.message}`);
   }
   return Array.isArray(data) ? data : [];
-}
-
-let emptySeriesLogs = 0;
-
-function parseDatapoints(
-  values: unknown,
-  seriesId?: number,
-): Array<{ observed_at: string; value: number | null; status: string | null }> {
-  let rows = values;
-  if (!Array.isArray(rows) && rows && typeof rows === "object") {
-    const nested = (rows as Record<string, unknown>).values
-      ?? (rows as Record<string, unknown>).data;
-    if (Array.isArray(nested)) {
-      rows = nested;
-    }
-  }
-  if (!Array.isArray(rows)) {
-    logEmptySeries(seriesId, rows, "values not array");
-    return [];
-  }
-  if (rows.length === 0) {
-    logEmptySeries(seriesId, { row_count: 0 }, "no rows");
-    return [];
-  }
-  const points: Array<{ observed_at: string; value: number | null; status: string | null }> = [];
-  for (const row of rows) {
-    if (Array.isArray(row)) {
-      if (row.length < 2) {
-        continue;
-      }
-      const observedAt = parseTimestamp(row[0]);
-      if (!observedAt) {
-        continue;
-      }
-      const value = toNumber(row[1]);
-      const status = row.length > 2 && row[2] != null ? String(row[2]) : null;
-      points.push({
-        observed_at: observedAt.toISOString(),
-        value,
-        status,
-      });
-      continue;
-    }
-    if (row && typeof row === "object") {
-      const record = row as Record<string, unknown>;
-      const observedAt = parseTimestamp(
-        record.timestamp ?? record.time ?? record.phenomenonTime ?? record.dateTime ?? record.datetime,
-      );
-      if (!observedAt) {
-        continue;
-      }
-      const value = toNumber(record.value ?? record.result ?? record.v);
-      const status = record.status != null ? String(record.status)
-        : record.quality != null ? String(record.quality)
-        : record.qc != null ? String(record.qc)
-        : null;
-      points.push({
-        observed_at: observedAt.toISOString(),
-        value,
-        status,
-      });
-    }
-  }
-  if (!points.length) {
-    logEmptySeries(seriesId, rows[0], "no parsed datapoints");
-  }
-  return points;
-}
-
-function toNumber(value: unknown): number | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (typeof value === "object" && !Array.isArray(value)) {
-    const record = value as Record<string, unknown>;
-    const nested = record.value ?? record.result ?? record.v;
-    if (nested === null || nested === undefined) {
-      return null;
-    }
-    return toNumber(nested);
-  }
-  const num = Number(value);
-  if (!Number.isFinite(num)) {
-    return null;
-  }
-  return num;
-}
-
-function parseTimestamp(value: unknown): Date | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (typeof value === "object" && !Array.isArray(value)) {
-    const record = value as Record<string, unknown>;
-    const nested = record.timestamp ?? record.time ?? record.dateTime ?? record.datetime;
-    return parseTimestamp(nested);
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const timestamp = value < 1e12 ? value * 1000 : value;
-    const observedAt = new Date(timestamp);
-    return Number.isNaN(observedAt.getTime()) ? null : observedAt;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-    const numeric = Number(trimmed);
-    if (Number.isFinite(numeric)) {
-      const timestamp = numeric < 1e12 ? numeric * 1000 : numeric;
-      const observedAt = new Date(timestamp);
-      return Number.isNaN(observedAt.getTime()) ? null : observedAt;
-    }
-    const observedAt = new Date(trimmed);
-    return Number.isNaN(observedAt.getTime()) ? null : observedAt;
-  }
-  return null;
-}
-
-function logEmptySeries(seriesId: number | undefined, sample: unknown, reason: string): void {
-  if (emptySeriesLogs >= 3) {
-    return;
-  }
-  emptySeriesLogs += 1;
-  const log = reason === "no rows" ? console.info : console.warn;
-  log("No datapoints parsed", {
-    series_id: seriesId ?? null,
-    reason,
-    sample,
-  });
 }
 
 async function upsertLastValue(

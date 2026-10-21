@@ -4,6 +4,7 @@ WORKDIR /app
 
 COPY deno.json /app/deno.json
 
+COPY workers/uk_aq_sos_cloud_run/recovery.ts /app/workers/uk_aq_sos_cloud_run/recovery.ts
 COPY workers/uk_aq_sos_cloud_run/run_job.ts /app/workers/uk_aq_sos_cloud_run/run_job.ts
 COPY workers/uk_aq_sos_cloud_run/run_service.ts /app/workers/uk_aq_sos_cloud_run/run_service.ts
 COPY workers/uk_aq_sos_cloud_run/result_contract.ts /app/workers/uk_aq_sos_cloud_run/result_contract.ts
@@ -13,6 +14,7 @@ COPY workers/shared/dropbox_error_log.ts /app/workers/shared/dropbox_error_log.t
 # Reuse existing SOS ingest implementation + shared helpers.
 COPY supabase/functions/ingest_sos/index.ts /app/runtime/ingest_sos/index.ts
 COPY supabase/functions/ingest_sos/failure.ts /app/runtime/ingest_sos/failure.ts
+COPY supabase/functions/ingest_sos/sos_datapoints.ts /app/runtime/ingest_sos/sos_datapoints.ts
 COPY supabase/functions/ingest_sos/run_metrics.ts /app/runtime/ingest_sos/run_metrics.ts
 COPY supabase/functions/ingest_sos/sos_database.ts /app/runtime/ingest_sos/sos_database.ts
 COPY supabase/functions/ingest_sos/selected_work.ts /app/runtime/ingest_sos/selected_work.ts
@@ -27,6 +29,11 @@ COPY supabase/functions/_shared/fetch_egress_patch.ts /app/supabase/functions/_s
 COPY supabase/functions/_shared/egress_metrics.ts /app/supabase/functions/_shared/egress_metrics.ts
 COPY supabase/functions/ingest_sos/selected_work.ts /app/supabase/functions/ingest_sos/selected_work.ts
 COPY supabase/functions/ingest_sos/uk_aq_html_parser.ts /app/supabase/functions/ingest_sos/uk_aq_html_parser.ts
+COPY supabase/functions/ingest_sos/uk_aq_html_fallback.ts /app/supabase/functions/ingest_sos/uk_aq_html_fallback.ts
+COPY supabase/functions/ingest_sos/failure.ts /app/supabase/functions/ingest_sos/failure.ts
+COPY supabase/functions/ingest_sos/sos_datapoints.ts /app/supabase/functions/ingest_sos/sos_datapoints.ts
+COPY supabase/functions/_shared/ingestdb_observation_writer.mjs /app/supabase/functions/_shared/ingestdb_observation_writer.mjs
+COPY supabase/functions/_shared/observs_client.ts /app/supabase/functions/_shared/observs_client.ts
 
 ENV PORT=8000
 ENV SOS_LOCAL_PORT=8000

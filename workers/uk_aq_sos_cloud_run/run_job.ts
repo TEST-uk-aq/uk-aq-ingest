@@ -1,3 +1,14 @@
+import { readSosRecoveryConfig, recoverSosRecentGaps } from "./recovery.ts";
+import {
+  buildCompactObservationRpcArgsV2,
+  serializedJsonUtf8Bytes,
+  writeIngestDbObservations,
+} from "../../supabase/functions/_shared/ingestdb_observation_writer.mjs";
+import {
+  type MainRpcCaller,
+  type ObservsObservationRow,
+  writeObservsWithOutbox,
+} from "../../supabase/functions/_shared/observs_client.ts";
 import "../../supabase/functions/_shared/fetch_egress_patch.ts";
 import {
   normalizeDropboxPath,
@@ -22,6 +33,13 @@ import {
   type PostgrestResponse,
   requestWithTransientJwtFutureRetry,
 } from "./postgrest_auth_retry.ts";
+
+let recoverySosBaseUrl = Deno.env.get("SOS_BASE_URL") ?? Deno.env.get("UK_AIR_BASE_URL") ?? "";
+const RECOVERY_CONFIG = readSosRecoveryConfig();
+const MAX_RUNTIME_SECONDS = parsePositiveInt(Deno.env.get("SOS_MAX_RUNTIME_SECONDS"), 600);
+if (MAX_RUNTIME_SECONDS < 30) {
+  throw new Error("SOS_MAX_RUNTIME_SECONDS must leave at least 30 seconds for primary acquisition.");
+}
 
 const CONNECTOR_CODE =
   (Deno.env.get("SOS_CONNECTOR_CODE") || "sos").trim();
@@ -112,6 +130,7 @@ type ConnectorConfig = {
   id: unknown;
   connector_code: unknown;
   poll_enabled: unknown;
+  service_url: unknown;
   poll_interval_minutes: unknown;
   poll_window_hours: unknown;
   poll_timeseries_batch_size: unknown;
@@ -200,6 +219,7 @@ function toStringOrNull(value: unknown): string | null {
 }
 
 function toIntegerOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     return null;
@@ -362,6 +382,7 @@ async function postgrestRequest(
     query?: Record<string, string>;
     body?: unknown;
     prefer?: string;
+    deadlineMs?: number;
     transientJwtFutureRetry?: {
       operation: string;
     };
@@ -378,10 +399,16 @@ async function postgrestRequest(
     ? undefined
     : JSON.stringify(options.body);
   const request = async (): Promise<PostgrestResponse> => {
+    if (options.deadlineMs !== undefined && options.deadlineMs <= Date.now()) {
+      throw new Error("SOS recovery database budget exhausted.");
+    }
     const response = await fetch(url, {
       method,
       headers,
       body,
+      ...(options.deadlineMs === undefined ? {} : {
+        signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, options.deadlineMs - Date.now()))),
+      }),
     });
     const text = await response.text();
     let data: unknown = null;
@@ -934,7 +961,7 @@ async function loadConnector(): Promise<ConnectorConfig | null> {
   const response = await postgrestRequest("GET", "connectors", {
     query: {
       select:
-        "id,connector_code,poll_enabled,poll_interval_minutes,poll_window_hours,poll_timeseries_batch_size,scheduler_backend,last_polled_at,last_run_start,last_run_end,last_run_status",
+        "id,connector_code,poll_enabled,service_url,poll_interval_minutes,poll_window_hours,poll_timeseries_batch_size,scheduler_backend,last_polled_at,last_run_start,last_run_end,last_run_status",
       connector_code: `eq.${CONNECTOR_CODE}`,
       limit: "1",
     },
@@ -1207,18 +1234,208 @@ async function runIngestOnce(
   };
 }
 
+async function appendRecentRecovery(
+  connectorId: number,
+  runStartedAtIso: string,
+  response: IngestResponse,
+): Promise<void> {
+  const payload = toObject(response.body);
+  if (!payload) return;
+  const deadline = Math.min(
+    Date.parse(runStartedAtIso) + (MAX_RUNTIME_SECONDS + RECOVERY_CONFIG.budgetSeconds) * 1000,
+    Date.now() + RECOVERY_CONFIG.budgetSeconds * 1000,
+  );
+  const rpc = async (fn: string, args: unknown): Promise<unknown> => {
+    const result = await postgrestRequest("POST", `rpc/${fn}`, {
+      schema: UK_AQ_PUBLIC_SCHEMA,
+      body: args,
+      deadlineMs: deadline,
+    });
+    if (!result.ok) {
+      const detail = toObject(result.data);
+      throw Object.assign(
+        new Error(`SOS recovery RPC ${fn} failed (${result.status}).`),
+        {
+          code: detail?.code,
+          status: result.status,
+        },
+      );
+    }
+    return result.data;
+  };
+  const read = async (
+    table: string,
+    query: Record<string, string>,
+  ): Promise<Record<string, unknown>[]> => {
+    const result = await postgrestRequest("GET", table, {
+      query,
+      deadlineMs: deadline,
+    });
+    if (!result.ok || !Array.isArray(result.data)) {
+      throw new Error(`SOS recovery read ${table} failed (${result.status}).`);
+    }
+    return result.data as Record<string, unknown>[];
+  };
+  let committed = 0;
+  const recovery = await recoverSosRecentGaps(
+    connectorId,
+    RECOVERY_CONFIG,
+    deadline,
+    {
+      read,
+      mappings: async (fromDay, toDay) => {
+        const rows = await rpc("uk_aq_rpc_sos_uk_air_flat_file_mappings", {
+          p_from_day: fromDay,
+          p_to_day: toDay,
+          p_pollutant_codes: [...UK_AIR_HTML_BRIDGE_POLLUTANT_CODES],
+        });
+        if (!Array.isArray(rows)) {
+          throw new Error(
+            "Malformed SOS recovery bridge response.",
+          );
+        }
+        return rows;
+      },
+      write: async (points) => {
+        const rows = points.map((point) => ({
+          ...point,
+          connector_id: connectorId,
+        }));
+        // Reuse the compact retry/split/runtime guard. Recovery's additive RPC
+        // differs only at conflicts: it cannot revise an existing numeric value.
+        for (const acquisitionMethod of ["sos", "ukair_html"] as const) {
+          const methodRows = rows.filter((row) =>
+            row.acquisition_method === acquisitionMethod
+          );
+          if (!methodRows.length) continue;
+          await writeIngestDbObservations({
+            rows: methodRows,
+            chunkSize: methodRows.length,
+            connectorCode: CONNECTOR_CODE,
+            logger: console,
+            config: { minimumAttemptRuntimeMs: 15_000 },
+            runtimeBudget: {
+              shouldStop: () => Date.now() >= deadline,
+              remainingRuntimeMs: () => Math.max(0, deadline - Date.now()),
+            },
+            requestBodyBytes: (chunk: Record<string, unknown>[]) => {
+              const args = buildCompactObservationRpcArgsV2(
+                chunk,
+                acquisitionMethod,
+              );
+              return serializedJsonUtf8Bytes(args);
+            },
+            writeChunk: async (chunk: Record<string, unknown>[]) => {
+              const args = buildCompactObservationRpcArgsV2(
+                chunk,
+                acquisitionMethod,
+              );
+              const result = await rpc(
+                "uk_aq_rpc_sos_recovery_insert_v1",
+                args,
+              );
+              const count = Array.isArray(result)
+                ? toIntegerOrNull(toObject(result[0])?.observations_upserted)
+                : null;
+              if (count === null || count < 0) {
+                throw new Error("Invalid SOS recovery write count.");
+              }
+              committed += count;
+            },
+          });
+        }
+        // Publish the durable current values, so a concurrently inserted primary
+        // observation wins in both databases. Never publish stale fallback values
+        // for keys which the conflict-safe recovery RPC intentionally left alone.
+        const keys = new Set(
+          rows.map((row) => `${row.timeseries_id}:${row.observed_at}`),
+        );
+        const ids = [...new Set(rows.map((row) => row.timeseries_id))];
+        const ats = rows.map((row) => row.observed_at).sort();
+        const durable: ObservsObservationRow[] = [];
+        for (
+          let offset = 0;
+          offset <= rows.length + ids.length * 72;
+          offset += 1000
+        ) {
+          const page = await read("observations", {
+            connector_id: `eq.${connectorId}`,
+            timeseries_id: postgrestIn(ids),
+            and: `(observed_at.gte.${ats[0]},observed_at.lte.${
+              ats[ats.length - 1]
+            })`,
+            value: "not.is.null",
+            select: "timeseries_id,observed_at,value,status",
+            order: "timeseries_id.asc,observed_at.asc",
+            limit: "1000",
+            offset: String(offset),
+          });
+          for (const item of page) {
+            const observedAt = new Date(String(item.observed_at)).toISOString();
+            if (
+              keys.has(`${item.timeseries_id}:${observedAt}`) &&
+              typeof item.value === "number" && Number.isFinite(item.value)
+            ) {
+              durable.push({
+                connector_id: connectorId,
+                timeseries_id: Number(item.timeseries_id),
+                observed_at: observedAt,
+                value: item.value,
+                status: toStringOrNull(item.status),
+              });
+            }
+          }
+          if (page.length < 1000) break;
+        }
+        const mainRpc: MainRpcCaller = async <T>(
+          fn: string,
+          args?: Record<string, unknown>,
+        ) => {
+          return { data: await rpc(fn, args) as T, error: null };
+        };
+        await writeObservsWithOutbox(mainRpc, durable, (message) => {
+          logSummary("recovery_delivery_warning", { message });
+        });
+        return committed;
+      },
+    },
+    payload.primary_sos_available === true,
+    recoverySosBaseUrl,
+  );
+  Object.assign(payload, recovery);
+  payload.observations_upserted =
+    (toIntegerOrNull(payload.observations_upserted) ?? 0) + committed;
+  if (
+    recovery.recovery_status !== "disabled" &&
+    recovery.recovery_status !== "batch_complete" &&
+    !isRecognizedSosDependencyFailure(response) && response.ok
+  ) {
+    payload.partial = true;
+    payload.stopped_reason ??= `recovery_${String(recovery.recovery_status)}`;
+    response.status = 207;
+  }
+  response.raw = JSON.stringify(payload);
+  logSummary(
+    "recent_recovery",
+    Object.fromEntries(
+      Object.entries(recovery).filter(([key]) => key !== "sos_recovery_state"),
+    ),
+  );
+}
+
 async function recordSkippedRun(
   connectorId: number,
   runStartedAtIso: string,
   runMessage: string,
   stationsSelected: number,
-): Promise<void> {
-  const runEndedAtIso = new Date().toISOString();
-  const runStatus = "skipped";
+): Promise<SosCloudRunChildResult> {
+  let runStatus = "skipped";
   const ingestResponse: IngestResponse = {
     ok: true,
-    status: 204,
+    status: 200,
     body: {
+      series_polled: 0,
+      observations_upserted: 0,
       run_status: runStatus,
       run_message: runMessage,
       connector_code: CONNECTOR_CODE,
@@ -1228,6 +1445,18 @@ async function recordSkippedRun(
     },
     raw: "",
   };
+  await appendRecentRecovery(connectorId, runStartedAtIso, ingestResponse);
+  const runEndedAtIso = new Date().toISOString();
+  const body = toObject(ingestResponse.body)!;
+  body.status = RECOVERY_CONFIG.enabled ? "ok" : "skipped";
+  if (!RECOVERY_CONFIG.enabled) body.reason = runMessage;
+  if (RECOVERY_CONFIG.enabled) {
+    runStatus = body.partial === true ? "partial" : "succeeded";
+    runMessage = `${runMessage}; recent recovery ${body.recovery_status}`;
+    body.run_status = runStatus;
+    body.run_message = runMessage;
+    ingestResponse.status = body.partial === true ? 207 : 200;
+  }
   await updateConnectorRun(
     connectorId,
     runStartedAtIso,
@@ -1245,12 +1474,14 @@ async function recordSkippedRun(
     toObject(ingestResponse.body),
     null,
   );
+  return buildSosCloudRunChildResult(ingestResponse, runStatus, runMessage)!;
 }
 
 async function main(): Promise<void> {
   const now = new Date();
   const runStartedAtIso = now.toISOString();
   const connector = await loadConnector();
+  recoverySosBaseUrl = toStringOrNull(connector?.service_url) ?? recoverySosBaseUrl;
   const due = evaluateDue(connector, now);
   if (!due.due) {
     await writeChildResult(
@@ -1299,15 +1530,13 @@ async function main(): Promise<void> {
     const payloadPlan = await buildIngestPayload(connector);
 
     if (!payloadPlan.stationRows.length) {
-      await recordSkippedRun(
+      const skippedResult = await recordSkippedRun(
         connectorId,
         runStartedAtIso,
         "no_station_refs",
         0,
       );
-      await writeChildResult(
-        buildSosCloudRunSkippedResult("no_station_refs", connectorId),
-      );
+      await writeChildResult(skippedResult);
       logSummary("skipped", {
         reason: "no_station_refs",
         connector_id: connectorId,
@@ -1318,23 +1547,13 @@ async function main(): Promise<void> {
     }
 
     if (!payloadPlan.timeseriesIds.length) {
-      await recordSkippedRun(
+      const skippedResult = await recordSkippedRun(
         connectorId,
         runStartedAtIso,
         "no_timeseries_ids",
         payloadPlan.stationRows.length,
       );
-      await writeChildResult(
-        buildSosCloudRunSkippedResult(
-          "no_timeseries_ids",
-          connectorId,
-          {
-            stationsSelected: payloadPlan.stationRows.length,
-            stationsAttempted: 0,
-            stationsPolled: 0,
-          },
-        ),
-      );
+      await writeChildResult(skippedResult);
       logSummary("skipped", {
         reason: "no_timeseries_ids",
         connector_id: connectorId,
@@ -1376,6 +1595,7 @@ async function main(): Promise<void> {
       env: {
         ...Deno.env.toObject(),
         SOS_DROPBOX_UPLOAD_SOURCE: "cloud_run",
+        SOS_MAX_RUNTIME_SECONDS: String(MAX_RUNTIME_SECONDS),
       },
       stdout: "inherit",
       stderr: "inherit",
@@ -1383,6 +1603,9 @@ async function main(): Promise<void> {
 
     await waitForServer(`http://127.0.0.1:${PORT}/`);
     ingestResponse = await runIngestOnce(payloadPlan.payload);
+    if (isCompletedSosChildResponse(ingestResponse)) {
+      await appendRecentRecovery(connectorId, runStartedAtIso, ingestResponse);
+    }
 
     const { runStatus, runMessage, payload } = deriveRunSummary(ingestResponse);
     if (!payload) {
@@ -1476,7 +1699,7 @@ async function main(): Promise<void> {
 
     await writeChildResult(childResult);
 
-    logSummary("success", {
+    logSummary("completed", {
       run_status: runStatus,
       response_status: ingestResponse.status,
       connector_id: connectorId,
