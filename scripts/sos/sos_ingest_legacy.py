@@ -734,7 +734,9 @@ class UkAirClient:
             try:
                 data = resp.json()
             except requests.exceptions.JSONDecodeError:
-                reason = invalid_json_unavailability_reason(resp)
+                reason = invalid_json_unavailability_reason(
+                    resp, base_url=self.base_url, request_url=url
+                )
                 isolatable = reason is not None and self._invalid_response_isolation_allowed
                 failure = (
                     f"JSONDecodeError {response_label}; "
