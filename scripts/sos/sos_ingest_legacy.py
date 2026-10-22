@@ -52,9 +52,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.ingest_helpers import station_coords, station_in_bbox, station_in_bbox_or_missing_coords
 from scripts.sos.sos_failure_classification import (
     SOS_UPSTREAM_UNAVAILABLE_EXIT_CODE,
+    SOS_UPSTREAM_UNAVAILABLE_HTTP_STATUSES,
     SosUpstreamUnavailableError,
+    invalid_json_unavailability_reason,
     raise_for_retry_exhausted_status,
     raise_for_retry_exhausted_transport,
+    response_diagnostics,
 )
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
@@ -668,12 +671,19 @@ class UkAirClient:
         timeout: int = 60,
         retries: int = 3,
         raw_recorder: Optional[RawPayloadRecorder] = None,
+        *,
+        allow_invalid_response_isolation: bool = False,
     ):
         self.base_url = base_url
         self.timeout = timeout
         self.retries = retries
         self.session = requests.Session()
         self.raw_recorder = raw_recorder
+        self._invalid_response_isolation_allowed = allow_invalid_response_isolation
+
+    def begin_reference_writes(self) -> None:
+        """Permanently close the new isolation path before any write is attempted."""
+        self._invalid_response_isolation_allowed = False
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         url = f"{self.base_url}/{path.lstrip('/')}"
@@ -682,47 +692,66 @@ class UkAirClient:
             try:
                 resp = self.session.get(url, params=params, timeout=self.timeout)
             except requests.RequestException as exc:
-                failure = f"{type(exc).__name__} {request_label}: {exc}"
+                temporary = isinstance(exc, (requests.ConnectionError, requests.Timeout))
+                failure = (
+                    f"{type(exc).__name__} {request_label}; HTTP=unavailable; "
+                    f"Content-Type=unavailable; temporary_upstream={str(temporary).lower()}"
+                )
                 if self._retry_failed(attempt, failure):
                     continue
                 raise_for_retry_exhausted_transport(exc, request_label)
 
-            if resp.status_code in (429, 500, 502, 503, 504):
-                failure = f"HTTP {resp.status_code} {request_label}"
+            response_label = f"{request_label}; {response_diagnostics(resp)}"
+            if resp.status_code in SOS_UPSTREAM_UNAVAILABLE_HTTP_STATUSES:
+                failure = f"{response_label}; temporary_upstream=true"
                 if self._retry_failed(attempt, failure):
                     continue
-                raise_for_retry_exhausted_status(resp.status_code, request_label)
+                raise_for_retry_exhausted_status(resp.status_code, response_label)
 
             try:
                 resp.raise_for_status()
-                data = resp.json()
-                if self.raw_recorder:
-                    self.raw_recorder.record_response(path, params, resp.status_code, data)
-                return data
             except requests.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else "unknown"
                 if status == 404:
                     LOG.info(
-                        "Request failed (attempt %s/%s): HTTP %s %s",
+                        "Request failed (attempt %s/%s): %s; temporary_upstream=false",
                         attempt,
                         self.retries,
-                        status,
-                        request_label,
+                        response_label,
                     )
                     return {}
                 level = logging.INFO if status == 400 else logging.WARNING
                 if self._retry_failed(
                     attempt,
-                    f"HTTP {status} {request_label}",
+                    f"{response_label}; temporary_upstream=false",
                     level=level,
                 ):
                     continue
-                raise
-            except requests.RequestException as exc:
-                failure = f"{type(exc).__name__} {request_label}: {exc}"
+                raise requests.HTTPError(
+                    f"{response_label}; temporary_upstream=false", response=resp
+                ) from None
+
+            try:
+                data = resp.json()
+            except requests.exceptions.JSONDecodeError:
+                reason = invalid_json_unavailability_reason(resp)
+                isolatable = reason is not None and self._invalid_response_isolation_allowed
+                failure = (
+                    f"JSONDecodeError {response_label}; "
+                    f"temporary_upstream={str(reason is not None).lower()}; "
+                    f"isolation_allowed={str(isolatable).lower()}; "
+                    f"reason={reason or 'unrecognised_invalid_json'}"
+                )
                 if self._retry_failed(attempt, failure):
                     continue
-                raise
+                if isolatable:
+                    raise SosUpstreamUnavailableError(
+                        f"UK-AIR SOS invalid response after retries: {failure}"
+                    ) from None
+                raise ValueError(f"UK-AIR SOS invalid JSON after retries: {failure}") from None
+            if self.raw_recorder:
+                self.raw_recorder.record_response(path, params, resp.status_code, data)
+            return data
         raise RuntimeError(
             f"UK-AIR SOS request ended without a response after {self.retries} attempts: "
             f"{request_label}"
@@ -763,12 +792,13 @@ class UkAirClient:
         time.sleep(self._retry_delay(attempt))
 
     def _request_label(self, path: str, params: Optional[Dict[str, Any]]) -> str:
+        path = path.split("?", 1)[0].split("#", 1)[0]
         if not params:
             return path
         station_list = params.get("station") if isinstance(params, dict) else None
         if isinstance(station_list, list):
             return f"{path} (stations={len(station_list)})"
-        return f"{path} (params={','.join(sorted(params.keys()))})"
+        return f"{path} (params={len(params)})"
 
     def services(self) -> List[Dict[str, Any]]:
         data = self.get("/services")
@@ -1705,6 +1735,10 @@ class UkAirIngestor:
             category = props.get("category") if isinstance(props.get("category"), dict) else None
             if category:
                 category_items.append(category)
+        # discover_service's connector lookup is read-only. This is the first
+        # reference-write attempt; keep later source failures fatal even if a
+        # write fails or has an ambiguous result.
+        self.client.begin_reference_writes()
         category_map = self.writer.upsert_reference_table(
             "categories",
             "category_ref",
@@ -2913,7 +2947,10 @@ def main() -> None:
     args = parse_args()
     _configure_logging(args.log_level, DEFAULT_FILE_LOG_LEVEL)
     raw_session = _prepare_raw_dropbox_session(args)
-    client = UkAirClient(raw_recorder=raw_session.recorder if raw_session else None)
+    client = UkAirClient(
+        raw_recorder=raw_session.recorder if raw_session else None,
+        allow_invalid_response_isolation=args.discover,
+    )
     writer = SupabaseWriter()
     error_logger = ErrorLogger(writer.client)
     ingestor = UkAirIngestor(client, writer, error_logger)

@@ -5,7 +5,7 @@ from pathlib import Path
 
 SOURCE = Path("scripts/sos/sos_ingest.py")
 TEST = Path("tests/test_sos_station_identity.py")
-EXPECTED_BLOB_SHA = "b5facde791aa9b6b444851a58cb51892ca60e12e"
+EXPECTED_BLOB_SHA = "55d637468af5b7eecd11bd6e3df8e3462e7c029f"
 
 
 def git_blob_sha(text: str) -> str:
