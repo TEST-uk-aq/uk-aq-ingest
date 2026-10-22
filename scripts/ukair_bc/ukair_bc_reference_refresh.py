@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import io
 import json
 import logging
@@ -21,7 +22,7 @@ from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import parse_qsl, unquote, urljoin, urlparse
 
 import requests
 
@@ -54,6 +55,19 @@ PAGE_SIZE = 500
 UPSERT_BATCH_SIZE = 200
 UPSTREAM_UNAVAILABLE_EXIT_CODE = 75
 RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+CATALOGUE_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+MAINTENANCE_HTML_LIMIT = 16 * 1024
+ACCESS_CHALLENGE_RE = re.compile(
+    r"<form\b|<input\b|\b(?:authenticat\w*|(?:un)?authori[sz]\w*|"
+    r"password|log[ _-]?in|sign[ _-]?in|sso|denied|forbidden|blocked|restricted|"
+    r"captcha|verification|401|403|permission\s+(?:error|required)|"
+    r"verify\s+(?:you|that)|checking\s+(?:your\s+)?browser|just\s+a\s+moment|"
+    r"are\s+you\s+(?:a\s+)?(?:human|robot)|(?:bot|browser|security)\s+(?:check|challenge)|"
+    r"turnstile|recaptcha|hcaptcha|cdn-cgi|cf-chl|challenge(?:-platform)?|"
+    r"enable\s+(?:javascript|cookies)|javascript\s+(?:is\s+)?required|"
+    r"configuration\s+error|misconfigur\w*)\b",
+    re.IGNORECASE,
+)
 
 REQUIRED_CATALOGUE_COLUMNS = frozenset(
     {
@@ -344,12 +358,139 @@ def find_catalogue_csv_url(html_text: str, search_url: str) -> str:
     raise SourceFormatError("Official UK-AIR search page did not expose a catalogue CSV link")
 
 
+def catalogue_request_url(
+    url: str, *, relative_to: Optional[str] = None
+) -> str:
+    """Validate search redirect targets before requests can send credentials."""
+    if (
+        not url or len(url) > 4096 or not url.isascii()
+        or re.search(r"[\s\x00-\x1f\x7f\\%]", url)
+        or "#" in url or url.startswith("//")
+        or (relative_to is not None and "?" in url)
+    ):
+        raise SourceFormatError("Ambiguous UK-AIR catalogue request URL")
+    try:
+        parts = urlparse(url)
+        if (
+            parts.params or ";" in parts.path
+            or re.search(r"//|(?:^|/)\.{1,2}(?:/|$)", parts.path)
+            or (parts.scheme and not parts.netloc)
+        ):
+            raise ValueError("ambiguous path")
+        resolved = urljoin(relative_to, url) if relative_to is not None else url
+        parts = urlparse(resolved)
+        if not is_official_source_url(resolved):
+            raise ValueError("unofficial source")
+        # Reject alternate authority spellings, empty ports and other ambiguity.
+        if parts.netloc.lower() not in (parts.hostname, f"{parts.hostname}:443"):
+            raise ValueError("ambiguous authority")
+        if relative_to is not None:
+            base = urlparse(relative_to)
+            if (parts.scheme, parts.hostname, parts.port or 443) != (
+                base.scheme, base.hostname, base.port or 443
+            ):
+                raise ValueError("origin changed")
+        if ACCESS_CHALLENGE_RE.search(parts.path):
+            raise ValueError("access challenge destination")
+    except ValueError as exc:
+        raise SourceFormatError("Unsafe UK-AIR catalogue request destination") from exc
+    return resolved
+
+
+def check_catalogue_response_metadata(response: requests.Response) -> None:
+    if any(name in response.headers for name in (
+        "WWW-Authenticate", "Proxy-Authenticate", "Refresh", "CF-Mitigated"
+    )) or any(
+        ACCESS_CHALLENGE_RE.search(f"{name}: {value}")
+        for name, value in response.headers.items()
+    ):
+        raise SourceFormatError("UK-AIR catalogue response has access/challenge metadata")
+
+
+def bounded_catalogue_html(response: requests.Response) -> str:
+    body = bytearray()
+    for chunk in response.iter_content(chunk_size=MAINTENANCE_HTML_LIMIT + 1):
+        body.extend(chunk)
+        if len(body) > MAINTENANCE_HTML_LIMIT:
+            raise SourceFormatError("UK-AIR redirect HTML exceeds the inspection limit")
+    try:
+        text = body.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise SourceFormatError("UK-AIR redirect HTML has an unsupported encoding") from exc
+    if ACCESS_CHALLENGE_RE.search(html.unescape(text)) or re.search(
+        r"http-equiv\s*=\s*['\"]?refresh\b", text, re.IGNORECASE
+    ):
+        raise SourceFormatError("UK-AIR redirect HTML contains access/challenge evidence")
+    return text
+
+
+def request_catalogue_search(
+    session: requests.Session, url: str, *, timeout: int
+) -> Tuple[requests.Response, bool]:
+    """Follow at most two validated same-origin hops; never auto-follow a target."""
+    current_url = catalogue_request_url(url)
+    requested = urlparse(current_url)
+    authorised = urlparse(DEFAULT_SEARCH_URL)
+    eligible = (
+        requested.path == authorised.path
+        and sorted(parse_qsl(requested.query, keep_blank_values=True))
+        == sorted(parse_qsl(authorised.query, keep_blank_values=True))
+    )
+    for redirects in range(3):
+        response = session.get(
+            current_url, timeout=timeout, allow_redirects=False, stream=True
+        )
+        try:
+            if response.history or response.url != current_url:
+                raise SourceFormatError("Incomplete/conflicting UK-AIR redirect metadata")
+            check_catalogue_response_metadata(response)
+            if response.status_code in CATALOGUE_REDIRECT_STATUSES:
+                location = response.headers.get("Location", "")
+                if redirects == 2 or not location or "," in location:
+                    raise SourceFormatError("Invalid or excessive UK-AIR catalogue redirects")
+                target = catalogue_request_url(location, relative_to=current_url)
+                bounded_catalogue_html(response)
+                response.close()
+                current_url = target
+                continue
+            if "Location" in response.headers or 300 <= response.status_code < 400:
+                raise SourceFormatError("Unexpected UK-AIR catalogue redirect metadata")
+            if redirects and urlparse(current_url).path == "/maintenance/":
+                if response.status_code == 200:
+                    media_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                    if media_type not in ("text/html", "application/xhtml+xml"):
+                        raise SourceFormatError("UK-AIR maintenance destination is not HTML")
+                    text = bounded_catalogue_html(response)
+                    document = re.sub(
+                        r"<!--.*?-->|<(script|style)\b[^>]*>.*?</\1\s*>",
+                        "", text, flags=re.I | re.S,
+                    )
+                    if not (
+                        not re.search(r"<!--|<(?:script|style)\b", document, re.I)
+                        and re.match(r"\s*(?:<!doctype\s+html(?:\s[^<>]*)?>\s*)?<html(?:\s[^<>]*)?>", document, re.I)
+                        and re.search(r"<body(?:\s[^<>]*)?>.*</body\s*>\s*</html\s*>\s*$", document, re.I | re.S)
+                    ):
+                        raise SourceFormatError("UK-AIR maintenance response is not a recognisable HTML document")
+                    if not eligible:
+                        raise SourceFormatError("Maintenance redirect outside authorised Black Carbon search")
+                    return response, True
+            # Preserve the existing eager read inside the retry boundary for
+            # ordinary search pages (including connection/read failures).
+            response.content
+            return response, False
+        except Exception:
+            response.close()
+            raise
+    raise AssertionError("unreachable")
+
+
 def request_with_retry(
     session: requests.Session,
     url: str,
     *,
     timeout: int,
     retries: int,
+    catalogue_search: bool = False,
 ) -> requests.Response:
     if not is_official_source_url(url):
         raise SourceFormatError("Reference acquisition requires an official HTTPS UK-AIR URL")
@@ -357,15 +498,22 @@ def request_with_retry(
     for attempt in range(1, retries + 1):
         status = None
         try:
-            response = session.get(url, timeout=timeout)
+            maintenance_redirect = False
+            if catalogue_search:
+                response, maintenance_redirect = request_catalogue_search(session, url, timeout=timeout)
+            else:
+                response = session.get(url, timeout=timeout)
             if not is_official_source_url(response.url):
                 raise SourceFormatError("UK-AIR acquisition redirected outside the official source")
             status = response.status_code
-            if status not in RETRYABLE_HTTP_STATUSES:
+            if maintenance_redirect:
+                failure_class = "maintenance_redirect"
+            elif status not in RETRYABLE_HTTP_STATUSES:
                 if status >= 400:
                     raise RuntimeError(f"Non-retryable UK-AIR HTTP {status}: {endpoint}")
                 return response
-            failure_class = f"http_{status}" if status < 500 else "http_5xx"
+            else:
+                failure_class = f"http_{status}" if status < 500 else "http_5xx"
             response.close()
         except (requests.Timeout, requests.ConnectionError) as exc:
             # TLS/proxy configuration errors are not evidence of a temporary source outage.
@@ -407,7 +555,7 @@ def acquire_catalogue(
     resolved_csv_url = csv_url
     if not resolved_csv_url:
         search_response = request_with_retry(
-            session, search_url, timeout=timeout, retries=retries
+            session, search_url, timeout=timeout, retries=retries, catalogue_search=True
         )
         resolved_csv_url = find_catalogue_csv_url(search_response.text, search_url)
     csv_response = request_with_retry(
