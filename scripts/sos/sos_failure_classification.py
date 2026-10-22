@@ -26,7 +26,7 @@ def response_diagnostics(response: requests.Response) -> str:
 
 
 def invalid_json_unavailability_reason(response: requests.Response) -> Optional[str]:
-    """Recognise only empty 200s or explicit outage HTML, never arbitrary bad JSON.
+    """Recognise only explicit outage HTML, never empty bodies or arbitrary bad JSON.
 
     Redirects and authentication/access indicators are ambiguous even when the
     final page mentions maintenance. Large/unfamiliar pages stay fail-closed.
@@ -41,7 +41,8 @@ def invalid_json_unavailability_reason(response: requests.Response) -> Optional[
         return None
     body = response.content
     if not body.strip():
-        return "empty_json_response"
+        # Neither an empty 200 nor its media type positively identifies an outage.
+        return None
     if len(body) > 16384:
         return None
     text = body.decode("utf-8", errors="replace").lower()

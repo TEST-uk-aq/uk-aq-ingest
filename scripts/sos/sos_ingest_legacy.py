@@ -671,12 +671,19 @@ class UkAirClient:
         timeout: int = 60,
         retries: int = 3,
         raw_recorder: Optional[RawPayloadRecorder] = None,
+        *,
+        allow_invalid_response_isolation: bool = False,
     ):
         self.base_url = base_url
         self.timeout = timeout
         self.retries = retries
         self.session = requests.Session()
         self.raw_recorder = raw_recorder
+        self._invalid_response_isolation_allowed = allow_invalid_response_isolation
+
+    def begin_reference_writes(self) -> None:
+        """Permanently close the new isolation path before any write is attempted."""
+        self._invalid_response_isolation_allowed = False
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         url = f"{self.base_url}/{path.lstrip('/')}"
@@ -728,14 +735,16 @@ class UkAirClient:
                 data = resp.json()
             except requests.exceptions.JSONDecodeError:
                 reason = invalid_json_unavailability_reason(resp)
+                isolatable = reason is not None and self._invalid_response_isolation_allowed
                 failure = (
                     f"JSONDecodeError {response_label}; "
                     f"temporary_upstream={str(reason is not None).lower()}; "
+                    f"isolation_allowed={str(isolatable).lower()}; "
                     f"reason={reason or 'unrecognised_invalid_json'}"
                 )
                 if self._retry_failed(attempt, failure):
                     continue
-                if reason is not None:
+                if isolatable:
                     raise SosUpstreamUnavailableError(
                         f"UK-AIR SOS invalid response after retries: {failure}"
                     ) from None
@@ -1726,6 +1735,10 @@ class UkAirIngestor:
             category = props.get("category") if isinstance(props.get("category"), dict) else None
             if category:
                 category_items.append(category)
+        # discover_service's connector lookup is read-only. This is the first
+        # reference-write attempt; keep later source failures fatal even if a
+        # write fails or has an ambiguous result.
+        self.client.begin_reference_writes()
         category_map = self.writer.upsert_reference_table(
             "categories",
             "category_ref",
@@ -2934,7 +2947,10 @@ def main() -> None:
     args = parse_args()
     _configure_logging(args.log_level, DEFAULT_FILE_LOG_LEVEL)
     raw_session = _prepare_raw_dropbox_session(args)
-    client = UkAirClient(raw_recorder=raw_session.recorder if raw_session else None)
+    client = UkAirClient(
+        raw_recorder=raw_session.recorder if raw_session else None,
+        allow_invalid_response_isolation=args.discover,
+    )
     writer = SupabaseWriter()
     error_logger = ErrorLogger(writer.client)
     ingestor = UkAirIngestor(client, writer, error_logger)

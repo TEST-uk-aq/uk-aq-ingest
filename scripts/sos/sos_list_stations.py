@@ -245,11 +245,23 @@ def _select_station_row(
 
 
 class UkAirClient:
-    def __init__(self, base_url: str = SOS_BASE_URL, timeout: int = 60, retries: int = 3):
+    def __init__(
+        self,
+        base_url: str = SOS_BASE_URL,
+        timeout: int = 60,
+        retries: int = 3,
+        *,
+        allow_invalid_response_isolation: bool = False,
+    ):
         self.base_url = base_url
         self.timeout = timeout
         self.retries = retries
         self.session = requests.Session()
+        self._invalid_response_isolation_allowed = allow_invalid_response_isolation
+
+    def begin_reference_writes(self) -> None:
+        """Permanently close the new isolation path before any write is attempted."""
+        self._invalid_response_isolation_allowed = False
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         url = f"{self.base_url}/{path.lstrip('/')}"
@@ -286,14 +298,16 @@ class UkAirClient:
                 return resp.json()
             except requests.exceptions.JSONDecodeError:
                 reason = invalid_json_unavailability_reason(resp)
+                isolatable = reason is not None and self._invalid_response_isolation_allowed
                 failure = (
                     f"JSONDecodeError {response_label}; "
                     f"temporary_upstream={str(reason is not None).lower()}; "
+                    f"isolation_allowed={str(isolatable).lower()}; "
                     f"reason={reason or 'unrecognised_invalid_json'}"
                 )
                 if self._retry_failed(attempt, failure):
                     continue
-                if reason is not None:
+                if isolatable:
                     raise SosUpstreamUnavailableError(
                         f"UK-AIR SOS invalid response after retries: {failure}"
                     ) from None
@@ -1440,7 +1454,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     run_at = utcnow()
-    client = UkAirClient()
+    client = UkAirClient(allow_invalid_response_isolation=args.to_supabase)
     services = client.services()
     if not services:
         raise RuntimeError("No services returned from UK-AIR SOS.")
@@ -1499,6 +1513,7 @@ def main() -> None:
     writer: Optional[SupabaseWriter] = None
     if args.to_supabase:
         writer = SupabaseWriter()
+        client.begin_reference_writes()
         connector_id = writer.upsert_connectors(services)
         if connector_id is None:
             raise RuntimeError("Failed to resolve connector id for UK-AIR SOS.")
