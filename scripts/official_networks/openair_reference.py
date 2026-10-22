@@ -171,6 +171,7 @@ def load_openair_rows(metadata_url: str) -> List[Dict[str, Any]]:
                 try:
                     os.unlink(path)
                 except OSError:
+                    # Best-effort cleanup must not mask the source/reader error.
                     pass
         # Parsed-frame/schema/application failures are outside the retry boundary.
         columns = set(frame.columns)

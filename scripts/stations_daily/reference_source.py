@@ -99,6 +99,7 @@ def acquire_reference_bytes(
 ) -> bytes:
     source_url = _source_url(url)
     current_url = source_url
+    body: Optional[bytearray] = None
     try:
         for hop in range(3):
             if before_request is not None:
@@ -288,4 +289,6 @@ def acquire_reference_bytes(
         raise SourceUnavailable(
             "upstream_timeout" if timeout else "upstream_connection"
         ) from None
+    if body is None:
+        raise SourceResponseError("Reference acquisition did not produce a response body")
     return bytes(body)
