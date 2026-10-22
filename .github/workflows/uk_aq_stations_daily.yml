@@ -705,7 +705,7 @@ jobs:
               && process.env.REFRESH_UKAIR_BC_EXIT_CODE === "75"
               && process.env.REFRESH_UKAIR_BC_UPSTREAM_UNAVAILABLE === "true") {
             const failureClass = process.env.REFRESH_UKAIR_BC_FAILURE_CLASS;
-            const allowedClasses = new Set(["upstream_timeout", "upstream_connection", "http_408", "http_429", "http_5xx"]);
+            const allowedClasses = new Set(["upstream_timeout", "upstream_connection", "http_408", "http_429", "http_5xx", "maintenance_redirect"]);
             warnings.push({
               code: "uk_air_bc_reference_refresh_failed",
               reason: "UK-AIR Black Carbon reference refresh was temporarily unavailable; existing safe reference data were retained.",
