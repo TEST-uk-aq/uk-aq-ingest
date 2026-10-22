@@ -359,14 +359,58 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Upsert stations into Supabase (requires SUPABASE_URL and SB_SECRET_KEY).",
     )
+    parser.add_argument("--daily-stations-isolate-source-failure", action="store_true")
     return parser.parse_args()
 
 
-def main() -> None:
+def load_daily_export(client: SensorCommunityClient) -> List[Dict[str, Any]]:
+    from scripts.stations_daily.reference_source import SOURCE_ATTEMPTS, SOURCE_RETRY_DELAYS, SourceUnavailable, acquire_reference_bytes
+
+    for attempt in range(1, SOURCE_ATTEMPTS + 1):
+        try:
+            body = acquire_reference_bytes(
+                client.session, f"{client.base_url}/airrohr/v1/filter/country={SCOMM_COUNTRY}",
+                expected_format="json",
+            )
+        except SourceUnavailable as exc:
+            LOG.warning("Sensor.Community export attempt=%s/%s failure_class=%s", attempt, SOURCE_ATTEMPTS, exc.failure_class)
+            if attempt == SOURCE_ATTEMPTS:
+                raise SourceUnavailable(exc.failure_class, attempt) from None
+            time.sleep(SOURCE_RETRY_DELAYS[attempt - 1])
+            continue
+        payload = json.loads(body)
+        if not isinstance(payload, list) or not payload or any(
+            not isinstance(row, dict) or not isinstance(row.get("location"), dict)
+            or not (isinstance(row.get("sensor"), dict) or row.get("sensor_id") or row.get("id"))
+            or not _normalize_station_payload(row).get("station_ref") for row in payload
+        ):
+            raise RuntimeError("Empty or unsupported Sensor.Community country-feed schema")
+        return payload
+    raise AssertionError("unreachable")
+
+
+def main() -> int:
     args = parse_args()
+    if args.daily_stations_isolate_source_failure and (args.to_supabase or SCOMM_CONNECTOR_CODE != "sensorcommunity"):
+        raise RuntimeError("Daily Stations source isolation permits only the read-only Sensor.Community export")
     run_at = utcnow()
     client = SensorCommunityClient()
-    stations = client.stations()
+    if args.daily_stations_isolate_source_failure:
+        from scripts.stations_daily.reference_source import SourceUnavailable
+        try:
+            stations = load_daily_export(client)
+        except SourceUnavailable as exc:
+            print("REFERENCE_SUMMARY_JSON " + json.dumps({
+                "connector_code": "sensorcommunity", "ok": False,
+                "failure_class": exc.failure_class, "attempts": exc.attempts,
+                "reason": "The optional Sensor.Community source export could not be refreshed; no authoritative reference writes were attempted.",
+            }, sort_keys=True), flush=True)
+            if os.getenv("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+                    handle.write(f"failure_class={exc.failure_class}\nread_only_export=true\n")
+            return 75
+    else:
+        stations = client.stations()
     if not stations:
         LOG.warning("No stations returned from Sensor.Community.")
 
@@ -375,6 +419,8 @@ def main() -> None:
         if args.no_filter
         else [s for s in stations if station_in_bbox_or_missing_coords(_station_stub(s), UK_BBOX)]
     )
+    if args.daily_stations_isolate_source_failure and not filtered:
+        raise RuntimeError("Sensor.Community country feed produced an empty filtered export")
     missing_coords = sum(
         1
         for station in filtered
@@ -422,6 +468,7 @@ def main() -> None:
         }
         _write_json(args.output, payload)
     LOG.info("Wrote %s", args.output)
+    return 0
 
 
 def _station_stub(station: Dict[str, Any]) -> Dict[str, Any]:
@@ -442,4 +489,8 @@ def chunked(values: List[str], size: int) -> Iterable[List[str]]:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        LOG.error("Sensor.Community station export failed (%s).", type(exc).__name__)
+        raise SystemExit(1)

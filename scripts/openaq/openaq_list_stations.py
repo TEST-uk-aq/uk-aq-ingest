@@ -13,6 +13,7 @@ import csv
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -176,12 +177,16 @@ class OpenAQClient:
         timeout: int = 60,
         retries: int = 3,
         budget_writer: Optional["DbWriter"] = None,
+        daily_stations_source_isolation: bool = False,
     ) -> None:
         if not OPENAQ_API_KEY:
             raise RuntimeError("OPENAQ_API_KEY is required.")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
+        self.daily_stations_source_isolation = daily_stations_source_isolation
+        if daily_stations_source_isolation and OPENAQ_SHARED_BUDGET_FAIL_OPEN:
+            raise RuntimeError("Daily Stations isolation requires fail-closed shared-budget configuration")
         self.last_request_at = 0.0
         self.min_interval_seconds = 0.0
         if OPENAQ_RATE_LIMIT_PER_MIN > 0:
@@ -397,7 +402,103 @@ class OpenAQClient:
     def _sleep(self, attempt: int) -> None:
         time.sleep(min(30, 2**attempt))
 
+    def _daily_catalogue_page(self, params: Dict[str, Any]) -> Any:
+        from scripts.stations_daily.reference_source import SourceUnavailable, acquire_reference_bytes
+
+        last_response = None
+
+        def before_request() -> None:
+            # Every HTTP attempt, including a validated redirect, reserves its
+            # own shared token and respects the existing local request interval.
+            self._reserve_shared_budget()
+            self._respect_min_interval()
+
+        def observe_response(response: Any) -> None:
+            nonlocal last_response
+            last_response = response
+            self.last_request_at = time.time()
+            if response.status_code == 200:
+                self._maybe_sleep_for_rate_limit(response)
+
+        for attempt in range(1, self.retries + 1):
+            last_response = None
+            try:
+                body = acquire_reference_bytes(
+                    self.session, f"{self.base_url}/locations", params=params,
+                    expected_format="json", timeout=self.timeout,
+                    before_request=before_request, response_observer=observe_response,
+                )
+            except SourceUnavailable as exc:
+                LOG.warning("OpenAQ catalogue attempt=%s/%s failure_class=%s", attempt, self.retries, exc.failure_class)
+                if attempt == self.retries:
+                    raise SourceUnavailable(exc.failure_class, attempt) from None
+                if exc.failure_class == "http_429" and last_response is not None:
+                    delay = self._rate_limit_delay_seconds(self._rate_limit_info(last_response).get("reset")) or min(60, 2**attempt)
+                    time.sleep(delay)
+                else:
+                    self._sleep(attempt)
+                continue
+            # Bad non-HTML JSON is a fatal format error, never a source retry.
+            return json.loads(body)
+        raise AssertionError("unreachable")
+
+    def _daily_locations(self, bbox: str, limit: int, max_pages: Optional[int]) -> List[Dict[str, Any]]:
+        if limit <= 0 or max_pages:
+            raise RuntimeError("Daily Stations requires a positive page size and an unlimited complete catalogue")
+        page_size, page = min(limit, 1000), 1
+        results: List[Dict[str, Any]] = []
+        location_ids, sensor_ids = set(), set()
+        expected_count = None
+        lower_bound = None
+        while True:
+            payload = self._daily_catalogue_page({"bbox": bbox, "limit": page_size, "page": page})
+            if not isinstance(payload, dict) or not isinstance(payload.get("results"), list) or not isinstance(payload.get("meta"), dict):
+                raise RuntimeError("Invalid OpenAQ catalogue page schema")
+            rows, meta = payload["results"], payload["meta"]
+            if str(meta.get("page")) != str(page) or str(meta.get("limit")) != str(page_size) or len(rows) > page_size:
+                raise RuntimeError("Inconsistent OpenAQ pagination metadata")
+            found = meta.get("found")
+            if isinstance(found, int) and not isinstance(found, bool) and found >= 0:
+                if expected_count is not None and expected_count != found:
+                    raise RuntimeError("OpenAQ catalogue count changed between pages")
+                expected_count = found
+            elif isinstance(found, str) and re.fullmatch(r">\s*[0-9]+", found):
+                lower_bound = int(found.lstrip("> "))
+            else:
+                raise RuntimeError("Ambiguous OpenAQ catalogue count")
+            for location in rows:
+                if not isinstance(location, dict) or not str(location.get("id") or "").isdigit() or int(location["id"]) <= 0 or not isinstance(location.get("sensors"), list):
+                    raise RuntimeError("Invalid OpenAQ catalogue location schema")
+                location_id = str(location["id"])
+                if location_id in location_ids:
+                    raise RuntimeError("Repeated OpenAQ location across catalogue pages")
+                location_ids.add(location_id)
+                for sensor in location["sensors"]:
+                    if (
+                        not isinstance(sensor, dict) or not str(sensor.get("id") or "").isdigit()
+                        or int(sensor["id"]) <= 0 or not isinstance(sensor.get("parameter"), dict)
+                        or not isinstance(sensor["parameter"].get("name"), str) or not sensor["parameter"]["name"].strip()
+                        or not isinstance(sensor["parameter"].get("units"), str) or not sensor["parameter"]["units"].strip()
+                        or str(sensor["id"]) in sensor_ids
+                    ):
+                        raise RuntimeError("Invalid or contradictory OpenAQ sensor schema")
+                    sensor_ids.add(str(sensor["id"]))
+            results.extend(rows)
+            if expected_count is not None and len(results) > expected_count:
+                raise RuntimeError("OpenAQ catalogue exceeds its declared count")
+            if len(rows) < page_size or (expected_count is not None and len(results) == expected_count):
+                if (
+                    not results or not sensor_ids
+                    or (expected_count is not None and len(results) != expected_count)
+                    or (lower_bound is not None and len(results) <= lower_bound)
+                ):
+                    raise RuntimeError("Empty or incomplete OpenAQ catalogue")
+                return results
+            page += 1
+
     def list_locations(self, bbox: str, limit: int, max_pages: Optional[int]) -> List[Dict[str, Any]]:
+        if self.daily_stations_source_isolation:
+            return self._daily_locations(bbox, limit, max_pages)
         results: List[Dict[str, Any]] = []
         page = 1
         while True:
@@ -1016,11 +1117,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Temporarily disable connector polling while the script runs (requires --to-supabase).",
     )
+    parser.add_argument("--daily-stations-isolate-source-failure", action="store_true")
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
+    if args.daily_stations_isolate_source_failure and (
+        not args.to_supabase or args.toggle_polling or args.max_pages != 0
+        or OPENAQ_CONNECTOR_CODE != "openaq" or OPENAQ_SERVICE_REF != "openaq"
+    ):
+        raise RuntimeError("Daily Stations isolation requires the full configured OpenAQ import and workflow polling restoration")
     run_at = utcnow()
     bbox_str, bbox_map = parse_bbox(args.bbox)
 
@@ -1049,8 +1156,17 @@ def main() -> None:
                 LOG.info("Disabled OpenAQ polling while listing stations.")
 
     try:
-        client = OpenAQClient(budget_writer=writer)
-        locations = client.list_locations(bbox_str, args.limit, args.max_pages or None)
+        client = OpenAQClient(
+            budget_writer=writer, daily_stations_source_isolation=args.daily_stations_isolate_source_failure,
+        )
+        from scripts.stations_daily.reference_source import SourceUnavailable
+        try:
+            locations = client.list_locations(bbox_str, args.limit, args.max_pages or None)
+        except SourceUnavailable as exc:
+            if not args.daily_stations_isolate_source_failure:
+                raise
+            from scripts.stations_daily.openaq_reference_isolation import retained_source_failure_exit
+            return retained_source_failure_exit(writer.conn, exc)
         LOG.info("Fetched %s locations from OpenAQ.", len(locations))
 
         normalized = [normalize_location(location) for location in locations]
@@ -1122,6 +1238,7 @@ def main() -> None:
             LOG.info("Restored OpenAQ polling to %s.", original_poll_enabled)
         if writer:
             writer.close()
+    return 0
 
 
 def chunked(values: List[str], size: int) -> Iterable[List[str]]:
@@ -1132,4 +1249,8 @@ def chunked(values: List[str], size: int) -> Iterable[List[str]]:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        LOG.error("OpenAQ station import failed (%s).", type(exc).__name__)
+        raise SystemExit(1)

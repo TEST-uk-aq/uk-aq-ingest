@@ -321,34 +321,110 @@ jobs:
           exit 1
 
       - name: Sync Breathe London Communities stations
+        id: sync_blondon_communities_stations
+        if: always() && job.status == 'success'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
           BLONDON_COMMUNITIES_API_KEY: ${{ secrets.BLONDON_COMMUNITIES_API_KEY }}
         run: |
-          python3 scripts/blondon_communities/blondon_communities_list_stations.py --to-supabase
+          set +e
+          python3 scripts/blondon_communities/blondon_communities_list_stations.py \
+            --to-supabase --daily-stations-isolate-source-failure
+          exit_code=$?
+          set -e
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$exit_code" -eq 75 ]; then
+            echo "isolated_source_failure=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Reject non-isolated Breathe London Communities station import failure
+        if: >-
+          always() && steps.sync_blondon_communities_stations.outcome == 'failure' &&
+          (steps.sync_blondon_communities_stations.outputs.exit_code != '75' ||
+           steps.sync_blondon_communities_stations.outputs.isolated_source_failure != 'true' ||
+           steps.sync_blondon_communities_stations.outputs.retained_references_verified != 'true')
+        run: |
+          echo "ERROR: Breathe London Communities station import failed for a non-isolated reason."
+          exit 1
 
       - name: Discover Breathe London Communities timeseries
+        id: discover_blondon_communities_timeseries
+        if: success() && steps.sync_blondon_communities_stations.outcome == 'success'
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
         run: |
           node scripts/blondon_communities/blondon_communities_discover_timeseries.mjs
 
+      - name: Require complete Breathe London Communities reference stage
+        if: >-
+          always() && job.status == 'success' &&
+          !((steps.sync_blondon_communities_stations.outcome == 'success' &&
+             steps.discover_blondon_communities_timeseries.outcome == 'success') ||
+            (steps.sync_blondon_communities_stations.outcome == 'failure' &&
+             steps.sync_blondon_communities_stations.outputs.exit_code == '75' &&
+             steps.sync_blondon_communities_stations.outputs.isolated_source_failure == 'true' &&
+             steps.sync_blondon_communities_stations.outputs.retained_references_verified == 'true' &&
+             steps.discover_blondon_communities_timeseries.outcome == 'skipped'))
+        run: |
+          echo "ERROR: Breathe London Communities discovery or complete retained-reference verification is required."
+          exit 1
+
       - name: Sync Breathe London Nodes stations
+        id: sync_blondon_nodes_stations
+        if: always() && job.status == 'success'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
           BLONDON_NODES_API_KEY: ${{ secrets.BLONDON_NODES_API_KEY }}
         run: |
-          python3 scripts/blondon_nodes/blondon_nodes_list_stations.py --to-supabase
+          set +e
+          python3 scripts/blondon_nodes/blondon_nodes_list_stations.py \
+            --to-supabase --daily-stations-isolate-source-failure
+          exit_code=$?
+          set -e
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$exit_code" -eq 75 ]; then
+            echo "isolated_source_failure=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Reject non-isolated Breathe London Nodes station import failure
+        if: >-
+          always() && steps.sync_blondon_nodes_stations.outcome == 'failure' &&
+          (steps.sync_blondon_nodes_stations.outputs.exit_code != '75' ||
+           steps.sync_blondon_nodes_stations.outputs.isolated_source_failure != 'true' ||
+           steps.sync_blondon_nodes_stations.outputs.retained_references_verified != 'true')
+        run: |
+          echo "ERROR: Breathe London Nodes station import failed for a non-isolated reason."
+          exit 1
 
       - name: Discover Breathe London Nodes timeseries
+        id: discover_blondon_nodes_timeseries
+        if: success() && steps.sync_blondon_nodes_stations.outcome == 'success'
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
         run: |
           python3 scripts/blondon_nodes/blondon_nodes_discover_timeseries.py
+
+      - name: Require complete Breathe London Nodes reference stage
+        if: >-
+          always() && job.status == 'success' &&
+          !((steps.sync_blondon_nodes_stations.outcome == 'success' &&
+             steps.discover_blondon_nodes_timeseries.outcome == 'success') ||
+            (steps.sync_blondon_nodes_stations.outcome == 'failure' &&
+             steps.sync_blondon_nodes_stations.outputs.exit_code == '75' &&
+             steps.sync_blondon_nodes_stations.outputs.isolated_source_failure == 'true' &&
+             steps.sync_blondon_nodes_stations.outputs.retained_references_verified == 'true' &&
+             steps.discover_blondon_nodes_timeseries.outcome == 'skipped'))
+        run: |
+          echo "ERROR: Breathe London Nodes discovery or complete retained-reference verification is required."
+          exit 1
 
       # Script needs updating before LAQN can start polling
       # - name: Sync LAQN stations
@@ -360,7 +436,8 @@ jobs:
 
       - name: Sync OpenAQ stations
         id: sync_openaq_stations
-        if: steps.pause_openaq_polling.outputs.connector_found == '1' && steps.pause_openaq_polling.outputs.poll_was_enabled == '1'
+        if: always() && job.status == 'success' && steps.pause_openaq_polling.outputs.connector_found == '1' && steps.pause_openaq_polling.outputs.poll_was_enabled == '1'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
@@ -373,7 +450,16 @@ jobs:
           OPENAQ_SHARED_BUDGET_HOUR_LIMIT: ${{ vars.OPENAQ_SHARED_BUDGET_HOUR_LIMIT || '1900' }}
           OPENAQ_SHARED_BUDGET_FAIL_OPEN: ${{ vars.OPENAQ_SHARED_BUDGET_FAIL_OPEN || 'false' }}
         run: |
-          python3 scripts/openaq/openaq_list_stations.py --to-supabase
+          set +e
+          python3 scripts/openaq/openaq_list_stations.py \
+            --to-supabase --daily-stations-isolate-source-failure
+          exit_code=$?
+          set -e
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$exit_code" -eq 75 ]; then
+            echo "isolated_source_failure=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
 
       - name: Skip OpenAQ stations sync (polling already off or connector missing)
         if: steps.pause_openaq_polling.outputs.connector_found != '1' || steps.pause_openaq_polling.outputs.poll_was_enabled != '1'
@@ -431,19 +517,51 @@ jobs:
             echo "ERROR: OpenAQ polling was paused, but Sync OpenAQ stations was skipped."
             exit 1
           fi
-          if [ "${{ steps.resume_openaq_polling.conclusion }}" = "skipped" ]; then
-            echo "ERROR: OpenAQ polling was paused, but Resume OpenAQ polling was skipped."
+          if [ "${{ steps.resume_openaq_polling.outcome }}" != "success" ]; then
+            echo "ERROR: OpenAQ polling was paused, but restoration did not succeed."
             exit 1
           fi
 
-      - name: Discover Sensor.Community stations (optional)
-        if: env.RUN_SCOMM_STATIONS_EXPORT == '1'
+      - name: Reject non-isolated OpenAQ station import failure
+        if: >-
+          always() && steps.sync_openaq_stations.outcome == 'failure' &&
+          (steps.sync_openaq_stations.outputs.exit_code != '75' ||
+           steps.sync_openaq_stations.outputs.isolated_source_failure != 'true' ||
+           steps.sync_openaq_stations.outputs.retained_references_verified != 'true')
         run: |
+          echo "ERROR: OpenAQ station import failed for a non-isolated reason."
+          exit 1
+
+      - name: Discover Sensor.Community stations (optional)
+        id: export_sensorcommunity_stations
+        continue-on-error: true
+        if: always() && job.status == 'success' && env.RUN_SCOMM_STATIONS_EXPORT == '1'
+        run: |
+          set +e
           python3 scripts/sensorcommunity/sensorcommunity_list_stations.py \
-            --output "${SCOMM_CONNECTOR_CODE}_stations.json"
+            --output "${SCOMM_CONNECTOR_CODE}_stations.json" \
+            --daily-stations-isolate-source-failure
+          exit_code=$?
+          set -e
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$exit_code" -eq 75 ]; then
+            echo "isolated_source_failure=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Reject non-isolated Sensor.Community export failure
+        if: >-
+          always() && steps.export_sensorcommunity_stations.outcome == 'failure' &&
+          (steps.export_sensorcommunity_stations.outputs.exit_code != '75' ||
+           steps.export_sensorcommunity_stations.outputs.isolated_source_failure != 'true' ||
+           steps.export_sensorcommunity_stations.outputs.read_only_export != 'true')
+        run: |
+          echo "ERROR: Optional Sensor.Community export failed for a non-isolated reason."
+          exit 1
 
 
       - name: Backfill Sensor.Community timeseries phenomena
+        id: backfill_sensorcommunity_phenomena
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
@@ -451,31 +569,100 @@ jobs:
           python3 scripts/sensorcommunity/sensorcommunity_backfill_timeseries_phenomena.py
 
       - name: Refresh WAQN references from OpenAir metadata
+        id: refresh_waqn_reference
+        if: always() && job.status == 'success'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
         run: |
+          set +e
           python3 scripts/official_networks/openair_reference.py \
             --connector-code waqn \
-            --skip-if-unconfigured
+            --skip-if-unconfigured \
+            --daily-stations-isolate-source-failure
+          exit_code=$?
+          set -e
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$exit_code" -eq 75 ]; then
+            echo "isolated_source_failure=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Reject non-isolated WAQN reference failure
+        if: >-
+          always() &&
+          steps.refresh_waqn_reference.outcome == 'failure' &&
+          (steps.refresh_waqn_reference.outputs.exit_code != '75' ||
+           steps.refresh_waqn_reference.outputs.isolated_source_failure != 'true' ||
+           steps.refresh_waqn_reference.outputs.retained_references_verified != 'true')
+        run: |
+          echo "ERROR: WAQN reference refresh failed for a non-isolated reason."
+          exit 1
 
       - name: Refresh SAQN references from OpenAir metadata
+        id: refresh_saqn_reference
+        if: always() && job.status == 'success'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
         run: |
+          set +e
           python3 scripts/official_networks/openair_reference.py \
             --connector-code saqn \
-            --skip-if-unconfigured
+            --skip-if-unconfigured \
+            --daily-stations-isolate-source-failure
+          exit_code=$?
+          set -e
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$exit_code" -eq 75 ]; then
+            echo "isolated_source_failure=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Reject non-isolated SAQN reference failure
+        if: >-
+          always() &&
+          steps.refresh_saqn_reference.outcome == 'failure' &&
+          (steps.refresh_saqn_reference.outputs.exit_code != '75' ||
+           steps.refresh_saqn_reference.outputs.isolated_source_failure != 'true' ||
+           steps.refresh_saqn_reference.outputs.retained_references_verified != 'true')
+        run: |
+          echo "ERROR: SAQN reference refresh failed for a non-isolated reason."
+          exit 1
 
       - name: Refresh Northern Ireland references from OpenAir metadata
+        id: refresh_ni_reference
+        if: always() && job.status == 'success'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
         run: |
+          set +e
           python3 scripts/official_networks/openair_reference.py \
             --connector-code ni \
-            --skip-if-unconfigured
+            --skip-if-unconfigured \
+            --daily-stations-isolate-source-failure
+          exit_code=$?
+          set -e
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$exit_code" -eq 75 ]; then
+            echo "isolated_source_failure=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Reject non-isolated Northern Ireland reference failure
+        if: >-
+          always() &&
+          steps.refresh_ni_reference.outcome == 'failure' &&
+          (steps.refresh_ni_reference.outputs.exit_code != '75' ||
+           steps.refresh_ni_reference.outputs.isolated_source_failure != 'true' ||
+           steps.refresh_ni_reference.outputs.retained_references_verified != 'true')
+        run: |
+          echo "ERROR: Northern Ireland reference refresh failed for a non-isolated reason."
+          exit 1
 
       - name: Resolve canonical physical monitoring sites
         env:
@@ -651,12 +838,61 @@ jobs:
           python3 scripts/uk_aq_export_stations_dropbox.py
 
       - name: Sync uk_aq_core reference tables to Obs AQI DB
+        id: mirror_core_references
         if: >-
           success() &&
           (steps.refresh_ukair_bc_reference.outcome == 'success' ||
            (steps.refresh_ukair_bc_reference.outcome == 'failure' &&
             steps.refresh_ukair_bc_reference.outputs.exit_code == '75' &&
-            steps.refresh_ukair_bc_reference.outputs.upstream_unavailable == 'true'))
+            steps.refresh_ukair_bc_reference.outputs.upstream_unavailable == 'true')) &&
+          (steps.refresh_waqn_reference.outcome == 'success' ||
+           (steps.refresh_waqn_reference.outcome == 'failure' &&
+            steps.refresh_waqn_reference.outputs.exit_code == '75' &&
+            steps.refresh_waqn_reference.outputs.isolated_source_failure == 'true' &&
+            steps.refresh_waqn_reference.outputs.retained_references_verified == 'true')) &&
+          (steps.refresh_saqn_reference.outcome == 'success' ||
+           (steps.refresh_saqn_reference.outcome == 'failure' &&
+            steps.refresh_saqn_reference.outputs.exit_code == '75' &&
+            steps.refresh_saqn_reference.outputs.isolated_source_failure == 'true' &&
+            steps.refresh_saqn_reference.outputs.retained_references_verified == 'true')) &&
+          (steps.refresh_ni_reference.outcome == 'success' ||
+           (steps.refresh_ni_reference.outcome == 'failure' &&
+            steps.refresh_ni_reference.outputs.exit_code == '75' &&
+            steps.refresh_ni_reference.outputs.isolated_source_failure == 'true' &&
+            steps.refresh_ni_reference.outputs.retained_references_verified == 'true')) &&
+          ((steps.sync_blondon_communities_stations.outcome == 'success' &&
+            steps.discover_blondon_communities_timeseries.outcome == 'success') ||
+           (steps.sync_blondon_communities_stations.outcome == 'failure' &&
+            steps.sync_blondon_communities_stations.outputs.exit_code == '75' &&
+            steps.sync_blondon_communities_stations.outputs.isolated_source_failure == 'true' &&
+            steps.sync_blondon_communities_stations.outputs.retained_references_verified == 'true' &&
+            steps.discover_blondon_communities_timeseries.outcome == 'skipped')) &&
+          ((steps.sync_blondon_nodes_stations.outcome == 'success' &&
+            steps.discover_blondon_nodes_timeseries.outcome == 'success') ||
+           (steps.sync_blondon_nodes_stations.outcome == 'failure' &&
+            steps.sync_blondon_nodes_stations.outputs.exit_code == '75' &&
+            steps.sync_blondon_nodes_stations.outputs.isolated_source_failure == 'true' &&
+            steps.sync_blondon_nodes_stations.outputs.retained_references_verified == 'true' &&
+            steps.discover_blondon_nodes_timeseries.outcome == 'skipped')) &&
+          ((steps.pause_openaq_polling.outputs.poll_was_enabled != '1' &&
+            steps.sync_openaq_stations.outcome == 'skipped') ||
+           (steps.pause_openaq_polling.outputs.connector_found == '1' &&
+            steps.pause_openaq_polling.outputs.poll_was_enabled == '1' &&
+            steps.resume_openaq_polling.outcome == 'success' &&
+            (steps.sync_openaq_stations.outcome == 'success' ||
+             (steps.sync_openaq_stations.outcome == 'failure' &&
+              steps.sync_openaq_stations.outputs.exit_code == '75' &&
+              steps.sync_openaq_stations.outputs.isolated_source_failure == 'true' &&
+              steps.sync_openaq_stations.outputs.retained_references_verified == 'true')))) &&
+          steps.backfill_sensorcommunity_phenomena.outcome == 'success' &&
+          ((env.RUN_SCOMM_STATIONS_EXPORT != '1' &&
+            steps.export_sensorcommunity_stations.outcome == 'skipped') ||
+           (env.RUN_SCOMM_STATIONS_EXPORT == '1' &&
+            (steps.export_sensorcommunity_stations.outcome == 'success' ||
+             (steps.export_sensorcommunity_stations.outcome == 'failure' &&
+              steps.export_sensorcommunity_stations.outputs.exit_code == '75' &&
+              steps.export_sensorcommunity_stations.outputs.isolated_source_failure == 'true' &&
+              steps.export_sensorcommunity_stations.outputs.read_only_export == 'true'))))
         env:
           SRC_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SRC_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
@@ -668,7 +904,13 @@ jobs:
         run: |
           python3 scripts/stations_daily/sync_obs_aqidb_uk_aq_core.py
 
-      - name: Build isolated UK-AIR reference warning summary
+      - name: Require successful final reference mirror
+        if: always() && job.status == 'success' && steps.mirror_core_references.outcome != 'success'
+        run: |
+          echo "ERROR: Required final reference mirror did not succeed."
+          exit 1
+
+      - name: Build isolated reference warning summary
         if: always()
         env:
           SYNC_SOS_STATIONS_OUTCOME: ${{ steps.sync_sos_stations.outcome }}
@@ -679,6 +921,41 @@ jobs:
           REFRESH_UKAIR_BC_EXIT_CODE: ${{ steps.refresh_ukair_bc_reference.outputs.exit_code }}
           REFRESH_UKAIR_BC_UPSTREAM_UNAVAILABLE: ${{ steps.refresh_ukair_bc_reference.outputs.upstream_unavailable }}
           REFRESH_UKAIR_BC_FAILURE_CLASS: ${{ steps.refresh_ukair_bc_reference.outputs.failure_class }}
+          REFRESH_WAQN_OUTCOME: ${{ steps.refresh_waqn_reference.outcome }}
+          REFRESH_WAQN_EXIT_CODE: ${{ steps.refresh_waqn_reference.outputs.exit_code }}
+          REFRESH_WAQN_ISOLATED_SOURCE_FAILURE: ${{ steps.refresh_waqn_reference.outputs.isolated_source_failure }}
+          REFRESH_WAQN_RETAINED_REFERENCES_VERIFIED: ${{ steps.refresh_waqn_reference.outputs.retained_references_verified }}
+          REFRESH_WAQN_FAILURE_CLASS: ${{ steps.refresh_waqn_reference.outputs.failure_class }}
+          REFRESH_SAQN_OUTCOME: ${{ steps.refresh_saqn_reference.outcome }}
+          REFRESH_SAQN_EXIT_CODE: ${{ steps.refresh_saqn_reference.outputs.exit_code }}
+          REFRESH_SAQN_ISOLATED_SOURCE_FAILURE: ${{ steps.refresh_saqn_reference.outputs.isolated_source_failure }}
+          REFRESH_SAQN_RETAINED_REFERENCES_VERIFIED: ${{ steps.refresh_saqn_reference.outputs.retained_references_verified }}
+          REFRESH_SAQN_FAILURE_CLASS: ${{ steps.refresh_saqn_reference.outputs.failure_class }}
+          REFRESH_NI_OUTCOME: ${{ steps.refresh_ni_reference.outcome }}
+          REFRESH_NI_EXIT_CODE: ${{ steps.refresh_ni_reference.outputs.exit_code }}
+          REFRESH_NI_ISOLATED_SOURCE_FAILURE: ${{ steps.refresh_ni_reference.outputs.isolated_source_failure }}
+          REFRESH_NI_RETAINED_REFERENCES_VERIFIED: ${{ steps.refresh_ni_reference.outputs.retained_references_verified }}
+          REFRESH_NI_FAILURE_CLASS: ${{ steps.refresh_ni_reference.outputs.failure_class }}
+          REFRESH_BLONDON_COMMUNITIES_OUTCOME: ${{ steps.sync_blondon_communities_stations.outcome }}
+          REFRESH_BLONDON_COMMUNITIES_EXIT_CODE: ${{ steps.sync_blondon_communities_stations.outputs.exit_code }}
+          REFRESH_BLONDON_COMMUNITIES_ISOLATED_SOURCE_FAILURE: ${{ steps.sync_blondon_communities_stations.outputs.isolated_source_failure }}
+          REFRESH_BLONDON_COMMUNITIES_RETAINED_REFERENCES_VERIFIED: ${{ steps.sync_blondon_communities_stations.outputs.retained_references_verified }}
+          REFRESH_BLONDON_COMMUNITIES_FAILURE_CLASS: ${{ steps.sync_blondon_communities_stations.outputs.failure_class }}
+          REFRESH_BLONDON_NODES_OUTCOME: ${{ steps.sync_blondon_nodes_stations.outcome }}
+          REFRESH_BLONDON_NODES_EXIT_CODE: ${{ steps.sync_blondon_nodes_stations.outputs.exit_code }}
+          REFRESH_BLONDON_NODES_ISOLATED_SOURCE_FAILURE: ${{ steps.sync_blondon_nodes_stations.outputs.isolated_source_failure }}
+          REFRESH_BLONDON_NODES_RETAINED_REFERENCES_VERIFIED: ${{ steps.sync_blondon_nodes_stations.outputs.retained_references_verified }}
+          REFRESH_BLONDON_NODES_FAILURE_CLASS: ${{ steps.sync_blondon_nodes_stations.outputs.failure_class }}
+          REFRESH_OPENAQ_OUTCOME: ${{ steps.sync_openaq_stations.outcome }}
+          REFRESH_OPENAQ_EXIT_CODE: ${{ steps.sync_openaq_stations.outputs.exit_code }}
+          REFRESH_OPENAQ_ISOLATED_SOURCE_FAILURE: ${{ steps.sync_openaq_stations.outputs.isolated_source_failure }}
+          REFRESH_OPENAQ_RETAINED_REFERENCES_VERIFIED: ${{ steps.sync_openaq_stations.outputs.retained_references_verified }}
+          REFRESH_OPENAQ_FAILURE_CLASS: ${{ steps.sync_openaq_stations.outputs.failure_class }}
+          EXPORT_SCOMM_OUTCOME: ${{ steps.export_sensorcommunity_stations.outcome }}
+          EXPORT_SCOMM_EXIT_CODE: ${{ steps.export_sensorcommunity_stations.outputs.exit_code }}
+          EXPORT_SCOMM_ISOLATED_SOURCE_FAILURE: ${{ steps.export_sensorcommunity_stations.outputs.isolated_source_failure }}
+          EXPORT_SCOMM_READ_ONLY_EXPORT: ${{ steps.export_sensorcommunity_stations.outputs.read_only_export }}
+          EXPORT_SCOMM_FAILURE_CLASS: ${{ steps.export_sensorcommunity_stations.outputs.failure_class }}
           SUPPLEMENTAL_SUMMARY_FILE: ${{ runner.temp }}/daily-stations-health-summary.json
         run: |
           node <<'NODE'
@@ -714,6 +991,46 @@ jobs:
               ...(allowedClasses.has(failureClass) ? { failure_class: failureClass } : {}),
             });
             console.warn("UK-AIR Black Carbon reference refresh warning recorded.");
+          }
+          const officialClasses = new Set([
+            "upstream_timeout", "upstream_connection", "http_408", "http_429", "http_500",
+            "http_502", "http_503", "http_504", "unexpected_source_html", "unreadable_rdata",
+          ]);
+          for (const code of ["waqn", "saqn", "ni", "blondon_communities", "blondon_nodes", "openaq"]) {
+            const prefix = `REFRESH_${code.toUpperCase()}_`;
+            if (process.env[`${prefix}OUTCOME`] !== "failure"
+                || process.env[`${prefix}EXIT_CODE`] !== "75"
+                || process.env[`${prefix}ISOLATED_SOURCE_FAILURE`] !== "true"
+                || process.env[`${prefix}RETAINED_REFERENCES_VERIFIED`] !== "true") continue;
+            const failureClass = process.env[`${prefix}FAILURE_CLASS`];
+            warnings.push({
+              code: `${code}_reference_refresh_failed`,
+              reason: code === "openaq"
+                ? "OpenAQ catalogue source refresh could not complete; existing verified reference rows were retained."
+                : code.startsWith("blondon_")
+                ? `${code} station catalogue could not be refreshed; the complete verified retained reference set was preserved.`
+                : failureClass === "unreadable_rdata"
+                ? `${code.toUpperCase()} OpenAir metadata source could not be read by the RData reader; existing verified reference rows were retained.`
+                : `${code.toUpperCase()} OpenAir reference source refresh could not complete; existing verified reference rows were retained.`,
+              connector_code: code,
+              stages: [code === "openaq" ? "sync_openaq_stations" : code.startsWith("blondon_") ? `sync_${code}_stations` : `refresh_${code}_reference`],
+              ...(officialClasses.has(failureClass) ? { failure_class: failureClass } : {}),
+            });
+            console.warn(`${code.toUpperCase()} reference refresh warning recorded.`);
+          }
+          if (process.env.EXPORT_SCOMM_OUTCOME === "failure"
+              && process.env.EXPORT_SCOMM_EXIT_CODE === "75"
+              && process.env.EXPORT_SCOMM_ISOLATED_SOURCE_FAILURE === "true"
+              && process.env.EXPORT_SCOMM_READ_ONLY_EXPORT === "true") {
+            const failureClass = process.env.EXPORT_SCOMM_FAILURE_CLASS;
+            warnings.push({
+              code: "sensorcommunity_station_export_failed",
+              reason: "The optional Sensor.Community source export could not be refreshed; no authoritative reference writes were attempted.",
+              connector_code: "sensorcommunity",
+              stages: ["export_sensorcommunity_stations"],
+              ...(officialClasses.has(failureClass) ? { failure_class: failureClass } : {}),
+            });
+            console.warn("Optional Sensor.Community station export warning recorded.");
           }
           const summary = warnings.length === 0 ? {} : { warnings };
           fs.writeFileSync(process.env.SUPPLEMENTAL_SUMMARY_FILE, JSON.stringify(summary));

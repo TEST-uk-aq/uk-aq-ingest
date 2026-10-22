@@ -67,11 +67,11 @@ def main() -> int:
         core.table("connectors")
         .select("id,connector_code")
         .eq("connector_code", str(args.connector_code))
-        .limit(1)
+        .limit(2)
         .execute()
     )
     connector_rows = connector_resp.data if hasattr(connector_resp, "data") else connector_resp.get("data")
-    if not connector_rows:
+    if not connector_rows or len(connector_rows) != 1:
         print(f"Connector not found for connector_code={args.connector_code}")
         return 1
     connector_id = int(connector_rows[0]["id"])
@@ -79,7 +79,7 @@ def main() -> int:
     uri_values = list(POLLUTANT_SUFFIXES.values())
     phenomena_resp = (
         core.table("phenomena")
-        .select("id,source_label")
+        .select("id,source_label,observed_property_id")
         .eq("connector_id", connector_id)
         .in_("source_label", uri_values)
         .execute()
@@ -92,10 +92,13 @@ def main() -> int:
     }
 
     missing_uris = [uri for uri in uri_values if uri not in phen_by_uri]
-    if missing_uris:
-        print(f"Missing phenomena rows for URIs: {', '.join(missing_uris)}")
+    if missing_uris or len(phen_by_uri) != len(phenomena_rows or []) or any(
+        row.get("observed_property_id") is None for row in (phenomena_rows or [])
+    ):
+        print("Missing, ambiguous or unmapped Sensor.Community phenomena; backfill denied.")
+        return 1
 
-    offset = 0
+    last_id = None
     updated = 0
     scanned = 0
     while True:
@@ -106,8 +109,12 @@ def main() -> int:
             .eq("service_ref", str(args.service_ref))
             .is_("phenomenon_id", None)
             .order("id", desc=False)
-            .range(offset, offset + batch_size - 1)
+            .limit(batch_size)
         )
+        # Updating phenomenon_id removes rows from this query. Keyset paging
+        # avoids skipping the next batch as the filtered result set shrinks.
+        if last_id is not None:
+            query = query.gt("id", last_id)
         resp = query.execute()
         rows = resp.data if hasattr(resp, "data") else resp.get("data")
         if not rows:
@@ -123,21 +130,47 @@ def main() -> int:
                     matched_uri = uri
                     break
             if not matched_uri:
-                continue
+                print("Unrecognised Sensor.Community timeseries mapping; backfill failed.")
+                return 1
             phenomenon_id = phen_by_uri.get(matched_uri)
             if not phenomenon_id:
-                continue
+                print("Required Sensor.Community phenomenon is missing; backfill failed.")
+                return 1
             ids_by_phenomenon.setdefault(phenomenon_id, []).append(int(row["id"]))
 
         for phenomenon_id, ids in ids_by_phenomenon.items():
-            core.table("timeseries").update({"phenomenon_id": phenomenon_id}).in_("id", ids).execute()
+            core.table("timeseries").update({"phenomenon_id": phenomenon_id}).eq(
+                "connector_id", connector_id
+            ).eq("service_ref", str(args.service_ref)).in_("id", ids).execute()
+            verified = core.table("timeseries").select(
+                "id,connector_id,service_ref,phenomenon_id"
+            ).in_("id", ids).execute()
+            verified_rows = verified.data if hasattr(verified, "data") else verified.get("data")
+            if (
+                len(verified_rows or []) != len(ids)
+                or {int(row["id"]) for row in (verified_rows or [])} != set(ids)
+                or any(
+                    int(row.get("phenomenon_id") or 0) != phenomenon_id
+                    or int(row.get("connector_id") or 0) != connector_id
+                    or row.get("service_ref") != str(args.service_ref)
+                    for row in (verified_rows or [])
+                )
+            ):
+                print("Incomplete Sensor.Community reference update; backfill failed.")
+                return 1
             updated += len(ids)
 
         if args.limit is not None and scanned >= int(args.limit):
             break
-        if len(rows) < batch_size:
-            break
-        offset += batch_size
+        last_id = max(int(row["id"]) for row in rows)
+
+    remaining = core.table("timeseries").select("id").eq(
+        "connector_id", connector_id
+    ).eq("service_ref", str(args.service_ref)).is_("phenomenon_id", None).limit(1).execute()
+    remaining_rows = remaining.data if hasattr(remaining, "data") else remaining.get("data")
+    if remaining_rows:
+        print("Incomplete Sensor.Community phenomena backfill; required references remain missing.")
+        return 1
 
     print(
         f"sensorcommunity_backfill_timeseries_phenomena done: connector_id={connector_id} "
@@ -147,4 +180,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"Sensor.Community phenomena backfill failed ({type(exc).__name__}).", file=sys.stderr)
+        raise SystemExit(1)

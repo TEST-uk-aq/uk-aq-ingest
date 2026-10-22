@@ -707,14 +707,36 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Upsert stations into Supabase (requires SUPABASE_URL and SB_SECRET_KEY).",
     )
+    parser.add_argument("--daily-stations-isolate-source-failure", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.daily_stations_isolate_source_failure and not args.to_supabase:
+        raise RuntimeError("Daily Stations source isolation requires --to-supabase")
     api_key = load_api_key(args.api_key)
     client = BreatheLondonClient(api_key)
-    sensors = client.list_sensors()
+    if args.daily_stations_isolate_source_failure:
+        from scripts.stations_daily.blondon_reference_isolation import (
+            load_station_catalogue, retained_source_failure_exit,
+        )
+        from scripts.stations_daily.reference_source import SourceUnavailable
+
+        if not api_key.strip():
+            raise RuntimeError("BLONDON_COMMUNITIES_API_KEY is required")
+        # Catch only source acquisition, before connector/station/metadata writes.
+        try:
+            sensors = load_station_catalogue(
+                client.session, f"{client.base_url}/ListSensors",
+                BLONDON_COMMUNITIES_CONNECTOR_CODE, params={"key": api_key},
+            )
+        except SourceUnavailable as exc:
+            return retained_source_failure_exit(
+                BLONDON_COMMUNITIES_CONNECTOR_CODE, BLONDON_COMMUNITIES_SERVICE_REF, exc
+            )
+    else:
+        sensors = client.list_sensors()
 
     if args.raw_output:
         with open(args.raw_output, "w", encoding="utf-8") as handle:
@@ -778,4 +800,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        LOG.error("Breathe London Communities station import failed (%s).", type(exc).__name__)
+        raise SystemExit(1)
