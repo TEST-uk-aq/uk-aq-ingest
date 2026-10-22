@@ -65,6 +65,7 @@ def invalid_json_unavailability_reason(response: requests.Response) -> Optional[
         if re.fullmatch(
             r"(?:uk-air\s*[:|–-]\s*)?(?:503\s*[-:]?\s*)?"
             r"(?:service (?:temporarily )?unavailable|temporarily unavailable|"
+            r"website temporarily unavailable|"
             r"(?:site|website|service) (?:is )?(?:under|down for) maintenance|"
             r"scheduled maintenance|maintenance in progress)",
             heading,
