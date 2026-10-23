@@ -25,7 +25,7 @@ jobs:
       FRAGMENTATION_THRESHOLD: "15"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Ensure psql is available
         run: |
@@ -217,7 +217,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload maintenance report artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: uk-aq-monthly-index-maintenance-report
           path: index_maintenance_results.tsv
