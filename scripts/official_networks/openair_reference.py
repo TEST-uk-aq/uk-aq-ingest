@@ -11,6 +11,7 @@ import tempfile
 import time
 from collections import defaultdict
 from datetime import date, datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -41,8 +42,33 @@ class RetainedReferenceSourceUnavailable(SourceUnavailable):
     """Only raised after the independent read-only safety gate succeeds."""
 
 
+class VerificationFailure(str, Enum):
+    """Fixed diagnostic vocabulary; never include database or exception text."""
+
+    WRITE_BOUNDARY = "write_boundary"
+    IDENTITY = "identity"
+    STATION_IDENTITY = "station_identity"
+    STATION_RETIREMENT = "station_retirement"
+    OWNERSHIP = "ownership"
+    PHENOMENON_IDENTITY = "phenomenon_identity"
+    PROPERTY_MAPPING = "property_mapping"
+    CANONICAL_UNIT = "canonical_unit"
+    TIMESERIES_IDENTITY = "timeseries_identity"
+    TIMESERIES_UNIT = "timeseries_unit"
+    PROVENANCE = "provenance"
+    SOURCE_TIMESTAMP = "source_timestamp"
+    REQUIRED_REFERENCES = "required_references"
+    ACTIVE_STATION_COVERAGE = "active_station_coverage"
+    DATABASE_READ = "database_read"
+    UNEXPECTED_ERROR = "unexpected_verification_error"
+
+
 class RetainedReferenceError(RuntimeError):
-    """The source failed, but retained authority could not be proven safe."""
+    """A fatal verification denial carrying only a bounded, safe reason code."""
+
+    def __init__(self, reason: VerificationFailure) -> None:
+        self.reason = reason
+        super().__init__(reason.value)
 
 
 class UnconfiguredConnector(RuntimeError):
@@ -52,6 +78,14 @@ class UnconfiguredConnector(RuntimeError):
 def _rows(response: Any) -> List[Dict[str, Any]]:
     data = response.data if hasattr(response, "data") else response.get("data")
     return [dict(row) for row in (data or [])]
+
+
+def _reference_rows(query: Any) -> List[Dict[str, Any]]:
+    try:
+        return _rows(query.execute())
+    except Exception:
+        # Never expose database exceptions or classify them as source outages.
+        raise RetainedReferenceError(VerificationFailure.DATABASE_READ) from None
 
 
 def _text(value: Any) -> Optional[str]:
@@ -199,7 +233,7 @@ class ReferenceWriter:
         self.write_attempted = False
 
     def verify_identity(self) -> Tuple[int, int]:
-        connector_rows = _rows(
+        connector_rows = _reference_rows(
             self.core.table("connectors")
             .select("id,connector_code,default_network_id")
             .or_(
@@ -207,13 +241,11 @@ class ReferenceWriter:
                 f"id.eq.{self.profile.connector_id},"
                 f"default_network_id.eq.{self.profile.network_id}"
             )
-            .execute()
         )
-        network_rows = _rows(
+        network_rows = _reference_rows(
             self.core.table("networks")
             .select("id,network_code")
             .or_(f"network_code.eq.{self.profile.network_code},id.eq.{self.profile.network_id}")
-            .execute()
         )
         if network_rows and (
             len(network_rows) != 1
@@ -253,9 +285,9 @@ class ReferenceWriter:
         # Explicit pagination avoids treating a capped PostgREST response as complete.
         result: List[Dict[str, Any]] = []
         while True:
-            page = _rows(
+            page = _reference_rows(
                 self.core.table(table).select(columns).or_(ownership)
-                .order("id").range(len(result), len(result) + 499).execute()
+                .order("id").range(len(result), len(result) + 499)
             )
             result.extend(page)
             if not page:
@@ -264,13 +296,20 @@ class ReferenceWriter:
     def verify_retained_reference_state(self) -> Dict[str, int]:
         """Read existing authority only; never bootstrap, repair or refresh rows."""
         if self.write_attempted:
-            raise RuntimeError("Retained-reference isolation is closed after a write attempt")
-        connector_id, network_id = self.verify_identity()
+            raise RetainedReferenceError(VerificationFailure.WRITE_BOUNDARY)
+        try:
+            connector_id, network_id = self.verify_identity()
+        except RetainedReferenceError:
+            raise
+        except (RuntimeError, ValueError, TypeError, KeyError):
+            raise RetainedReferenceError(VerificationFailure.IDENTITY) from None
         station_rows = self._retained_rows(
-            "stations", "id,connector_id,network_id,service_ref,station_ref,label,station_name",
+            "stations", "id,connector_id,network_id,service_ref,station_ref,label,station_name,removed_at",
             f"connector_id.eq.{connector_id},network_id.eq.{network_id}",
         )
         stations: Dict[int, str] = {}
+        active_stations = set()
+        now = datetime.now(timezone.utc)
         for row in station_rows:
             ref = row.get("station_ref")
             if (
@@ -282,19 +321,34 @@ class ReferenceWriter:
                 or not _text(row.get("label")) or not _text(row.get("station_name"))
                 or ref in stations.values() or int(row["id"]) in stations
             ):
-                raise RuntimeError("Unsafe retained official-network station identity")
-            stations[int(row["id"])] = ref
+                raise RetainedReferenceError(VerificationFailure.STATION_IDENTITY)
+            station_id = int(row["id"])
+            # Missing status is ambiguous; only an explicit NULL denotes active.
+            if "removed_at" not in row:
+                raise RetainedReferenceError(VerificationFailure.STATION_RETIREMENT)
+            if row["removed_at"] is None:
+                active_stations.add(station_id)
+            else:
+                try:
+                    removed_at = datetime.fromisoformat(
+                        str(row["removed_at"]).replace("Z", "+00:00")
+                    )
+                except (ValueError, TypeError):
+                    raise RetainedReferenceError(VerificationFailure.STATION_RETIREMENT) from None
+                if removed_at.tzinfo is None or removed_at >= now:
+                    raise RetainedReferenceError(VerificationFailure.STATION_RETIREMENT)
+            stations[station_id] = ref
         if not stations:
-            raise RuntimeError("Required retained official-network stations are missing")
+            raise RetainedReferenceError(VerificationFailure.REQUIRED_REFERENCES)
         station_ids = list(stations)
         for offset in range(0, len(station_ids), 200):
-            foreign = _rows(
+            foreign = _reference_rows(
                 self.core.table("timeseries").select("id")
                 .in_("station_id", station_ids[offset:offset + 200])
-                .neq("connector_id", connector_id).limit(1).execute()
+                .neq("connector_id", connector_id).limit(1)
             )
             if foreign:
-                raise RuntimeError("Cross-connector retained station/timeseries ownership")
+                raise RetainedReferenceError(VerificationFailure.OWNERSHIP)
 
         phenomena = self._retained_rows(
             "phenomena", "id,connector_id,label,source_label,notation,pollutant_label,observed_property_id",
@@ -313,27 +367,29 @@ class ReferenceWriter:
                 or row.get("label") != spec.source_series
                 or row.get("pollutant_label") != spec.source_series
             ):
-                raise RuntimeError("Unsafe retained official-network phenomenon identity")
+                raise RetainedReferenceError(VerificationFailure.PHENOMENON_IDENTITY)
             sources.add(source)
             phenomena_by_id[int(row["id"])] = row
         if not phenomena:
-            raise RuntimeError("Required retained official-network phenomena are missing")
+            raise RetainedReferenceError(VerificationFailure.REQUIRED_REFERENCES)
         required_codes = {specs_by_source[row["source_label"]].observed_property_code for row in phenomena}
-        property_rows = _rows(
+        property_rows = _reference_rows(
             self.core.table("observed_properties").select("id,code,canonical_uom")
-            .in_("code", sorted(required_codes)).execute()
+            .in_("code", sorted(required_codes))
         )
         properties = {row["code"]: row for row in property_rows}
         if len(properties) != len(property_rows) or set(properties) != required_codes:
-            raise RuntimeError("Required retained observed-property mappings are missing/ambiguous")
+            raise RetainedReferenceError(VerificationFailure.PROPERTY_MAPPING)
         for row in phenomena:
             spec = specs_by_source[row["source_label"]]
             property_row = properties[spec.observed_property_code]
-            if (
-                property_row.get("canonical_uom") != spec.uom
-                or int(row.get("observed_property_id") or 0) != int(property_row["id"])
-            ):
-                raise RuntimeError("Unsafe retained official-network pollutant mapping/units")
+            # Global units may be unspecified; the approved source unit still
+            # governs every timeseries below. A defined contradiction is fatal.
+            canonical_uom = property_row["canonical_uom"]
+            if canonical_uom is not None and canonical_uom != spec.uom:
+                raise RetainedReferenceError(VerificationFailure.CANONICAL_UNIT)
+            if int(row.get("observed_property_id") or 0) != int(property_row["id"]):
+                raise RetainedReferenceError(VerificationFailure.PROPERTY_MAPPING)
 
         timeseries = self._retained_rows(
             "timeseries", "id,connector_id,service_ref,timeseries_ref,station_id,phenomenon_id,"
@@ -349,7 +405,7 @@ class ReferenceWriter:
             phenomenon_id = int(row.get("phenomenon_id") or 0)
             phenomenon = phenomena_by_id.get(phenomenon_id)
             if station_ref is None or phenomenon is None:
-                raise RuntimeError("Unsafe retained official-network timeseries ownership")
+                raise RetainedReferenceError(VerificationFailure.OWNERSHIP)
             spec = specs_by_source[phenomenon["source_label"]]
             expected_ref = f"{station_ref}:{spec.observed_property_code}"
             extras, metadata = row.get("extras"), row.get("metadata")
@@ -357,30 +413,37 @@ class ReferenceWriter:
                 int(row.get("connector_id") or 0) != connector_id
                 or row.get("service_ref") != SERVICE_REF or row.get("timeseries_ref") != expected_ref
                 or expected_ref in refs or int(row["id"]) in series_ids
-                or row.get("uom") != spec.uom
                 or int(row.get("observed_property_id") or 0) != int(properties[spec.observed_property_code]["id"])
-                or not isinstance(extras, dict) or not isinstance(metadata, dict)
+            ):
+                raise RetainedReferenceError(VerificationFailure.TIMESERIES_IDENTITY)
+            if row.get("uom") != spec.uom:
+                raise RetainedReferenceError(VerificationFailure.TIMESERIES_UNIT)
+            if (
+                not isinstance(extras, dict) or not isinstance(metadata, dict)
                 or any(extras.get(key) != value for key, value in {
                     "site_code": station_ref, "source_series": spec.source_series,
                     "openair_variable": spec.openair_variable, "reference_source": "openair_metadata",
                 }.items())
                 or metadata.get("reference_source") != "openair_metadata"
                 or metadata.get("openair_metadata_url") != self.profile.openair_metadata_url
-                or not _text(row.get("last_catalog_seen_at"))
             ):
-                raise RuntimeError("Unsafe retained official-network timeseries mapping/provenance")
-            snapshot = datetime.fromisoformat(str(row["last_catalog_seen_at"]).replace("Z", "+00:00"))
+                raise RetainedReferenceError(VerificationFailure.PROVENANCE)
+            try:
+                snapshot = datetime.fromisoformat(
+                    str(row.get("last_catalog_seen_at")).replace("Z", "+00:00")
+                )
+            except (ValueError, TypeError):
+                raise RetainedReferenceError(VerificationFailure.SOURCE_TIMESTAMP) from None
             if snapshot.tzinfo is None:
-                raise RuntimeError("Retained OpenAir source timestamp lacks a timezone")
+                raise RetainedReferenceError(VerificationFailure.SOURCE_TIMESTAMP)
             refs.add(expected_ref)
             series_ids.add(int(row["id"]))
             used_phenomena.add(phenomenon_id)
             used_stations.add(int(row["station_id"]))
-        if (
-            not timeseries or used_phenomena != set(phenomena_by_id)
-            or used_stations != set(stations)
-        ):
-            raise RuntimeError("Required retained official-network timeseries are missing")
+        if not active_stations.issubset(used_stations):
+            raise RetainedReferenceError(VerificationFailure.ACTIVE_STATION_COVERAGE)
+        if not timeseries or used_phenomena != set(phenomena_by_id):
+            raise RetainedReferenceError(VerificationFailure.REQUIRED_REFERENCES)
         return {"stations": len(stations), "phenomena": len(phenomena), "timeseries": len(timeseries)}
 
     def observed_properties(self, codes: Iterable[str]) -> Dict[str, Dict[str, Any]]:
@@ -604,10 +667,12 @@ def refresh(
             raise
         try:
             retained = ReferenceWriter(connector_code).verify_retained_reference_state()
-        except Exception as verification_error:
+        except RetainedReferenceError:
+            raise
+        except Exception:
             # A database/identity/integrity failure is always fatal, never a source
             # classification. Do not expose DB messages, URLs or payloads.
-            raise RetainedReferenceError(type(verification_error).__name__) from None
+            raise RetainedReferenceError(VerificationFailure.UNEXPECTED_ERROR) from None
         print("RETAINED_REFERENCE_VERIFIED_JSON " + json.dumps({
             "connector_code": connector_code, **retained,
         }, sort_keys=True), flush=True)
@@ -728,6 +793,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 handle.write("retained_references_verified=true\n")
         return 75
     except RetainedReferenceError as exc:
+        print("RETAINED_REFERENCE_VERIFICATION_FAILED_JSON " + json.dumps({
+            "connector_code": args.connector_code, "reason_code": exc.reason.value,
+        }, sort_keys=True), file=sys.stderr, flush=True)
         print(f"OpenAir retained-reference verification failed ({exc}); isolation denied.", file=sys.stderr)
         return 2
     except UnconfiguredConnector:
