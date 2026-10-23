@@ -114,9 +114,10 @@ def _iso_midnight(value: Optional[date]) -> Optional[str]:
     ).isoformat()
 
 
-def _download_metadata(url: str) -> str:
+def _download_metadata(url: str, *, canonical_origin: Optional[str] = None) -> str:
     body = acquire_reference_bytes(
-        requests, url, headers={"User-Agent": "UK-AQ-official-network-reference/1.0"}
+        requests, url, headers={"User-Agent": "UK-AQ-official-network-reference/1.0"},
+        canonical_origin=canonical_origin, official_maintenance=True,
     )
     handle = tempfile.NamedTemporaryFile(suffix=".RData", delete=False)
     try:
@@ -154,11 +155,13 @@ def _load_frame(path: str):
     return max(frames, key=lambda frame: len(frame))
 
 
-def load_openair_rows(metadata_url: str) -> List[Dict[str, Any]]:
+def load_openair_rows(
+    metadata_url: str, *, canonical_origin: Optional[str] = None
+) -> List[Dict[str, Any]]:
     for attempt in range(1, SOURCE_ATTEMPTS + 1):
         path = None
         try:
-            path = _download_metadata(metadata_url)
+            path = _download_metadata(metadata_url, canonical_origin=canonical_origin)
             frame = _load_frame(path)
         except SourceUnavailable as exc:
             print(f"OpenAir source attempt={attempt}/{SOURCE_ATTEMPTS} failure_class={exc.failure_class}", flush=True)
@@ -592,7 +595,10 @@ def refresh(
     # This catch ends before writer/mapping work. No later error, including an
     # uncertain write outcome, can reach the source-isolation path.
     try:
-        source_rows = load_openair_rows(profile.openair_metadata_url)
+        source_rows = load_openair_rows(
+            profile.openair_metadata_url,
+            canonical_origin=profile.openair_canonical_origin,
+        )
     except SourceUnavailable as exc:
         if not isolate_source_failure:
             raise

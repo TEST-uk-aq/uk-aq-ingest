@@ -1014,7 +1014,9 @@ jobs:
                 : `${code.toUpperCase()} OpenAir reference source refresh could not complete; existing verified reference rows were retained.`,
               connector_code: code,
               stages: [code === "openaq" ? "sync_openaq_stations" : code.startsWith("blondon_") ? `sync_${code}_stations` : `refresh_${code}_reference`],
-              ...(officialClasses.has(failureClass) ? { failure_class: failureClass } : {}),
+              ...(officialClasses.has(failureClass)
+                || (["waqn", "saqn", "ni"].includes(code) && failureClass === "official_maintenance_redirect")
+                ? { failure_class: failureClass } : {}),
             });
             console.warn(`${code.toUpperCase()} reference refresh warning recorded.`);
           }

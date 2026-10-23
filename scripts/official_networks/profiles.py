@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 
+# Existing official site/SOS authority, also approved for metadata canonicalisation.
+WAQN_SITE_ORIGIN = "https://www.airquality.gov.wales"
+
+
 @dataclass(frozen=True)
 class PollutantSpec:
     openair_variable: str
@@ -56,6 +60,7 @@ class OfficialNetworkProfile:
     site_graph_html_supported: bool
     openair_metadata_url: str
     site_graph_url_template: Optional[str] = None
+    openair_canonical_origin: Optional[str] = None
 
     def site_url(self, site_code: str) -> str:
         return self.site_page_url_template.format(site_code=site_code.upper())
@@ -77,16 +82,17 @@ PROFILES: Dict[str, OfficialNetworkProfile] = {
         network_code="waqn",
         network_id=7,
         display_name="Welsh Air Quality Network",
-        sos_base_url="https://www.airquality.gov.wales/sos-waq/api/v1",
+        sos_base_url=f"{WAQN_SITE_ORIGIN}/sos-waq/api/v1",
         sos_probe_enabled=False,
         site_page_url_template=(
-            "https://www.airquality.gov.wales/air-pollution/site/{site_code}"
+            WAQN_SITE_ORIGIN + "/air-pollution/site/{site_code}"
         ),
         site_graph_html_supported=True,
         openair_metadata_url=(
             "https://airquality.gov.wales/sites/default/files/openair/R_data/"
             "WAQ_metadata.RData"
         ),
+        openair_canonical_origin=WAQN_SITE_ORIGIN,
     ),
     "saqn": OfficialNetworkProfile(
         connector_code="saqn",
