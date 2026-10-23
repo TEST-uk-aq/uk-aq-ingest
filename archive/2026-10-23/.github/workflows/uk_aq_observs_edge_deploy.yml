@@ -1,0 +1,61 @@
+name: UK-AQ Obs AQI Edge Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "supabase/functions/uk_aq_egress_monitor/**"
+      - "supabase/config.toml"
+      - ".github/workflows/uk_aq_observs_edge_deploy.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-obs-aqi-egress-monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@b60b5899c73b63a2d2d651b1e90db8d4c9392f51
+        with:
+          version: latest
+
+      - name: Deploy uk_aq_egress_monitor to obs_aqidb project
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
+          OBS_AQIDB_SECRET_KEY: ${{ secrets.OBS_AQIDB_SECRET_KEY }}
+          SB_UK_AQ_CRON_SECRET: ${{ secrets.SB_UK_AQ_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OBS_AQIDB_SUPABASE_URL:-}" ]; then
+            echo "Missing OBS_AQIDB_SUPABASE_URL." >&2
+            exit 1
+          fi
+          OBS_AQIDB_PROJECT_REF="${OBS_AQIDB_SUPABASE_URL#https://}"
+          OBS_AQIDB_PROJECT_REF="${OBS_AQIDB_PROJECT_REF%%.*}"
+          if [ -z "${OBS_AQIDB_PROJECT_REF:-}" ]; then
+            echo "Could not derive obs_aqidb project ref from OBS_AQIDB_SUPABASE_URL." >&2
+            exit 1
+          fi
+
+          OBS_AQIDB_PRIV_KEY="${OBS_AQIDB_SECRET_KEY:-}"
+          if [ -z "${OBS_AQIDB_PRIV_KEY:-}" ]; then
+            echo "Missing OBS_AQIDB_SECRET_KEY." >&2
+            exit 1
+          fi
+
+          supabase secrets set --project-ref "${OBS_AQIDB_PROJECT_REF}" \
+            SUPABASE_URL="${OBS_AQIDB_SUPABASE_URL}" \
+            SB_SUPABASE_URL="${OBS_AQIDB_SUPABASE_URL}" \
+            SB_SECRET_KEY="${OBS_AQIDB_PRIV_KEY}" \
+            SB_UK_AQ_CRON_SECRET="${SB_UK_AQ_CRON_SECRET:-}"
+
+          supabase functions deploy uk_aq_egress_monitor \
+            --project-ref "${OBS_AQIDB_PROJECT_REF}" \
+            --no-verify-jwt

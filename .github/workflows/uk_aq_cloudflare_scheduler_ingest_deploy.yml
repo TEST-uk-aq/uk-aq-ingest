@@ -103,7 +103,7 @@ jobs:
           npx --yes wrangler@4.121.0 d1 migrations apply uk_aq_cron_scheduler_ingest_db --remote
 
       - name: Deploy worker
-        uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0
         with:
           apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
@@ -123,7 +123,7 @@ jobs:
           printf '%s' "$secrets_json" | npx --yes wrangler@4.121.0 secret bulk --name uk-aq-cron-scheduler-ingest
 
       - name: Redeploy worker
-        uses: cloudflare/wrangler-action@da0e0dfe58b7a431659754fdf3f186c529afbe65
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0
         with:
           apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
