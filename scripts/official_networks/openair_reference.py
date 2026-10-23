@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
+import re
 import sys
 import tempfile
+import time
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -19,13 +22,31 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.official_networks.profiles import (
     PollutantSpec,
+    PROPERTY_TO_SPEC,
     get_profile,
     pollutant_spec_for_openair,
 )
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
+from scripts.stations_daily.reference_source import (
+    SOURCE_ATTEMPTS,
+    SOURCE_RETRY_DELAYS,
+    SourceResponseError,
+    SourceUnavailable,
+    acquire_reference_bytes,
+)
 
 
 SERVICE_REF = "default"
+class RetainedReferenceSourceUnavailable(SourceUnavailable):
+    """Only raised after the independent read-only safety gate succeeds."""
+
+
+class RetainedReferenceError(RuntimeError):
+    """The source failed, but retained authority could not be proven safe."""
+
+
+class UnconfiguredConnector(RuntimeError):
+    """A genuinely absent connector, rather than damaged configured authority."""
 
 
 def _rows(response: Any) -> List[Dict[str, Any]]:
@@ -94,15 +115,12 @@ def _iso_midnight(value: Optional[date]) -> Optional[str]:
 
 
 def _download_metadata(url: str) -> str:
-    response = requests.get(
-        url,
-        timeout=60,
-        headers={"User-Agent": "UK-AQ-official-network-reference/1.0"},
+    body = acquire_reference_bytes(
+        requests, url, headers={"User-Agent": "UK-AQ-official-network-reference/1.0"}
     )
-    response.raise_for_status()
     handle = tempfile.NamedTemporaryFile(suffix=".RData", delete=False)
     try:
-        handle.write(response.content)
+        handle.write(body)
         handle.close()
         return handle.name
     except Exception:
@@ -122,7 +140,11 @@ def _load_frame(path: str):
             "pyreadr is required for official-network OpenAir metadata refresh"
         ) from exc
 
-    result = pyreadr.read_r(path)
+    # Only this exact reader exception at this boundary can qualify.
+    try:
+        result = pyreadr.read_r(path)
+    except pyreadr.custom_errors.LibrdataError:
+        raise SourceUnavailable("unreadable_rdata") from None
     frames = [
         frame for frame in result.values()
         if hasattr(frame, "columns") and hasattr(frame, "to_dict")
@@ -133,18 +155,36 @@ def _load_frame(path: str):
 
 
 def load_openair_rows(metadata_url: str) -> List[Dict[str, Any]]:
-    path = _download_metadata(metadata_url)
-    try:
-        frame = _load_frame(path)
+    for attempt in range(1, SOURCE_ATTEMPTS + 1):
+        path = None
+        try:
+            path = _download_metadata(metadata_url)
+            frame = _load_frame(path)
+        except SourceUnavailable as exc:
+            print(f"OpenAir source attempt={attempt}/{SOURCE_ATTEMPTS} failure_class={exc.failure_class}", flush=True)
+            if attempt == SOURCE_ATTEMPTS:
+                raise SourceUnavailable(exc.failure_class, attempt) from None
+            time.sleep(SOURCE_RETRY_DELAYS[attempt - 1])
+            continue
+        finally:
+            if path is not None:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    # Best-effort cleanup must not mask the source/reader error.
+                    pass
+        # Parsed-frame/schema/application failures are outside the retry boundary.
+        columns = set(frame.columns)
+        if (
+            not columns.intersection(("site_id", "code"))
+            or not columns.intersection(("parameter", "variable")) or len(frame) == 0
+        ):
+            raise RuntimeError("OpenAir metadata is empty or missing mandatory source fields")
         return [
             {str(key): value for key, value in row.items()}
             for row in frame.to_dict(orient="records")
         ]
-    finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+    raise AssertionError("unreachable")
 
 
 class ReferenceWriter:
@@ -153,25 +193,40 @@ class ReferenceWriter:
         self.client = create_supabase_client()
         schemas = SupabaseSchemas.from_client(self.client)
         self.core = schemas.core
+        self.write_attempted = False
 
     def verify_identity(self) -> Tuple[int, int]:
         connector_rows = _rows(
             self.core.table("connectors")
-            .select("id,default_network_id")
-            .eq("connector_code", self.profile.connector_code)
-            .limit(1)
+            .select("id,connector_code,default_network_id")
+            .or_(
+                f"connector_code.eq.{self.profile.connector_code},"
+                f"id.eq.{self.profile.connector_id},"
+                f"default_network_id.eq.{self.profile.network_id}"
+            )
             .execute()
         )
         network_rows = _rows(
             self.core.table("networks")
-            .select("id")
-            .eq("network_code", self.profile.network_code)
-            .limit(1)
+            .select("id,network_code")
+            .or_(f"network_code.eq.{self.profile.network_code},id.eq.{self.profile.network_id}")
             .execute()
         )
-        if not connector_rows or not network_rows:
+        if network_rows and (
+            len(network_rows) != 1
+            or network_rows[0].get("network_code") != self.profile.network_code
+            or int(network_rows[0]["id"]) != self.profile.network_id
+        ):
+            raise RuntimeError("Contradictory official-network identity")
+        if not connector_rows:
+            raise UnconfiguredConnector("Official-network connector is not configured")
+        if (
+            len(connector_rows) != 1
+            or connector_rows[0].get("connector_code") != self.profile.connector_code
+            or not network_rows
+        ):
             raise RuntimeError(
-                f"Missing connector/network reference for {self.profile.connector_code}"
+                "Missing/contradictory configured official-network authority"
             )
         connector_id = int(connector_rows[0]["id"])
         network_id = int(network_rows[0]["id"])
@@ -190,6 +245,140 @@ class ReferenceWriter:
                 f"{self.profile.connector_code} default_network_id is inconsistent"
             )
         return connector_id, network_id
+
+    def _retained_rows(self, table: str, columns: str, ownership: str) -> List[Dict[str, Any]]:
+        # Explicit pagination avoids treating a capped PostgREST response as complete.
+        result: List[Dict[str, Any]] = []
+        while True:
+            page = _rows(
+                self.core.table(table).select(columns).or_(ownership)
+                .order("id").range(len(result), len(result) + 499).execute()
+            )
+            result.extend(page)
+            if not page:
+                return result
+
+    def verify_retained_reference_state(self) -> Dict[str, int]:
+        """Read existing authority only; never bootstrap, repair or refresh rows."""
+        if self.write_attempted:
+            raise RuntimeError("Retained-reference isolation is closed after a write attempt")
+        connector_id, network_id = self.verify_identity()
+        station_rows = self._retained_rows(
+            "stations", "id,connector_id,network_id,service_ref,station_ref,label,station_name",
+            f"connector_id.eq.{connector_id},network_id.eq.{network_id}",
+        )
+        stations: Dict[int, str] = {}
+        for row in station_rows:
+            ref = row.get("station_ref")
+            if (
+                int(row.get("connector_id") or 0) != connector_id
+                or int(row.get("network_id") or 0) != network_id
+                or row.get("service_ref") != SERVICE_REF
+                or not isinstance(ref, str) or not ref or ref != ref.strip().upper()
+                or re.search(r"[\s:\x00-\x1f\x7f]", ref) or len(ref) > 128
+                or not _text(row.get("label")) or not _text(row.get("station_name"))
+                or ref in stations.values() or int(row["id"]) in stations
+            ):
+                raise RuntimeError("Unsafe retained official-network station identity")
+            stations[int(row["id"])] = ref
+        if not stations:
+            raise RuntimeError("Required retained official-network stations are missing")
+        station_ids = list(stations)
+        for offset in range(0, len(station_ids), 200):
+            foreign = _rows(
+                self.core.table("timeseries").select("id")
+                .in_("station_id", station_ids[offset:offset + 200])
+                .neq("connector_id", connector_id).limit(1).execute()
+            )
+            if foreign:
+                raise RuntimeError("Cross-connector retained station/timeseries ownership")
+
+        phenomena = self._retained_rows(
+            "phenomena", "id,connector_id,label,source_label,notation,pollutant_label,observed_property_id",
+            f"connector_id.eq.{connector_id}",
+        )
+        specs_by_source = {spec.source_series: spec for spec in PROPERTY_TO_SPEC.values()}
+        phenomena_by_id: Dict[int, Dict[str, Any]] = {}
+        sources = set()
+        for row in phenomena:
+            source = row.get("source_label")
+            spec = specs_by_source.get(source)
+            if (
+                spec is None or source in sources or int(row["id"]) in phenomena_by_id
+                or int(row.get("connector_id") or 0) != connector_id
+                or row.get("notation") != spec.openair_variable
+                or row.get("label") != spec.source_series
+                or row.get("pollutant_label") != spec.source_series
+            ):
+                raise RuntimeError("Unsafe retained official-network phenomenon identity")
+            sources.add(source)
+            phenomena_by_id[int(row["id"])] = row
+        if not phenomena:
+            raise RuntimeError("Required retained official-network phenomena are missing")
+        required_codes = {specs_by_source[row["source_label"]].observed_property_code for row in phenomena}
+        property_rows = _rows(
+            self.core.table("observed_properties").select("id,code,canonical_uom")
+            .in_("code", sorted(required_codes)).execute()
+        )
+        properties = {row["code"]: row for row in property_rows}
+        if len(properties) != len(property_rows) or set(properties) != required_codes:
+            raise RuntimeError("Required retained observed-property mappings are missing/ambiguous")
+        for row in phenomena:
+            spec = specs_by_source[row["source_label"]]
+            property_row = properties[spec.observed_property_code]
+            if (
+                property_row.get("canonical_uom") != spec.uom
+                or int(row.get("observed_property_id") or 0) != int(property_row["id"])
+            ):
+                raise RuntimeError("Unsafe retained official-network pollutant mapping/units")
+
+        timeseries = self._retained_rows(
+            "timeseries", "id,connector_id,service_ref,timeseries_ref,station_id,phenomenon_id,"
+            "observed_property_id,uom,extras,metadata,last_catalog_seen_at",
+            f"connector_id.eq.{connector_id}",
+        )
+        refs = set()
+        series_ids = set()
+        used_phenomena = set()
+        used_stations = set()
+        for row in timeseries:
+            station_ref = stations.get(int(row.get("station_id") or 0))
+            phenomenon_id = int(row.get("phenomenon_id") or 0)
+            phenomenon = phenomena_by_id.get(phenomenon_id)
+            if station_ref is None or phenomenon is None:
+                raise RuntimeError("Unsafe retained official-network timeseries ownership")
+            spec = specs_by_source[phenomenon["source_label"]]
+            expected_ref = f"{station_ref}:{spec.observed_property_code}"
+            extras, metadata = row.get("extras"), row.get("metadata")
+            if (
+                int(row.get("connector_id") or 0) != connector_id
+                or row.get("service_ref") != SERVICE_REF or row.get("timeseries_ref") != expected_ref
+                or expected_ref in refs or int(row["id"]) in series_ids
+                or row.get("uom") != spec.uom
+                or int(row.get("observed_property_id") or 0) != int(properties[spec.observed_property_code]["id"])
+                or not isinstance(extras, dict) or not isinstance(metadata, dict)
+                or any(extras.get(key) != value for key, value in {
+                    "site_code": station_ref, "source_series": spec.source_series,
+                    "openair_variable": spec.openair_variable, "reference_source": "openair_metadata",
+                }.items())
+                or metadata.get("reference_source") != "openair_metadata"
+                or metadata.get("openair_metadata_url") != self.profile.openair_metadata_url
+                or not _text(row.get("last_catalog_seen_at"))
+            ):
+                raise RuntimeError("Unsafe retained official-network timeseries mapping/provenance")
+            snapshot = datetime.fromisoformat(str(row["last_catalog_seen_at"]).replace("Z", "+00:00"))
+            if snapshot.tzinfo is None:
+                raise RuntimeError("Retained OpenAir source timestamp lacks a timezone")
+            refs.add(expected_ref)
+            series_ids.add(int(row["id"]))
+            used_phenomena.add(phenomenon_id)
+            used_stations.add(int(row["station_id"]))
+        if (
+            not timeseries or used_phenomena != set(phenomena_by_id)
+            or used_stations != set(stations)
+        ):
+            raise RuntimeError("Required retained official-network timeseries are missing")
+        return {"stations": len(stations), "phenomena": len(phenomena), "timeseries": len(timeseries)}
 
     def observed_properties(self, codes: Iterable[str]) -> Dict[str, Dict[str, Any]]:
         wanted = sorted(set(codes))
@@ -210,6 +399,7 @@ class ReferenceWriter:
     def upsert_stations(self, rows: List[Dict[str, Any]]) -> Dict[str, int]:
         if rows:
             for offset in range(0, len(rows), 100):
+                self.write_attempted = True
                 self.core.table("stations").upsert(
                     rows[offset : offset + 100],
                     on_conflict="connector_id,station_ref",
@@ -255,6 +445,7 @@ class ReferenceWriter:
                 }
             )
         if payload:
+            self.write_attempted = True
             self.core.table("phenomena").upsert(
                 payload, on_conflict="connector_id,source_label"
             ).execute()
@@ -272,6 +463,7 @@ class ReferenceWriter:
 
     def upsert_timeseries(self, rows: List[Dict[str, Any]]) -> int:
         for offset in range(0, len(rows), 100):
+            self.write_attempted = True
             self.core.table("timeseries").upsert(
                 rows[offset : offset + 100],
                 on_conflict="connector_id,timeseries_ref",
@@ -393,9 +585,27 @@ def build_reference_rows(
     return station_rows, series_groups, used_specs
 
 
-def refresh(connector_code: str, dry_run: bool = False) -> Dict[str, Any]:
+def refresh(
+    connector_code: str, dry_run: bool = False, *, isolate_source_failure: bool = False
+) -> Dict[str, Any]:
     profile = get_profile(connector_code)
-    source_rows = load_openair_rows(profile.openair_metadata_url)
+    # This catch ends before writer/mapping work. No later error, including an
+    # uncertain write outcome, can reach the source-isolation path.
+    try:
+        source_rows = load_openair_rows(profile.openair_metadata_url)
+    except SourceUnavailable as exc:
+        if not isolate_source_failure:
+            raise
+        try:
+            retained = ReferenceWriter(connector_code).verify_retained_reference_state()
+        except Exception as verification_error:
+            # A database/identity/integrity failure is always fatal, never a source
+            # classification. Do not expose DB messages, URLs or payloads.
+            raise RetainedReferenceError(type(verification_error).__name__) from None
+        print("RETAINED_REFERENCE_VERIFIED_JSON " + json.dumps({
+            "connector_code": connector_code, **retained,
+        }, sort_keys=True), flush=True)
+        raise RetainedReferenceSourceUnavailable(exc.failure_class, exc.attempts) from None
     writer = ReferenceWriter(connector_code)
     connector_id, network_id = writer.verify_identity()
     station_rows, series_groups, used_specs = build_reference_rows(
@@ -476,28 +686,65 @@ def refresh(connector_code: str, dry_run: bool = False) -> Dict[str, Any]:
     }
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Refresh WAQN/SAQN/NI station and timeseries references from OpenAir metadata."
     )
     parser.add_argument("--connector-code", required=True, choices=("waqn", "saqn", "ni"))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-if-unconfigured", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--daily-stations-isolate-source-failure", action="store_true",
+        help="Allow exit 75 only after a qualified pre-write source failure and verified retained references.",
+    )
+    args = parser.parse_args(argv)
+    if args.dry_run and args.daily_stations_isolate_source_failure:
+        parser.error("Daily Stations source isolation cannot be combined with --dry-run")
     try:
-        summary = refresh(args.connector_code, dry_run=args.dry_run)
-    except RuntimeError as exc:
-        if args.skip_if_unconfigured and str(exc).startswith(
-            "Missing connector/network reference"
-        ):
+        summary = refresh(
+            args.connector_code, dry_run=args.dry_run,
+            isolate_source_failure=args.daily_stations_isolate_source_failure,
+        )
+    except RetainedReferenceSourceUnavailable as exc:
+        reason = (
+            "OpenAir metadata source could not be read by the RData reader; existing verified reference rows were retained."
+            if exc.failure_class == "unreadable_rdata" else
+            "OpenAir reference source refresh could not complete; existing verified reference rows were retained."
+        )
+        print("REFERENCE_SUMMARY_JSON " + json.dumps({
+            "connector_code": args.connector_code, "ok": False, "reason": reason,
+            "failure_class": exc.failure_class, "attempts": exc.attempts,
+            "reference_state_retained": True,
+        }, sort_keys=True), flush=True)
+        if os.getenv("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+                handle.write(f"failure_class={exc.failure_class}\n")
+                handle.write("retained_references_verified=true\n")
+        return 75
+    except RetainedReferenceError as exc:
+        print(f"OpenAir retained-reference verification failed ({exc}); isolation denied.", file=sys.stderr)
+        return 2
+    except UnconfiguredConnector:
+        if args.skip_if_unconfigured:
             summary = {
                 "connector_code": args.connector_code,
                 "skipped": True,
                 "reason": "connector_or_network_not_configured",
             }
         else:
-            raise
-    print("REFERENCE_SUMMARY_JSON " + __import__("json").dumps(summary, sort_keys=True))
+            print("OpenAir connector is not configured.", file=sys.stderr)
+            return 1
+    except SourceUnavailable as exc:
+        print(f"OpenAir source failure_class={exc.failure_class}; isolation denied at this boundary.", file=sys.stderr)
+        return 1
+    except SourceResponseError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except Exception as exc:
+        # Fatal reporting only: this does not grant retries, retention or exit 75.
+        print(f"OpenAir reference refresh failed ({type(exc).__name__}).", file=sys.stderr)
+        return 1
+    print("REFERENCE_SUMMARY_JSON " + json.dumps(summary, sort_keys=True))
     return 0
 
 

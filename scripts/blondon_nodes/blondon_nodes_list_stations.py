@@ -437,17 +437,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-url", default=BLONDON_NODES_BASE_URL, help="Nodes API base URL override.")
     parser.add_argument("--limit", type=int, help="Limit rows for diagnostics.")
     parser.add_argument("--sample-size", type=int, default=5, help="Rows to print in dry-run mode.")
+    parser.add_argument("--daily-stations-isolate-source-failure", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.daily_stations_isolate_source_failure and (
+        not args.to_supabase or args.dry_run or args.input_json or args.limit is not None
+        or args.base_url.rstrip("/") != BLONDON_NODES_BASE_URL
+    ):
+        raise RuntimeError("Daily Stations source isolation requires the configured full station import")
     if args.input_json:
         with open(args.input_json, "r", encoding="utf-8") as handle:
             sensors = normalize_list_sensors(json.load(handle))
     else:
         client = BreatheLondonNodesClient(load_api_key(args.api_key), base_url=args.base_url.rstrip("/"))
-        sensors = client.list_sensors()
+        if args.daily_stations_isolate_source_failure:
+            from scripts.stations_daily.blondon_reference_isolation import (
+                load_station_catalogue, retained_source_failure_exit,
+            )
+            from scripts.stations_daily.reference_source import SourceUnavailable
+
+            # No reference writer has been constructed or called at this point.
+            try:
+                sensors = load_station_catalogue(
+                    client.session, f"{client.base_url}/ListSensors", BLONDON_NODES_CONNECTOR_CODE,
+                )
+            except SourceUnavailable as exc:
+                return retained_source_failure_exit(
+                    BLONDON_NODES_CONNECTOR_CODE, BLONDON_NODES_SERVICE_REF, exc
+                )
+        else:
+            sensors = client.list_sensors()
     if args.limit is not None:
         sensors = sensors[: max(0, args.limit)]
 
@@ -508,4 +530,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        LOG.error("Breathe London Nodes station import failed (%s).", type(exc).__name__)
+        raise SystemExit(1)
