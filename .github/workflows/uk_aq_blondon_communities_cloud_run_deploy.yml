@@ -97,7 +97,7 @@ jobs:
       SCHEDULER_D1_JOB_KEY: uk_aq_blondon_communities
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Validate required project config
         run: |
