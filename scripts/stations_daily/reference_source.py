@@ -23,6 +23,9 @@ ACCESS_CHALLENGE = re.compile(
     r"forbidden|unauthori[sz]ed|captcha|verif(?:y|ication)|challenge|\bsso\b|"
     r"cf[-_]chl|checking (?:your )?browser|enable javascript|type\s*=\s*['\"]?password|"
     r"access.{0,16}(?:denied|blocked)|request.{0,16}blocked|bot detection|security check|"
+    r"permission.{0,16}(?:denied|required|error)|\b(?:denied|blocked|restricted|password)\b|"
+    r"<form\b|<input\b|turnstile|just\s+a\s+moment|"
+    r"are\s+you\s+(?:a\s+)?(?:human|robot)|configuration\s+error|misconfigur|"
     r"(?:invalid|missing|expired).{0,20}(?:api[\s_-]*key|token|credential)",
     re.IGNORECASE,
 )
@@ -43,7 +46,14 @@ class ReferencePrerequisiteError(RuntimeError):
     """Rate-budget or provider-safety prerequisites are never source outages."""
 
 
-def _source_url(url: str, origin_url: Optional[str] = None) -> str:
+def _origin(url: str) -> tuple:
+    parts = urlsplit(url)
+    return parts.scheme, parts.hostname, parts.port or 443
+
+
+def _source_url(
+    url: str, origin_url: Optional[str] = None, *, canonical_url: Optional[str] = None
+) -> str:
     # Reject ambiguous spellings before urljoin/Requests can normalise them.
     if (
         not url
@@ -75,12 +85,13 @@ def _source_url(url: str, origin_url: Optional[str] = None) -> str:
             raise ValueError
         if origin_url:
             source = urlsplit(origin_url)
-            if (parts.scheme, parts.hostname, parts.port or 443) != (
-                source.scheme,
-                source.hostname,
-                source.port or 443,
-            ):
-                raise ValueError
+            if _origin(resolved) != _origin(origin_url):
+                if (
+                    canonical_url is None
+                    or _origin(resolved) != _origin(canonical_url)
+                    or parts.path != source.path
+                ):
+                    raise ValueError
     except ValueError:
         raise SourceResponseError("Unsafe Reference source destination") from None
     return resolved
@@ -96,9 +107,26 @@ def acquire_reference_bytes(
     timeout: Any = (10, 60),
     before_request: Optional[Callable[[], None]] = None,
     response_observer: Optional[Callable[[Any], None]] = None,
+    canonical_origin: Optional[str] = None,
+    official_maintenance: bool = False,
 ) -> bytes:
+    """Acquire a source; origin/maintenance exceptions require official caller opt-in.
+
+    canonical_origin must be independently configured provider authority. It grants
+    only a first-hop, same-resource change and never forwards caller credentials.
+    """
     source_url = _source_url(url)
+    canonical_url = None
+    if canonical_origin is not None:
+        # Authority comes from the official provider profile, never a Location.
+        canonical = urlsplit(_source_url(canonical_origin))
+        if canonical.path not in ("", "/") or params or expected_format != "rdata":
+            raise SourceResponseError("Invalid Reference canonical origin configuration")
+        canonical_url = canonical._replace(path=urlsplit(source_url).path).geturl()
     current_url = source_url
+    request_client = session
+    request_headers = headers
+    request_params = params
     body: Optional[bytearray] = None
     try:
         for hop in range(3):
@@ -111,11 +139,11 @@ def acquire_reference_bytes(
                     raise ReferencePrerequisiteError(
                         "Reference request safety prerequisite failed"
                     ) from None
-            with session.get(
+            with request_client.get(
                 current_url,
                 timeout=timeout,
-                params=params,
-                headers=headers,
+                params=request_params,
+                headers=request_headers,
                 allow_redirects=False,
                 stream=True,
             ) as response:
@@ -127,8 +155,9 @@ def acquire_reference_bytes(
                             "Reference provider-safety response handling failed"
                         ) from None
                 if (
-                    response.url
-                    != requests.Request("GET", current_url, params=params).prepare().url
+                    response.history
+                    or response.url
+                    != requests.Request("GET", current_url, params=request_params).prepare().url
                 ):
                     raise SourceResponseError(
                         "Unexpected Reference response destination"
@@ -155,7 +184,33 @@ def acquire_reference_bytes(
                             "Invalid or excessive Reference redirects"
                         )
                     # Validate before any request is sent to the destination.
-                    current_url = _source_url(response.headers["Location"], current_url)
+                    location = response.headers["Location"]
+                    target = _source_url(
+                        location, current_url,
+                        canonical_url=canonical_url if hop == 0 else None,
+                    )
+                    if official_maintenance and urlsplit(target).path not in (
+                        urlsplit(source_url).path, "/maintenance/",
+                    ):
+                        raise SourceResponseError("Unexpected official Reference redirect path")
+                    if _origin(target) != _origin(current_url):
+                        # Public metadata only: no caller headers, parameters,
+                        # auth, cookies or session state cross the origin boundary.
+                        request_client = requests
+                        request_headers = None
+                        request_params = None
+                    # Challenge evidence in redirect bodies also excludes isolation.
+                    redirect_body = bytearray()
+                    for chunk in response.iter_content(chunk_size=HTML_LIMIT + 1):
+                        redirect_body.extend(chunk)
+                        if len(redirect_body) > HTML_LIMIT:
+                            raise SourceResponseError("Reference redirect exceeds inspection limit")
+                    redirect_text = html.unescape(redirect_body.decode("utf-8", errors="replace"))
+                    if ACCESS_CHALLENGE.search(redirect_text) or re.search(
+                        r"http-equiv\s*=\s*['\"]?refresh\b", redirect_text, re.IGNORECASE
+                    ):
+                        raise SourceResponseError("Reference redirect contains access/challenge evidence")
+                    current_url = target
                     continue
                 if "Location" in response.headers:
                     raise SourceResponseError("Unexpected Reference redirect metadata")
@@ -211,7 +266,12 @@ def acquire_reference_bytes(
                         )
                         and re.search(r"</html\s*>\s*$", document, re.IGNORECASE)
                     ):
-                        raise SourceUnavailable("unexpected_source_html")
+                        raise SourceUnavailable(
+                            "official_maintenance_redirect"
+                            if official_maintenance and hop > 0
+                            and urlsplit(current_url).path == "/maintenance/"
+                            else "unexpected_source_html"
+                        )
                     raise SourceResponseError("Unrecognisable Reference HTML document")
                 if status in RETRY_HTTP_STATUSES:
                     if ACCESS_CHALLENGE.search(body.decode("utf-8", errors="replace")):
