@@ -175,8 +175,9 @@ jobs:
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/uk-aq-scomm:${GITHUB_SHA::12}"
           echo "image=${IMAGE}" >> "${GITHUB_OUTPUT}"
-          docker build -f workers/uk_aq_sensorcommunity_cloud_run/Dockerfile -t "${IMAGE}" .
+          docker build --pull --progress=plain -f workers/uk_aq_sensorcommunity_cloud_run/Dockerfile -t "${IMAGE}" .
           docker push "${IMAGE}"
+          docker image inspect --format '{{json .RepoDigests}}' "${IMAGE}"
 
       - name: Ensure observs Pub/Sub topic + publisher IAM binding
         run: |
