@@ -21,6 +21,7 @@ on:
 
 concurrency:
   group: uk-aq-ingest-cloud-run-shared-secret-deploy
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -118,12 +119,17 @@ jobs:
             echo "Missing required secret: SUPABASE_URL"
             exit 1
           fi
-          for key in UK_AQ_ENV_NAME; do
-            if [ -z "${!key:-}" ]; then
-              echo "Missing required environment configuration: ${key}"
+          if [ -z "${UK_AQ_ENV_NAME:-}" ]; then
+            echo "Missing required GitHub Actions repository variable: UK_AQ_ENV_NAME"
+            exit 1
+          fi
+          case "${UK_AQ_ENV_NAME}" in
+            TEST|LIVE) ;;
+            *)
+              echo "UK_AQ_ENV_NAME must be exactly TEST or LIVE."
               exit 1
-            fi
-          done
+              ;;
+          esac
           python3 - <<'PYCONFIG'
           import json, os
           config = json.loads(os.environ.get("BLONDON_NODES_RECOVERY_CONFIG") or '{"enabled":false}')

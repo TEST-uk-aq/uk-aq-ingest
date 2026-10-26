@@ -16,6 +16,7 @@ on:
 
 concurrency:
   group: uk-aq-ingest-cloud-run-shared-secret-deploy
+  queue: max
   cancel-in-progress: false
 
 jobs:
