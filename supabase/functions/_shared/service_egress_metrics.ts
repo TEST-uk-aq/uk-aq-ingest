@@ -146,7 +146,7 @@ class ServiceEgressMetricsCollector {
       Deno.env.get("UK_AQ_SERVICE_EGRESS_METRICS_ENABLED"),
       false,
     );
-    this.envName = (Deno.env.get("UKAQ_ENV_NAME") || "TEST").trim();
+    this.envName = (Deno.env.get("UK_AQ_ENV_NAME") || "TEST").trim();
   }
 
   private warn(message: string, details: Record<string, unknown> = {}): void {

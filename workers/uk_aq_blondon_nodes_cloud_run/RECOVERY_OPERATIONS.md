@@ -58,7 +58,7 @@ Before enabling recovery, separately deploy and validate the TEST Prune safeguar
 Also supply:
 
 - Existing `BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=database` and the environment's existing shared database secret/binding.
-- Existing `UKAQ_ENV_NAME` and, for Pub/Sub, `GCP_OBSERVS_PUBSUB_TOPIC`. Environment-label and topic settings remain explicit; the common upstream endpoint needs no GitHub Actions variable.
+- Existing `UK_AQ_ENV_NAME` and, for Pub/Sub, `GCP_OBSERVS_PUBSUB_TOPIC`. Environment-label and topic settings remain explicit; the common upstream endpoint needs no GitHub Actions variable.
 
 Eligibility begins at the later of `now - horizon` and the SQL UTC-midnight-minus-**two-days** boundary, obtained by passing 3 to both existing SQL functions. The internal compatibility field does not impose an additional historical cutoff. Prune's earliest permitted deletion cutoff is also UTC midnight minus two days, which is never later than the start of a rolling 48-hour lookback. At exactly 00:00 UTC the cutoffs coincide: **there is no extra safety margin**. The scan and writer still exclude every matching history candidate or connector/day gate, including consumed/false gates.
 
