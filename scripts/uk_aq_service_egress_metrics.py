@@ -119,7 +119,7 @@ class ServiceEgressMetricsCollector:
         self.enabled = _parse_bool(
             os.getenv("UK_AQ_SERVICE_EGRESS_METRICS_ENABLED"), False
         )
-        self.env_name = (os.getenv("UKAQ_ENV_NAME") or "TEST").strip()
+        self.env_name = (os.getenv("UK_AQ_ENV_NAME") or "TEST").strip()
         self._aggregates: Dict[str, Dict[str, Any]] = {}
 
     def _warn(self, message: str, **details: Any) -> None:

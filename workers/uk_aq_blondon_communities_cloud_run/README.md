@@ -105,7 +105,7 @@ gcloud run deploy uk-aq-blondon-communities-ingest \
 - `UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA` (default `uk_aq_public`)
 - `UK_AQ_SERVICE_EGRESS_METRICS_RPC` (default
   `uk_aq_rpc_service_egress_metrics_batch_upsert`)
-- `UKAQ_ENV_NAME` (default `TEST` in this TEST repository)
+- `UK_AQ_ENV_NAME` (default `TEST` in this TEST repository)
 - `UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY` (required when metrics are
   enabled; the workflow binds the existing OBS/AQI secret)
 

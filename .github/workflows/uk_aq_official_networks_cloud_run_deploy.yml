@@ -16,6 +16,7 @@ on:
 
 concurrency:
   group: uk-aq-ingest-cloud-run-shared-secret-deploy
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -47,6 +48,7 @@ jobs:
       SERVICE_ACCOUNT: ${{ vars.GCP_SOS_SERVICE_ACCOUNT || vars.GCP_SOS_JOB_SERVICE_ACCOUNT || '' }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
+      UK_AQ_ENV_NAME: ${{ vars.UK_AQ_ENV_NAME }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
       OBS_AQIDB_RPC_SCHEMA: ${{ vars.OBS_AQIDB_RPC_SCHEMA || 'uk_aq_public' }}
       OBSERVS_WRITE_MODE: ${{ vars.OBSERVS_WRITE_MODE || 'pubsub_only' }}
@@ -91,6 +93,17 @@ jobs:
             echo "Missing SUPABASE_URL"
             exit 1
           fi
+          if [ -z "${UK_AQ_ENV_NAME:-}" ]; then
+            echo "Missing required GitHub Actions repository variable: UK_AQ_ENV_NAME"
+            exit 1
+          fi
+          case "${UK_AQ_ENV_NAME}" in
+            TEST|LIVE) ;;
+            *)
+              echo "UK_AQ_ENV_NAME must be exactly TEST or LIVE."
+              exit 1
+              ;;
+          esac
           case "${CONNECTOR_CODE}" in
             waqn|saqn|ni) ;;
             *) echo "Unsupported connector code: ${CONNECTOR_CODE}"; exit 1 ;;
@@ -180,6 +193,7 @@ jobs:
           path = sys.argv[1]
           values = {
               "SUPABASE_URL": os.environ["SUPABASE_URL"],
+              "UK_AQ_ENV_NAME": os.environ["UK_AQ_ENV_NAME"],
               "UK_AQ_CORE_SCHEMA": os.environ["UK_AQ_CORE_SCHEMA"],
               "OBSERVS_WRITE_MODE": os.environ["OBSERVS_WRITE_MODE"],
               "GCP_OBSERVS_PUBSUB_TOPIC": os.environ["GCP_OBSERVS_PUBSUB_TOPIC"],
