@@ -54,8 +54,8 @@ dry_run = false
 notes = "Sensor.Community ingest trigger"
 
 [jobs.uk_aq_sos]
-enabled = false
-cron_expr = "*/15 * * * *"
+enabled = true
+cron_expr = "*/3 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
@@ -72,8 +72,8 @@ dry_run = false
 notes = "WAQN ingest trigger;"
 
 [jobs.uk_aq_saqn]
-enabled = false
-cron_expr = "*/15 * * * *"
+enabled = true
+cron_expr = "*/3 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
@@ -81,8 +81,8 @@ dry_run = false
 notes = "SAQN ingest trigger;"
 
 [jobs.uk_aq_ni]
-enabled = false
-cron_expr = "*/15 * * * *"
+enabled = true
+cron_expr = "*/3 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
