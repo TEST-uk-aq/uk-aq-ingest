@@ -143,7 +143,7 @@ const SCOMM_OBSERVATION_UPSERT_CHUNK_SIZE = parsePositiveInt(
   Deno.env.get("SCOMM_OBSERVATION_UPSERT_CHUNK_SIZE"),
   DEFAULT_OBSERVATION_UPSERT_CHUNK_SIZE,
 );
-const SB_UK_AQ_CRON_SECRET = Deno.env.get("SB_UK_AQ_CRON_SECRET") ?? "";
+const SB_UK_AQ_CRON_SECRET = (Deno.env.get("SB_UK_AQ_CRON_SECRET") ?? "").trim();
 
 const VALUE_TYPE_MAP: Record<
   string,
@@ -286,7 +286,7 @@ function postgrestHeaders(
 
 function requireCronSecret(req: Request): Response | null {
   if (!SB_UK_AQ_CRON_SECRET) {
-    return null;
+    return new Response("Cron authentication is not configured", { status: 503 });
   }
   const header = req.headers.get("x-cron-secret");
   if (!header || header !== SB_UK_AQ_CRON_SECRET) {

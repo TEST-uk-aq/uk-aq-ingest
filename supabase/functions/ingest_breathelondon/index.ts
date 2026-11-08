@@ -1872,6 +1872,7 @@ serve(async (req) => {
   );
 
   const errors: string[] = [];
+  const warnings: string[] = [];
   let status = 200;
   let responsePayload: Record<string, unknown> = {};
   let debug = false;
@@ -2184,7 +2185,7 @@ serve(async (req) => {
                         rows: rows.length,
                         reason,
                       });
-                      errors.push("observs_dual_write");
+                      warnings.push("observs_dual_write");
                     },
                   );
                   observsFlushes += 1;
@@ -2320,12 +2321,10 @@ serve(async (req) => {
                   }
                   const speciesCheckpoint = speciesCheckpoints.get(`${stationId}:${species}`) ?? {};
                   let lastObserved = parseObservationTimestamp(speciesCheckpoint.last_observed_at);
-                  let lastValue: number | null = null;
                   let acceptedThisRun = false;
                   let lastAcceptedAt: string | null = null;
+                  let lastAcceptedValue: number | null = null;
                   let speciesError: string | null = null;
-                  let speciesFailure: unknown = null;
-                  let secondaryFailed = false;
                   const lastSpeciesPoll = parseObservationTimestamp(speciesCheckpoint.last_polled_at);
                   const hoursSincePoll = lastSpeciesPoll
                     ? Math.max(0, (now.getTime() - Date.parse(lastSpeciesPoll)) / 3_600_000)
@@ -2418,10 +2417,12 @@ serve(async (req) => {
                             observsRowsPending.push(...observsRows);
                             for (const point of eligibleBatch) {
                               const observedAt = String(point.observed_at);
-                              if (!lastAcceptedAt || observedAt > lastAcceptedAt) lastAcceptedAt = observedAt;
+                              if (!lastAcceptedAt || observedAt >= lastAcceptedAt) {
+                                lastAcceptedAt = observedAt;
+                                lastAcceptedValue = Number(point.value);
+                              }
                               if (!lastObserved || observedAt >= lastObserved) {
                                 lastObserved = observedAt;
-                                lastValue = Number(point.value);
                               }
                             }
                             await flushPendingObservsRows(false, "batch_threshold");
@@ -2429,9 +2430,6 @@ serve(async (req) => {
                         }
                       }
                     } catch (error) {
-                      secondaryFailed = error instanceof Error &&
-                        error.message.startsWith("Observs dual-write flush failed:");
-                      speciesFailure = error;
                       speciesError = error instanceof Error ? error.message : String(error);
                       errors.push(`communities:${stationRef}:${species}:${speciesError}`);
                       break;
@@ -2452,37 +2450,40 @@ serve(async (req) => {
                     errors.push(`communities:${stationRef}:${species}:${speciesError}`);
                   }
 
+                  if (lastAcceptedAt && lastAcceptedValue !== null) {
+                    timeseriesUpdates.push({ id: timeseriesId, last_value: lastAcceptedValue, last_value_at: lastAcceptedAt });
+                    seriesPolled += 1;
+                  }
+
                   if (!dryRun) {
                     try {
                       await flushPendingObservsRows(true, "species_complete");
                     } catch (error) {
-                      secondaryFailed = true;
-                      speciesFailure = error;
-                      speciesError = error instanceof Error ? error.message : String(error);
+                      const secondaryError = error instanceof Error ? error.message : String(error);
+                      errors.push(`communities:${stationRef}:${species}:${secondaryError}`);
+                      speciesError = speciesError ? `${speciesError}; ${secondaryError}` : secondaryError;
                     }
-                    await upsertSpeciesCheckpoint({
-                      station_id: stationId, species, timeseries_id: timeseriesId,
-                      last_observed_at: lastObserved, last_polled_at: new Date().toISOString(),
-                      last_error: speciesError,
-                    });
-                    checkpointsUpserted += 1;
+                    try {
+                      await upsertSpeciesCheckpoint({
+                        station_id: stationId, species, timeseries_id: timeseriesId,
+                        last_observed_at: lastObserved, last_polled_at: new Date().toISOString(),
+                        last_error: speciesError,
+                      });
+                      checkpointsUpserted += 1;
+                    } catch (error) {
+                      const checkpointError = error instanceof Error ? error.message : String(error);
+                      errors.push(`communities:${stationRef}:${species}:${checkpointError}`);
+                      speciesError = speciesError ? `${speciesError}; ${checkpointError}` : checkpointError;
+                    }
                   }
                   if (speciesError) stationHasSpeciesError = true;
-                  if (speciesFailure && (isIngestDbObservationWriteError(speciesFailure) ||
-                    secondaryFailed)) throw speciesFailure;
-
-                  if (timeBudgetHit) {
-                    break;
-                  }
-
-                  if (lastObserved && lastValue !== null && !speciesError) {
-                    timeseriesUpdates.push({ id: timeseriesId, last_value: lastValue, last_value_at: lastObserved });
-                    seriesPolled += 1;
-                  }
 
                   if (acceptedThisRun && lastAcceptedAt && (!stationLatestObserved || lastAcceptedAt > stationLatestObserved)) {
                     stationLatestObserved = lastAcceptedAt;
                     stationHasNewObservation = true;
+                  }
+                  if (timeBudgetHit) {
+                    break;
                   }
                 }
 
@@ -2533,8 +2534,18 @@ serve(async (req) => {
                 }
               }
 
-              await flushPendingObservsRows(true, "run_complete");
+              try {
+                await flushPendingObservsRows(true, "run_complete");
+              } catch {
+                // Primary commits and their latest-value updates still complete.
+              }
               await flushUpdates();
+
+              const incomplete = timeBudgetHit || isolatedStations.size > 0 || errors.length > 0 ||
+                observsRowsPending.length > 0;
+              const runStatus = incomplete
+                ? (observationsUpserted > 0 ? "partial" : "failed")
+                : (dryRun ? "dry_run" : "succeeded");
 
               responsePayload = {
                 connector_id: connector.id,
@@ -2560,13 +2571,11 @@ serve(async (req) => {
                 series_polled: seriesPolled,
                 checkpoints_upserted: checkpointsUpserted,
                 dry_run: dryRun,
-                partial: timeBudgetHit || isolatedStations.size > 0,
-                run_status: timeBudgetHit || isolatedStations.size > 0
-                  ? "partial"
-                  : (dryRun ? "dry_run" : "succeeded"),
+                partial: incomplete,
+                run_status: runStatus,
                 run_message: isolatedStations.size
                   ? "reference_station_isolation"
-                  : (timeBudgetHit ? "runtime_budget_exceeded" : "ok"),
+                  : (timeBudgetHit ? "runtime_budget_exceeded" : (errors.length ? "ingest_errors" : "ok")),
                 stopped_reason: timeBudgetHit ? "runtime_budget_exceeded" : null,
                 reference_repair_attempts: referenceRepairAttempts,
                 missing_refs_repaired: missingRefsRepaired,
@@ -2574,11 +2583,12 @@ serve(async (req) => {
                 isolated_station_refs: isolatedStationRefs.slice(0, 100),
                 unresolved_timeseries_refs: unresolvedTimeseriesRefs.slice(0, 200),
                 errors,
+                warnings,
               };
               log.info("Stations polled.", {
                 stations_selected: stationsSelected,
                 stations_processed: stationsProcessed,
-                partial: timeBudgetHit || isolatedStations.size > 0,
+                partial: incomplete,
               });
               if (!dryRun) {
                 const { error: pollUpdateError } = await postgrestRequest(
