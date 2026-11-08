@@ -109,6 +109,7 @@ export async function recoverSosRecentGaps(
     recovery_sos_requests: 0,
     recovery_html_requests: 0,
     recovery_cadence_unconfirmed: 0,
+    recovery_station_identity_excluded: 0,
     recovery_retention_excluded_hours: Math.max(
       0,
       (from - requestedFrom) / HOUR,
@@ -160,18 +161,27 @@ export async function recoverSosRecentGaps(
         limit: String(config.scanLimit),
       });
     }
-    const series = rows.map((row) => {
-      if (
-        !Number.isSafeInteger(row.id) || Number(row.id) <= 0 ||
-        !Number.isSafeInteger(row.station_id) || Number(row.station_id) <= 0
-      ) {
+    const scanned = rows.map((row) => {
+      if (!row || !Number.isSafeInteger(row.id) || Number(row.id) <= 0) {
         throw new Error("Invalid SOS recovery timeseries identity.");
       }
-      return row as unknown as RecoveryTimeseries;
+      return {
+        id: row.id as number,
+        series: Number.isSafeInteger(row.station_id) &&
+            Number(row.station_id) > 0
+          ? row as unknown as RecoveryTimeseries
+          : null,
+      };
     });
-    if (!series.length) {
+    const series = scanned.flatMap((item) => item.series ? [item.series] : []);
+    if (!scanned.length || !series.length) {
+      for (const item of scanned) {
+        delete state.pending[String(item.id)];
+        state.cursor = item.id;
+      }
       return {
         ...summary,
+        recovery_station_identity_excluded: scanned.length,
         recovery_status: Object.keys(state.pending).length
           ? "unresolved"
           : "batch_complete",
@@ -226,11 +236,19 @@ export async function recoverSosRecentGaps(
     >();
     const currentRunSites = new Set<string>();
     const pending: Array<RecoveryPoint & { timeseries_id: number }> = [];
-    for (const row of series) {
+    for (const item of scanned) {
       if (!canStart()) {
         stopped = true;
         break;
       }
+      if (!item.series) {
+        delete state.pending[String(item.id)];
+        state.cursor = item.id;
+        summary.recovery_station_identity_excluded =
+          Number(summary.recovery_station_identity_excluded) + 1;
+        continue;
+      }
+      const row = item.series;
       const first = row.first_value_at === null
         ? Number.NaN
         : Date.parse(row.first_value_at);
