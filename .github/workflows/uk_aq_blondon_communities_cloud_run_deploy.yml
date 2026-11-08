@@ -14,6 +14,7 @@ on:
       - "supabase/functions/_shared/service_egress_metrics.ts"
       - "supabase/functions/_shared/observs_client.ts"
       - "supabase/functions/_shared/ingestdb_observation_writer.mjs"
+      - "supabase/functions/_shared/ingest_retention.ts"
       - "scripts/gcp/**"
       - "scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"
       - ".github/workflows/uk_aq_blondon_communities_cloud_run_deploy.yml"
@@ -47,6 +48,7 @@ jobs:
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
       UK_AQ_RAW_SCHEMA: ${{ vars.UK_AQ_RAW_SCHEMA || 'uk_aq_raw' }}
+      INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS || '' }}
       OBS_AQIDB_RPC_SCHEMA: ${{ vars.OBS_AQIDB_RPC_SCHEMA || 'uk_aq_public' }}
       UK_AQ_SERVICE_EGRESS_METRICS_ENABLED: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_ENABLED || 'false' }}
       UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL || vars.OBS_AQIDB_SUPABASE_URL || '' }}
@@ -359,6 +361,7 @@ jobs:
           add_env SUPABASE_URL
           add_env UK_AQ_CORE_SCHEMA
           add_env UK_AQ_RAW_SCHEMA
+          add_env INGESTDB_RETENTION_DAYS
           add_env UK_AQ_SERVICE_EGRESS_METRICS_ENABLED
           add_env UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL
           add_env UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA

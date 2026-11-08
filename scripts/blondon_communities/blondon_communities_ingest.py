@@ -11,6 +11,7 @@ Examples:
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -34,6 +35,7 @@ from scripts.blondon_communities.blondon_communities_list_stations import (
     normalize_station_payload,
 )
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
+from scripts.uk_aq_retention import eligible_timestamp, retention_days, retention_start
 
 load_dotenv()
 
@@ -46,7 +48,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logging.INFO))
 logging.getLogger("postgrest").setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logging.INFO))
 
-DEFAULT_INITIAL_DAYS = 7
+DEFAULT_INITIAL_DAYS = 1
 DEFAULT_WINDOW_HOURS = 24
 DEFAULT_SLEEP_SECONDS = 0.2
 DEFAULT_BATCH_SIZE = 500
@@ -90,7 +92,8 @@ def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except ValueError:
         return None
 
@@ -99,7 +102,8 @@ def _coerce_float(value: Any) -> Optional[float]:
     if value is None:
         return None
     try:
-        return float(value)
+        result = float(value)
+        return result if math.isfinite(result) else None
     except (TypeError, ValueError):
         return None
 
@@ -118,7 +122,7 @@ def _parse_start_date(value: Optional[str]) -> Optional[datetime]:
             parsed = datetime.fromisoformat(text)
             return parsed.replace(tzinfo=timezone.utc)
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except ValueError:
         return None
 
@@ -385,6 +389,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    days = retention_days()
     species_list = _parse_species_list(args.species)
     if not species_list:
         raise SystemExit("No valid species specified.")
@@ -542,14 +547,16 @@ def main() -> int:
             checkpoints_output.append(entry)
 
     now = _floor_to_hour(utcnow())
+    earliest = retention_start(utcnow(), days)
     initial_start = _parse_start_date(args.start_date)
+    if args.start_date and initial_start is None:
+        raise ValueError("Invalid --start-date")
     if initial_start:
         initial_start = _floor_to_hour(initial_start)
 
     observation_total = 0
     observations_output = [] if args.output_observations else None
     checkpoint_rows = []
-    timeseries_updates = []
 
     for row in station_rows:
         station_ref = str(row["station_ref"])
@@ -564,26 +571,32 @@ def main() -> int:
 
             key = (station_id, species)
             checkpoint = checkpoints.get(key, {})
-            last_observed = None if args.ignore_checkpoints else _parse_iso_datetime(
-                checkpoint.get("last_observed_at")
-            )
+            last_observed = _parse_iso_datetime(checkpoint.get("last_observed_at"))
             last_error = None
 
-            if last_observed:
-                start_time = last_observed
-            elif initial_start:
-                start_time = initial_start
-            else:
-                start_time = now - timedelta(days=max(args.initial_days, 1))
-            start_time = _floor_to_hour(start_time)
+            previous_poll = _parse_iso_datetime(checkpoint.get("last_polled_at"))
+            hours_since_poll = max(0, (now - previous_poll).total_seconds() / 3600) if previous_poll else 24
+            recovery_hours = min(48, max(24, math.ceil(hours_since_poll + 6))) if (
+                checkpoint.get("last_error") or hours_since_poll >= 12
+            ) else 6
+            requested_start = initial_start or (
+                now - timedelta(days=min(max(args.initial_days, 1), days))
+                if args.ignore_checkpoints or not checkpoint
+                else now - timedelta(hours=recovery_hours)
+            )
+            start_time = max(earliest, _floor_to_hour(requested_start))
             if start_time >= now:
                 continue
 
-            window = timedelta(hours=max(args.window_hours, 1))
+            window = timedelta(hours=min(
+                24 if initial_start or args.ignore_checkpoints or recovery_hours > 6 else 6,
+                max(args.window_hours, 1),
+            ))
             cursor = start_time
             last_value = None
+            windows_fetched = 0
 
-            while cursor < now:
+            while cursor < now and windows_fetched < 8:
                 end_time = min(cursor + window, now)
                 try:
                     payload = client.get_clarity_data(station_ref, species, cursor, end_time)
@@ -599,7 +612,11 @@ def main() -> int:
                     last_error = str(exc)
                     break
 
-                obs_rows, obs_last, obs_value = _extract_observations(payload, timeseries_id)
+                obs_rows, _, _ = _extract_observations(payload, timeseries_id)
+                obs_rows = [point for point in obs_rows if eligible_timestamp(
+                    _parse_iso_datetime(point["observed_at"]), utcnow(), days
+                )]
+                obs_rows = list({point["observed_at"]: point for point in obs_rows}.values())
                 if observations_output is not None and obs_rows:
                     for obs_row in obs_rows:
                         observations_output.append(
@@ -612,21 +629,40 @@ def main() -> int:
                         )
                 if obs_rows and not args.dry_run:
                     for chunk in _chunked(obs_rows, args.batch_size):
-                        writer.upsert_observations(chunk)
-                    observation_total += len(obs_rows)
-                if obs_last and (last_observed is None or obs_last > last_observed):
-                    last_observed = obs_last
-                if obs_last:
-                    last_value = obs_value
+                        eligible_chunk = [point for point in chunk if eligible_timestamp(
+                            _parse_iso_datetime(point["observed_at"]), utcnow(), days
+                        )]
+                        if not eligible_chunk:
+                            continue
+                        try:
+                            writer.upsert_observations(eligible_chunk)
+                        except Exception as exc:
+                            last_error = str(exc)
+                            break
+                        observation_total += len(eligible_chunk)
+                        for point in eligible_chunk:
+                            observed = _parse_iso_datetime(point["observed_at"])
+                            if observed and (last_observed is None or observed >= last_observed):
+                                last_observed = observed
+                                last_value = point["value"]
+                    if last_error:
+                        break
 
                 cursor = end_time
+                windows_fetched += 1
                 if args.sleep_seconds:
                     time.sleep(args.sleep_seconds)
 
-            if last_observed and last_value is not None:
-                timeseries_updates.append(
-                    {"id": timeseries_id, "last_value": last_value, "last_value_at": last_observed.isoformat()}
-                )
+            if cursor < now and not last_error:
+                last_error = "bounded_request_limit"
+
+            if last_observed and last_value is not None and not args.dry_run:
+                try:
+                    writer.update_timeseries_last_values([
+                        {"id": timeseries_id, "last_value": last_value, "last_value_at": last_observed.isoformat()}
+                    ])
+                except Exception as exc:
+                    last_error = str(exc)
 
             checkpoint_rows.append(
                 {
@@ -639,12 +675,10 @@ def main() -> int:
                     "updated_at": utcnow().isoformat(),
                 }
             )
+            if not args.dry_run:
+                writer.upsert_checkpoints([checkpoint_rows[-1]])
 
     if not args.dry_run:
-        if timeseries_updates:
-            writer.update_timeseries_last_values(timeseries_updates)
-        if checkpoint_rows:
-            writer.upsert_checkpoints(checkpoint_rows)
         try:
             writer.update_connector_last_polled(connector_id)
         except Exception as exc:

@@ -15,6 +15,9 @@ import {
   writeIngestDbObservations,
 } from "../_shared/ingestdb_observation_writer.mjs";
 import { writeOpenAqIngestDbObservations } from "./ingestdb_observation_write.mjs";
+import { eligibleIngestTimestamp, ingestRetentionDays, ingestRetentionStart } from "../_shared/ingest_retention.ts";
+
+const INGEST_RETENTION_DAYS = ingestRetentionDays(Deno.env.get("INGESTDB_RETENTION_DAYS"));
 
 type PollRequest = {
   connector_code?: string;
@@ -1939,7 +1942,8 @@ function recordObservation(
   stationIdByObservedRef?: Map<string, number>,
 ): void {
   const observedMs = Date.parse(observedAt);
-  if (!Number.isFinite(observedMs)) {
+  if (!Number.isFinite(observedMs) ||
+    !eligibleIngestTimestamp(observedAt, new Date(), INGEST_RETENTION_DAYS)) {
     return;
   }
   if (windowMs && observedMs < nowMs - windowMs) {
@@ -2113,9 +2117,7 @@ function resolveHourlyObservedAt(
   }
   const observedMs = Date.parse(observedAt);
   if (Number.isFinite(observedMs) && observedMs > nowMs) {
-    return periodFrom
-      ? String(periodFrom)
-      : String(new Date(nowMs).toISOString());
+    return null;
   }
   return String(observedAt);
 }
@@ -3516,6 +3518,7 @@ serve(async (req) => {
           const tsObservedMs = Date.parse(tsCheckpoint.last_observed_at);
           if (
             Number.isFinite(tsObservedMs) &&
+            tsObservedMs <= nowMs &&
             nowMs - tsObservedMs < 60 * 60 * 1000
           ) {
             if (stationId === debugStationId) {
@@ -3532,19 +3535,17 @@ serve(async (req) => {
         if (typeof stationId === "number" && Number.isFinite(stationId)) {
           polledStationIds.add(stationId);
         }
-        const baseObservedAt = tsCheckpoint?.last_observed_at ??
-          stationCheckpoint?.last_observed_at ??
-          null;
-        const datetimeFrom = baseObservedAt ??
-          (windowMs ? new Date(nowMs - windowMs).toISOString() : null);
-        let datetimeTo = new Date(nowMs).toISOString();
-        if (datetimeFrom && windowMs) {
-          const fromMs = Date.parse(datetimeFrom);
-          if (Number.isFinite(fromMs)) {
-            const cappedMs = Math.min(nowMs, fromMs + windowMs);
-            datetimeTo = new Date(cappedMs).toISOString();
-          }
-        }
+        const checkpointMs = Date.parse(tsCheckpoint?.last_observed_at ??
+          stationCheckpoint?.last_observed_at ?? "");
+        const recentLookbackMs = Math.min(24 * 3_600_000, Math.max(
+          windowMs ?? 6 * 3_600_000,
+          Number.isFinite(checkpointMs) ? nowMs - checkpointMs : 0,
+        ));
+        const datetimeFrom = new Date(Math.max(
+          ingestRetentionStart(new Date(nowMs), INGEST_RETENTION_DAYS).getTime(),
+          nowMs - recentLookbackMs,
+        )).toISOString();
+        const datetimeTo = new Date(nowMs).toISOString();
         if (stationId === debugStationId) {
           logLine("INFO", "OpenAQ debug timeseries fetch", {
             station_id: stationId,
@@ -3776,7 +3777,7 @@ serve(async (req) => {
         value,
         stationId,
         nowMs,
-        windowMs,
+          null,
         stationIdByObservedTimeseriesRef,
       );
     }
@@ -3881,6 +3882,29 @@ serve(async (req) => {
   let observsWritten = 0;
   let observsReceiptsUpserted = 0;
   let observsEnqueued = 0;
+  // Re-evaluate at the write boundary: a run may straddle UTC midnight.
+  latestByTimeseries.clear();
+  latestObservedByStationId.clear();
+  for (const [ref, observations] of observationsByTimeseries) {
+    let latest: { observed_at: string; value: number } | null = null;
+    for (const [observedAt, value] of observations) {
+      if (!eligibleIngestTimestamp(observedAt, new Date(), INGEST_RETENTION_DAYS)) {
+        observations.delete(observedAt);
+        continue;
+      }
+      if (!latest || observedAt > latest.observed_at) latest = { observed_at: observedAt, value };
+    }
+    if (!observations.size || !latest) {
+      observationsByTimeseries.delete(ref);
+      continue;
+    }
+    latestByTimeseries.set(ref, latest);
+    const stationId = stationIdByObservedTimeseriesRef.get(ref);
+    if (stationId !== undefined) {
+      const previous = latestObservedByStationId.get(stationId);
+      if (!previous || latest.observed_at > previous) latestObservedByStationId.set(stationId, latest.observed_at);
+    }
+  }
   const seriesPolled = observationsByTimeseries.size;
   let lastObservedAt: string | null = null;
   let timeseriesLastUpdated = 0;

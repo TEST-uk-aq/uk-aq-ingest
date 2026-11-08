@@ -32,6 +32,7 @@ from scripts.official_networks.profiles import (
     get_profile,
 )
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
+from scripts.uk_aq_retention import eligible_timestamp, retention_days, retention_start
 
 
 SERVICE_REF = "default"
@@ -720,14 +721,17 @@ def run_ingest(
     config = connector.get("config") if isinstance(connector.get("config"), dict) else {}
 
     now = datetime.now(timezone.utc)
+    days = retention_days()
     end = parse_iso(end_time) if end_time else now
     if end is None:
         raise ValueError("Invalid --end-time")
+    end = min(end, now)
     start = parse_iso(start_time) if start_time else end - timedelta(
         hours=int(connector.get("poll_window_hours") or 6)
     )
     if start is None:
         raise ValueError("Invalid --start-time")
+    start = max(start, retention_start(now, days))
     if start >= end:
         raise ValueError("start_time must be before end_time")
 
@@ -825,7 +829,10 @@ def run_ingest(
                 f"{connector_code} has no enabled current observation acquisition route"
             )
 
-    observations = dedupe_observations(observations)
+    observations = dedupe_observations([
+        row for row in observations
+        if eligible_timestamp(parse_iso(row["observed_at"]), datetime.now(timezone.utc), days)
+    ])
     if stats.get("stations_attempted", 0) and (
         stats.get("stations_failed", 0) >= stats.get("stations_attempted", 0)
     ) and not observations:
@@ -845,6 +852,10 @@ def run_ingest(
     observations_upserted = 0
     timeseries_updated = 0
     secondary = {"written": 0, "enqueued": 0, "pubsub_observs": 0}
+    if not dry_run and observations:
+        observations = [row for row in observations if eligible_timestamp(
+            parse_iso(row["observed_at"]), datetime.now(timezone.utc), days
+        )]
     if not dry_run and observations:
         observations_upserted = db.write_observations(
             observations, acquisition_method

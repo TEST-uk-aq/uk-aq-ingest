@@ -28,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
+from scripts.uk_aq_retention import eligible_timestamp, retention_days, retention_start
 from scripts.uk_aq_service_egress_metrics import (
     configure_service_egress_metrics,
     flush_service_egress_metrics,
@@ -784,6 +785,7 @@ def parse_args() -> argparse.Namespace:
 
 def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
     run_started = time.monotonic()
+    days = retention_days()
     species = parse_species(args.species)
     if not species:
         raise SystemExit("No valid species selected.")
@@ -944,12 +946,20 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
         secondary_error_count += 1
         secondary_errors.append(f"observs_writer_init: {exc}")
         LOG.warning("Secondary Observs writer initialization failed: %s", exc)
-    end_time = floor_to_minute(parse_iso(args.end_time) or utcnow())
+    manual_end = parse_iso(args.end_time)
+    if args.end_time and manual_end is None:
+        raise ValueError("Invalid --end-time")
+    end_time = floor_to_minute(min(manual_end or utcnow(), utcnow()))
     poll_hours = float(connector.get("poll_window_hours") or 6)
-    default_start = floor_to_minute(utcnow()) - timedelta(
+    earliest = retention_start(utcnow(), days)
+    if end_time <= earliest:
+        raise ValueError("Requested Nodes end time is outside IngestDB retention")
+    default_start = max(earliest, floor_to_minute(utcnow()) - timedelta(
         hours=max(poll_hours, 0.1)
-    )
+    ))
     explicit_start = parse_iso(args.start_time)
+    if args.start_time and explicit_start is None:
+        raise ValueError("Invalid --start-time")
     raw_capture.record_context(
         {
             "connector_code": CONNECTOR_CODE,
@@ -1006,7 +1016,9 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
                 ),
                 default_start,
             )
-            start_time = floor_to_minute(start_time)
+            start_time = max(earliest, floor_to_minute(start_time))
+            if start_time >= end_time:
+                continue
             last_at = None
             last_value = None
             try:
@@ -1028,6 +1040,15 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
                     station_ref,
                     sp,
                 )
+                rows = [row for row in rows if eligible_timestamp(
+                    parse_iso(row["observed_at"]), utcnow(), days
+                )]
+                if rows:
+                    newest = max(rows, key=lambda row: row["observed_at"])
+                    last_at = newest["observed_at"]
+                    last_value = newest["value"]
+                else:
+                    last_at = last_value = None
                 null_values_skipped += nulls
                 source_duplicate_rows_deduplicated += duplicate_rows_deduplicated
                 source_conflicting_duplicate_timestamps += conflicting_duplicate_timestamps
@@ -1037,19 +1058,33 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
                         rows[index:index + args.batch_size]
                         for index in range(0, len(rows), args.batch_size)
                     ]
+                    committed_chunks = []
                     for rows_chunk in rows_chunks:
-                        writer.upsert_observations(rows_chunk)
-                        observations_upserted += len(rows_chunk)
-                        written_observation_rows.extend(rows_chunk)
+                        eligible_chunk = [row for row in rows_chunk if eligible_timestamp(
+                            parse_iso(row["observed_at"]), utcnow(), days
+                        )]
+                        if not eligible_chunk:
+                            continue
+                        writer.upsert_observations(eligible_chunk)
+                        observations_upserted += len(eligible_chunk)
+                        written_observation_rows.extend(eligible_chunk)
+                        committed_chunks.append(eligible_chunk)
+                    committed_rows = [point for chunk in committed_chunks for point in chunk]
+                    if committed_rows:
+                        newest = max(committed_rows, key=lambda row: row["observed_at"])
+                        last_at = newest["observed_at"]
+                        last_value = newest["value"]
+                    else:
+                        last_at = last_value = None
                     if last_at and last_value is not None:
                         species_last_observed[sp] = last_at
                         parsed_last_at = parse_iso(last_at)
                         if parsed_last_at:
                             successful_last_observed.append(parsed_last_at)
-                    observs_rows_prepared += len(rows)
+                    observs_rows_prepared += sum(len(chunk) for chunk in committed_chunks)
                     observs_stats = write_secondary_rows(
                         observs_writer,
-                        rows_chunks,
+                        committed_chunks,
                         station_ref,
                         sp,
                     )

@@ -11,6 +11,20 @@ import {
 } from "./service_egress_metrics.mjs";
 
 const CONNECTOR_CODE = "sensorcommunity";
+const INGEST_RETENTION_DAYS = (() => {
+  const raw = process.env.INGESTDB_RETENTION_DAYS;
+  if (!raw || !/^[1-9][0-9]*$/.test(raw) ||
+    !Number.isSafeInteger(Number(raw)) || Number(raw) < 2) {
+    throw new Error("INGESTDB_RETENTION_DAYS must be configured as an integer of at least 2");
+  }
+  return Number(raw);
+})();
+function eligibleSourceTimestamp(value, now = new Date()) {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const at = Date.parse(value);
+  const first = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - INGEST_RETENTION_DAYS);
+  return Number.isFinite(at) && at >= first && at <= now.getTime();
+}
 const SCHEDULER_BACKEND_SUPABASE_FUNCTION = "supabase_function";
 const SCHEDULER_BACKEND_GOOGLE_CLOUD_RUN = "google_cloud_run";
 
@@ -363,11 +377,11 @@ function parseTimestamp(value) {
 
 function parseObservedAt(value) {
   if (!value || typeof value !== "string") {
-    return new Date().toISOString();
+    return null;
   }
   const trimmed = value.trim();
   if (!trimmed) {
-    return new Date().toISOString();
+    return null;
   }
 
   let normalized = trimmed;
@@ -379,7 +393,7 @@ function parseObservedAt(value) {
 
   const parsed = new Date(normalized);
   if (Number.isNaN(parsed.getTime())) {
-    return new Date().toISOString();
+    return null;
   }
   return parsed.toISOString();
 }
@@ -944,6 +958,7 @@ function buildObservationMap(records) {
     stationRefs.add(stationRef);
 
     const observedAt = parseObservedAt(record?.timestamp);
+    if (!eligibleSourceTimestamp(observedAt)) continue;
     const observedMs = Date.parse(observedAt);
 
     const sensorValues = Array.isArray(record?.sensordatavalues)
@@ -2164,8 +2179,6 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
   }
 
   const rawObservationRows = [];
-  let lastObservedMs = Number.NEGATIVE_INFINITY;
-  let lastObservedAt = null;
 
   for (const [timeseriesRef, observation] of observationsByTimeseries.entries()) {
     const timeseriesId = timeseriesIdMap[timeseriesRef];
@@ -2173,6 +2186,7 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
       throw new Error(`Missing Sensor.Community timeseries identity: ${timeseriesRef}`);
     }
 
+    if (!eligibleSourceTimestamp(observation.observed_at)) continue;
     rawObservationRows.push({
       connector_id: connectorId,
       timeseries_id: timeseriesId,
@@ -2180,15 +2194,14 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
       value: observation.value,
       status: null,
     });
-
-    if (observation.observed_ms > lastObservedMs) {
-      lastObservedMs = observation.observed_ms;
-      lastObservedAt = observation.observed_at;
-    }
   }
 
   const observationDedupe = dedupeExactObservationRows(rawObservationRows);
-  const observationRows = observationDedupe.rows;
+  const observationRows = observationDedupe.rows.filter((row) =>
+    eligibleSourceTimestamp(row.observed_at)
+  );
+  const lastObservedAt = observationRows.reduce((latest, row) =>
+    !latest || row.observed_at > latest ? row.observed_at : latest, null);
   const observsRows = observationRows.map((row) => toObservsObservationRow(row))
     .filter((row) => row !== null);
 
@@ -2212,12 +2225,17 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
     };
     throw error;
   }
+  const committedTimeseriesIds = new Set(observationRows.map((row) => row.timeseries_id));
+  const latestRows = timeseriesPayload.filter((row) =>
+    committedTimeseriesIds.has(timeseriesIdMap[row.timeseries_ref]) &&
+    eligibleSourceTimestamp(row.last_value_at)
+  );
   const latestResponse = await mainRpcRequest(
     "uk_aq_rpc_timeseries_last_values_compact_update_v1",
     {
-      timeseries_ids: timeseriesPayload.map((row) => timeseriesIdMap[row.timeseries_ref]),
-      last_values: timeseriesPayload.map((row) => row.last_value),
-      last_value_ats: timeseriesPayload.map((row) => row.last_value_at),
+      timeseries_ids: latestRows.map((row) => timeseriesIdMap[row.timeseries_ref]),
+      last_values: latestRows.map((row) => row.last_value),
+      last_value_ats: latestRows.map((row) => row.last_value_at),
     },
     { egressQueryName: "update_timeseries_last_values" },
   );

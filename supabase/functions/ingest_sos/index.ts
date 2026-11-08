@@ -1,4 +1,5 @@
 import { parseDatapoints } from "./sos_datapoints.ts";
+import { eligibleIngestTimestamp, ingestRetentionDays, ingestRetentionStart } from "../_shared/ingest_retention.ts";
 // trigger deploy 2026-02-09 12:36
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import "../_shared/fetch_egress_patch.ts";
@@ -99,6 +100,7 @@ const DEFAULT_CONNECTOR_CODE = "sos";
 const SOS_PRIMARY_ACQUISITION_METHOD = "sos";
 const SOS_HTML_FALLBACK_ACQUISITION_METHOD = "ukair_html";
 const DEFAULT_WINDOW_HOURS = 6;
+const INGEST_RETENTION_DAYS = ingestRetentionDays(Deno.env.get("INGESTDB_RETENTION_DAYS"));
 const DEFAULT_MAX_RUNTIME_SECONDS = 600;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MIN_FETCH_TIMEOUT_MS = 4_000;
@@ -575,11 +577,18 @@ serve(async (req) => {
         };
 
         let shouldPoll = true;
-        const pollWindow = requestedWindowHours ?? connector.poll_window_hours ?? DEFAULT_WINDOW_HOURS;
+        const configuredWindow = requestedWindowHours ?? connector.poll_window_hours ?? DEFAULT_WINDOW_HOURS;
+        if (!Number.isFinite(configuredWindow) || configuredWindow <= 0) {
+          throw new Error("SOS poll window must be positive and finite");
+        }
+        const pollWindow = Math.min(configuredWindow, 24);
         const effectiveLimit = requestedLimit ?? connector.poll_timeseries_batch_size ?? undefined;
         const baseUrl = (connector.service_url || SOS_BASE_URL).replace(/\/$/, "");
         const now = new Date();
-        const windowStart = new Date(now.getTime() - pollWindow * 60 * 60 * 1000);
+        const windowStart = new Date(Math.max(
+          ingestRetentionStart(now, INGEST_RETENTION_DAYS).getTime(),
+          now.getTime() - pollWindow * 60 * 60 * 1000,
+        ));
         const connectorForRun = connector;
         let htmlFallbackProbeFailure: SosFetchFailure | null = null;
 
@@ -839,13 +848,16 @@ serve(async (req) => {
                 total: points.length,
               });
             }
-            const observationRows = Array.from(deduped.values()).map((point) => ({
+            const observationRows = Array.from(deduped.values()).filter((point) =>
+              eligibleIngestTimestamp(point.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
+            ).map((point) => ({
               connector_id: connectorIdForObs,
               timeseries_id: timeseriesId,
               observed_at: point.observed_at,
               value: point.value,
               status: point.status,
             }));
+            if (!observationRows.length) return;
             const writeStats = await writeIngestDbObservations({
               rows: observationRows,
               chunkSize: observationRows.length,
@@ -972,7 +984,9 @@ serve(async (req) => {
                     rawRecorder,
                     { deadlineMs: runtimeDeadline, initialRequestStart: requestStart },
                   );
-                  const points = parseDatapoints(data?.values, row.id);
+                  const points = parseDatapoints(data?.values, row.id).filter((point) =>
+                    eligibleIngestTimestamp(point.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
+                  );
                   await writeObservationPoints(
                     row.id,
                     points,
@@ -1239,7 +1253,9 @@ serve(async (req) => {
                         );
                         continue;
                       }
-                      const observationPoints = htmlSeries.points.map((point) => ({
+                      const observationPoints = htmlSeries.points.filter((point) =>
+                        eligibleIngestTimestamp(point.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
+                      ).map((point) => ({
                         observed_at: point.observed_at,
                         value: point.value,
                         status: null,
@@ -2749,7 +2765,10 @@ async function upsertLastValue(
   // the dashboard (showed PM2.5 as fresh when no observation existed) and
   // the Cloud Run station scheduler (selector and checkpoint logic both read
   // `last_value_at`). We now write only when a real `lastPoint` exists.
-  const lastPoint = points.length ? points[points.length - 1] : null;
+  const eligiblePoints = points.filter((point) =>
+    eligibleIngestTimestamp(point.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
+  );
+  const lastPoint = eligiblePoints.length ? eligiblePoints[eligiblePoints.length - 1] : null;
   if (!lastPoint || !lastPoint.observed_at) {
     return;
   }
@@ -2786,7 +2805,10 @@ async function upsertLastValue(
     : await postgrestRequest(
       "PATCH",
       "timeseries",
-      { id: `eq.${seriesId}` },
+      {
+        id: `eq.${seriesId}`,
+        or: `(last_value_at.is.null,last_value_at.lt.${lastPoint.observed_at})`,
+      },
       { last_value_at: lastPoint.observed_at },
       "return=minimal",
     );

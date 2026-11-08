@@ -437,7 +437,9 @@ async function buildIngestPayload(
     String(payload.active_only ?? "false"),
     false,
   );
-  payload.initial_days = toPositiveIntegerOrNull(payload.initial_days) ?? 2;
+  if (payload.initial_days !== undefined) {
+    payload.initial_days = toPositiveIntegerOrNull(payload.initial_days);
+  }
   payload.window_hours = windowHours;
   payload.batch_size = batchLimit;
   payload.station_refs = stationRefs;

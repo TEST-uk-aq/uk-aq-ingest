@@ -18,6 +18,7 @@ COPY supabase/functions/_shared/fetch_egress_patch.ts /app/runtime/_shared/fetch
 COPY supabase/functions/_shared/egress_metrics.ts /app/runtime/_shared/egress_metrics.ts
 COPY supabase/functions/_shared/observs_client.ts /app/runtime/_shared/observs_client.ts
 COPY supabase/functions/_shared/ingestdb_observation_writer.mjs /app/runtime/_shared/ingestdb_observation_writer.mjs
+COPY supabase/functions/_shared/ingest_retention.ts /app/runtime/_shared/ingest_retention.ts
 COPY supabase/functions/_shared/fetch_egress_patch.ts /app/supabase/functions/_shared/fetch_egress_patch.ts
 COPY supabase/functions/_shared/egress_metrics.ts /app/supabase/functions/_shared/egress_metrics.ts
 

@@ -2,6 +2,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import "../_shared/fetch_egress_patch.ts";
 import { cacheControlHeaders } from "../_shared/cache.ts";
+import { eligibleIngestTimestamp, ingestRetentionDays } from "../_shared/ingest_retention.ts";
 import {
   type ObservsObservationRow,
   writeObservsWithOutbox,
@@ -54,6 +55,7 @@ const DEFAULT_SERVICE_LABEL = "Sensor.Community";
 const DEFAULT_COUNTRY = "GB";
 const DEFAULT_USER_AGENT = "uk-air-quality-networks";
 const DEFAULT_TIMEOUT_MS = 30_000;
+const INGEST_RETENTION_DAYS = ingestRetentionDays(Deno.env.get("INGESTDB_RETENTION_DAYS"));
 const DEFAULT_MAX_RUNTIME_SECONDS = 130;
 const DEFAULT_RESPONSE_BUFFER_MS = 10_000;
 const DEFAULT_OBSERVATION_UPSERT_CHUNK_SIZE = 1000;
@@ -993,13 +995,14 @@ async function upsertTimeseries(
   if (!rows.length) {
     return 0;
   }
-  await postgrestRequest(
+  const { error } = await postgrestRequest(
     "POST",
     "timeseries",
     { on_conflict: "connector_id,service_ref,timeseries_ref" },
     rows,
     "resolution=merge-duplicates,return=minimal",
   );
+  if (error) throw new Error(`Sensor.Community timeseries upsert failed: ${error.message}`);
   return rows.length;
 }
 
@@ -2011,11 +2014,13 @@ serve(async (req) => {
               if (!normalized.station_ref) {
                 continue;
               }
+              const observedAt = parseTimestamp(record.timestamp);
+              if (!observedAt || !eligibleIngestTimestamp(observedAt, new Date(), INGEST_RETENTION_DAYS)) {
+                continue;
+              }
               processedRecords.push(record);
               const stationRef = normalized.station_ref;
               stationRefSet.add(stationRef);
-              const observedAt = parseTimestamp(record.timestamp) ??
-                new Date().toISOString();
               const observedMs = Date.parse(observedAt);
               const sensorValues = Array.isArray(record.sensordatavalues)
                 ? record.sensordatavalues
@@ -2178,7 +2183,9 @@ serve(async (req) => {
               const observationDedupe = dedupeExactObservationRows(
                 rawObservationRows,
               );
-              const observationRows = observationDedupe.rows;
+              const observationRows = observationDedupe.rows.filter((row) =>
+                eligibleIngestTimestamp(row.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
+              );
               observationsRowsPrepared = observationRows.length;
               observationsRowsDedupedPrewrite = observationDedupe.deduped;
               observsRows = observationRows.map(toObservsObservationRow)
@@ -2228,7 +2235,22 @@ serve(async (req) => {
                   throw error;
                 }
                 if (checkBudget("before_commit_timeseries_last_value")) {
-                  await upsertTimeseries(timeseriesPayload);
+                  const acceptedIds = new Set(observationRows.map((row) => row.timeseries_id));
+                  const latestRows = timeseriesPayload.filter((row) =>
+                    acceptedIds.has(timeseriesIdMap[String(row.timeseries_ref)]) &&
+                    eligibleIngestTimestamp(row.last_value_at, new Date(), INGEST_RETENTION_DAYS) !== null
+                  );
+                  if (latestRows.length) {
+                    const { error } = await publicRpcRequest(
+                      "uk_aq_rpc_timeseries_last_values_compact_update_v1",
+                      {
+                        timeseries_ids: latestRows.map((row) => timeseriesIdMap[String(row.timeseries_ref)]),
+                        last_values: latestRows.map((row) => row.last_value),
+                        last_value_ats: latestRows.map((row) => row.last_value_at),
+                      },
+                    );
+                    if (error) throw new Error(`Sensor.Community latest-value update failed: ${error.message}`);
+                  }
                 }
                 if (observsResult.status === "rejected") {
                   const error = observsResult.reason instanceof Error

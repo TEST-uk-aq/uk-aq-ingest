@@ -63,6 +63,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.ingest_helpers import station_coords, station_in_bbox_or_missing_coords
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
+from scripts.uk_aq_retention import eligible_timestamp, retention_days
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
 from scripts.uk_aq_ingestdb_observation_writer import (
     DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
@@ -707,7 +708,8 @@ def parse_timestamp(value: Optional[str]) -> Optional[datetime]:
     if cleaned.endswith("Z"):
         cleaned = cleaned[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(cleaned)
+        parsed = datetime.fromisoformat(cleaned)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except ValueError:
         try:
             return datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -1162,6 +1164,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    days = retention_days()
     _configure_logging(args.log_level, DEFAULT_FILE_LOG_LEVEL)
     if not args.refresh_recent:
         LOG.error("No action specified. Use --refresh-recent.")
@@ -1211,7 +1214,9 @@ def main() -> None:
             if not station_ref:
                 continue
             station_refs.append(station_ref)
-            observed_at = parse_timestamp(record.get("timestamp")) or utcnow()
+            observed_at = parse_timestamp(record.get("timestamp"))
+            if not eligible_timestamp(observed_at, utcnow(), days):
+                continue
             values, series_refs = build_observation_rows(station_ref, record, observed_at)
             timeseries_refs.extend(series_refs)
             for key, value in values:
@@ -1222,6 +1227,8 @@ def main() -> None:
         station_id_map = writer.fetch_station_ids(connector_id, service_ref, station_refs)
         timeseries_payload = []
         for key, (value, observed_at) in observations_by_timeseries.items():
+            if not eligible_timestamp(observed_at, utcnow(), days):
+                continue
             station_id = station_id_map.get(key.station_ref)
             if not station_id:
                 continue
@@ -1261,6 +1268,8 @@ def main() -> None:
 
         observation_rows = []
         for key, (value, observed_at) in observations_by_timeseries.items():
+            if not eligible_timestamp(observed_at, utcnow(), days):
+                continue
             timeseries_ref = f"{key.station_ref}:{key.pollutant}"
             timeseries_id = timeseries_id_map.get(timeseries_ref)
             if not timeseries_id:
@@ -1275,8 +1284,20 @@ def main() -> None:
                 }
             )
 
+        observation_rows = [row for row in observation_rows if eligible_timestamp(
+            parse_timestamp(row["observed_at"]), utcnow(), days
+        )]
         inserted = writer.upsert_observations(observation_rows)
-        writer.upsert_timeseries(timeseries_payload)
+        accepted_ids = {row["timeseries_id"] for row in observation_rows}
+        latest_rows = [row for row in timeseries_payload if
+                       timeseries_id_map.get(row["timeseries_ref"]) in accepted_ids and
+                       eligible_timestamp(parse_timestamp(row["last_value_at"]), utcnow(), days)]
+        if latest_rows:
+            writer.public.rpc("uk_aq_rpc_timeseries_last_values_compact_update_v1", {
+                "timeseries_ids": [timeseries_id_map[row["timeseries_ref"]] for row in latest_rows],
+                "last_values": [row["last_value"] for row in latest_rows],
+                "last_value_ats": [row["last_value_at"] for row in latest_rows],
+            }).execute()
         LOG.info("Upserted %s observations.", inserted)
         LOG.info(
             "IngestDB observation write stats: %s",

@@ -1,0 +1,36 @@
+name: Deploy Sensor.Community Ingest Edge Function
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: supabase/setup-cli@45a513f8c64c0bc8e0e3dfe572b5c95be85f6359
+        with:
+          version: latest
+      - name: Deploy to TEST IngestDB
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS }}
+        run: |
+          set -euo pipefail
+          test -n "${SUPABASE_ACCESS_TOKEN:-}"
+          test -n "${SUPABASE_URL:-}"
+          if ! [[ "${INGESTDB_RETENTION_DAYS:-}" =~ ^[1-9][0-9]*$ ]] || [ "${INGESTDB_RETENTION_DAYS}" -lt 2 ]; then
+            echo "INGESTDB_RETENTION_DAYS must be at least 2" >&2
+            exit 1
+          fi
+          PROJECT_REF="${SUPABASE_URL#https://}"
+          PROJECT_REF="${PROJECT_REF%%.*}"
+          test -n "${PROJECT_REF}"
+          supabase secrets set --project-ref "${PROJECT_REF}" \
+            INGESTDB_RETENTION_DAYS="${INGESTDB_RETENTION_DAYS}"
+          supabase functions deploy ingest_sensorcommunity \
+            --project-ref "${PROJECT_REF}" --no-verify-jwt
