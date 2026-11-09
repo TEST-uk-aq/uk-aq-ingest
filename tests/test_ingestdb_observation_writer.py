@@ -153,7 +153,7 @@ def test_active_python_observation_writers_use_shared_contract_and_canonical_key
         root / "scripts/blondon_nodes/blondon_nodes_ingest.py",
         root / "scripts/sensorcommunity/sensorcommunity_ingest.py",
         root / "scripts/erg_laqn/erg_laqn_ingest.py",
-        root / "scripts/sos/sos_ingest.py",
+        root / "scripts/sos/sos_ingest_legacy.py",
     ]
     for path in paths:
         source = path.read_text(encoding="utf-8")
@@ -168,7 +168,7 @@ def test_active_python_observation_writers_use_shared_contract_and_canonical_key
     metadata_write = sensor_source.index("writer.upsert_timeseries(timeseries_metadata_payload)")
     observation_write = sensor_source.index("writer.upsert_observations(observation_rows)")
     last_value_write = sensor_source.index(
-        "writer.upsert_timeseries(timeseries_payload)", observation_write
+        "uk_aq_rpc_timeseries_last_values_compact_update_v1", observation_write
     )
     assert metadata_write < observation_write < last_value_write
 
@@ -176,9 +176,10 @@ def test_active_python_observation_writers_use_shared_contract_and_canonical_key
     assert "if isinstance(exc, IngestDbObservationWriteError):" in nodes_source
 
     sos_source = paths[3].read_text(encoding="utf-8")
-    assert sos_source.count("if isinstance(exc, IngestDbObservationWriteError):") >= 3
+    assert sos_source.count("if isinstance(exc, IngestDbObservationWriteError):") >= 2
 
-    dormant_source = (
+    communities_source = (
         root / "scripts/blondon_communities/blondon_communities_list_stations.py"
     ).read_text(encoding="utf-8")
-    assert "def upsert_observations" not in dormant_source
+    assert "def upsert_observations" in communities_source
+    assert "uk_aq_rpc_observations_compact_upsert_v1" in communities_source

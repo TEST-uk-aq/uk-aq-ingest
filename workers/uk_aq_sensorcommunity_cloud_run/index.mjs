@@ -1,3 +1,4 @@
+import { loadRetention, eligibleObservation, assertEligibleRows, sourceTimestamp } from "../../supabase/functions/_shared/retention.mjs";
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import {
@@ -957,8 +958,8 @@ function buildObservationMap(records) {
     }
     stationRefs.add(stationRef);
 
-    const observedAt = parseObservedAt(record?.timestamp);
-    if (!eligibleSourceTimestamp(observedAt)) continue;
+    const observedAt = sourceTimestamp(record?.timestamp);
+    if (!observedAt || !eligibleObservation(observedAt)) continue;
     const observedMs = Date.parse(observedAt);
 
     const sensorValues = Array.isArray(record?.sensordatavalues)
@@ -1409,6 +1410,7 @@ async function upsertObservations(rows) {
     requestBodyBytes: (rowsChunk) =>
       serializedJsonUtf8Bytes(buildCompactObservationRpcArgs(rowsChunk)),
     writeChunk: async (rowsChunk) => {
+      assertEligibleRows(rowsChunk);
       const response = await mainRpcRequest(
         "uk_aq_rpc_observations_compact_upsert_v1",
         buildCompactObservationRpcArgs(rowsChunk),
@@ -2063,6 +2065,7 @@ async function uploadDropboxArtifacts(
 }
 
 async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture) {
+  await loadRetention("sensorcommunity");
   const sourceUrl = `${SCOMM_BASE_URL}/airrohr/v1/filter/country=${encodeURIComponent(SCOMM_COUNTRY)}`;
   if (dropboxCapture) {
     dropboxCapture.raw = {
@@ -2196,12 +2199,8 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
     });
   }
 
-  const observationDedupe = dedupeExactObservationRows(rawObservationRows);
-  const observationRows = observationDedupe.rows.filter((row) =>
-    eligibleSourceTimestamp(row.observed_at)
-  );
-  const lastObservedAt = observationRows.reduce((latest, row) =>
-    !latest || row.observed_at > latest ? row.observed_at : latest, null);
+  const observationDedupe = dedupeExactObservationRows(rawObservationRows.filter((row) => eligibleObservation(row.observed_at)));
+  const observationRows = observationDedupe.rows;
   const observsRows = observationRows.map((row) => toObservsObservationRow(row))
     .filter((row) => row !== null);
 
@@ -2209,7 +2208,7 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
   // transaction exists.
   const [ingestDbResult, observsResult] = await Promise.allSettled([
     upsertObservations(observationRows),
-    writeObservsWithOutbox(observsRows),
+    writeObservsWithOutbox(observsRows.filter((row) => eligibleObservation(row.observed_at))),
   ]);
   if (ingestDbResult.status === "rejected") {
     const error = ingestDbResult.reason instanceof Error
@@ -2225,17 +2224,13 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
     };
     throw error;
   }
-  const committedTimeseriesIds = new Set(observationRows.map((row) => row.timeseries_id));
-  const latestRows = timeseriesPayload.filter((row) =>
-    committedTimeseriesIds.has(timeseriesIdMap[row.timeseries_ref]) &&
-    eligibleSourceTimestamp(row.last_value_at)
-  );
+  const eligibleLatest = timeseriesPayload.filter((row) => eligibleObservation(row.last_value_at));
   const latestResponse = await mainRpcRequest(
     "uk_aq_rpc_timeseries_last_values_compact_update_v1",
     {
-      timeseries_ids: latestRows.map((row) => timeseriesIdMap[row.timeseries_ref]),
-      last_values: latestRows.map((row) => row.last_value),
-      last_value_ats: latestRows.map((row) => row.last_value_at),
+      timeseries_ids: eligibleLatest.map((row) => timeseriesIdMap[row.timeseries_ref]),
+      last_values: eligibleLatest.map((row) => row.last_value),
+      last_value_ats: eligibleLatest.map((row) => row.last_value_at),
     },
     { egressQueryName: "update_timeseries_last_values" },
   );

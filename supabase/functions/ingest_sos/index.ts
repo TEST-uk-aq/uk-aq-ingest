@@ -1,3 +1,4 @@
+import { loadRetention, eligibleObservation, boundedStart, assertEligibleRows } from "../_shared/retention.mjs";
 import { parseDatapoints } from "./sos_datapoints.ts";
 import { eligibleIngestTimestamp, ingestRetentionDays, ingestRetentionStart } from "../_shared/ingest_retention.ts";
 // trigger deploy 2026-02-09 12:36
@@ -403,6 +404,10 @@ serve(async (req) => {
   if (authResponse) {
     return authResponse;
   }
+  try { await loadRetention("sos"); } catch (error) {
+    console.error("Retention ownership lookup failed:", error);
+    return new Response("Internal server error.", { status: 500 });
+  }
   const log = createLogBuffer();
   const dropboxConfig = loadDropboxConfig();
   const errorLogger = ERROR_LOGGER;
@@ -534,7 +539,7 @@ serve(async (req) => {
           if (!force && observsRowsPending.length < observsBufferFlushRows) {
             return;
           }
-          const rows = observsRowsPending.splice(0, observsRowsPending.length);
+          const rows = observsRowsPending.splice(0, observsRowsPending.length).filter((row) => eligibleObservation(row.observed_at));
           try {
             const stats = await writeObservsWithOutbox(
               publicRpcRequest,
@@ -585,10 +590,7 @@ serve(async (req) => {
         const effectiveLimit = requestedLimit ?? connector.poll_timeseries_batch_size ?? undefined;
         const baseUrl = (connector.service_url || SOS_BASE_URL).replace(/\/$/, "");
         const now = new Date();
-        const windowStart = new Date(Math.max(
-          ingestRetentionStart(now, INGEST_RETENTION_DAYS).getTime(),
-          now.getTime() - pollWindow * 60 * 60 * 1000,
-        ));
+        const windowStart = boundedStart(new Date(now.getTime() - pollWindow * 60 * 60 * 1000));
         const connectorForRun = connector;
         let htmlFallbackProbeFailure: SosFetchFailure | null = null;
 
@@ -823,6 +825,7 @@ serve(async (req) => {
             }>,
             acquisitionMethod: string,
           ) => {
+            points = points.filter((point) => eligibleObservation(point.observed_at));
             if (!points.length) return;
             const connectorIdForObs = connector?.id ??
               requestedConnectorId ?? null;
@@ -874,6 +877,7 @@ serve(async (req) => {
                   buildCompactObservationRpcArgsV2(chunk, acquisitionMethod),
                 ),
               writeChunk: async (chunk: Record<string, unknown>[]) => {
+                assertEligibleRows(chunk);
                 const args = buildCompactObservationRpcArgsV2(
                   chunk,
                   acquisitionMethod,
@@ -980,13 +984,11 @@ serve(async (req) => {
                   const data = await fetchJson(
                     baseUrl,
                     `/timeseries/${encodeURIComponent(sourceId)}/getData`,
-                    { timespan, format: "tvp" },
+                    { timespan: `${boundedStart(windowStart).toISOString()}/${now.toISOString()}`, format: "tvp" },
                     rawRecorder,
                     { deadlineMs: runtimeDeadline, initialRequestStart: requestStart },
                   );
-                  const points = parseDatapoints(data?.values, row.id).filter((point) =>
-                    eligibleIngestTimestamp(point.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
-                  );
+                  const points = parseDatapoints(data?.values, row.id).filter((point) => eligibleObservation(point.observed_at));
                   await writeObservationPoints(
                     row.id,
                     points,
@@ -1253,13 +1255,12 @@ serve(async (req) => {
                         );
                         continue;
                       }
-                      const observationPoints = htmlSeries.points.filter((point) =>
-                        eligibleIngestTimestamp(point.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
-                      ).map((point) => ({
+                      const observationPoints = htmlSeries.points.filter((point) => eligibleObservation(point.observed_at)).map((point) => ({
                         observed_at: point.observed_at,
                         value: point.value,
                         status: null,
                       }));
+                      if (!observationPoints.length) continue;
                       try {
                         await writeObservationPoints(
                           work.timeseries.id,
@@ -1274,7 +1275,7 @@ serve(async (req) => {
                             .observed_at,
                         );
                         const latestPoints = Number.isFinite(existingLastValueAt) &&
-                            newestPointAt <= existingLastValueAt
+                            newestPointAt < existingLastValueAt
                           ? []
                           : observationPoints;
                         await upsertLastValue(
@@ -2765,16 +2766,13 @@ async function upsertLastValue(
   // the dashboard (showed PM2.5 as fresh when no observation existed) and
   // the Cloud Run station scheduler (selector and checkpoint logic both read
   // `last_value_at`). We now write only when a real `lastPoint` exists.
-  const eligiblePoints = points.filter((point) =>
-    eligibleIngestTimestamp(point.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
-  );
-  const lastPoint = eligiblePoints.length ? eligiblePoints[eligiblePoints.length - 1] : null;
-  if (!lastPoint || !lastPoint.observed_at) {
+  points = points.filter((point) => eligibleObservation(point.observed_at));
+  const lastPoint = points.length ? points[points.length - 1] : null;
+  if (!lastPoint || !lastPoint.observed_at || lastPoint.value == null) {
     return;
   }
 
-  const { error } = lastPoint.value !== null && lastPoint.value !== undefined
-    ? SOS_INGESTDB_WRITE_TRANSPORT === "database"
+  const { error } = SOS_INGESTDB_WRITE_TRANSPORT === "database"
       ? await (async () => {
         try {
           const data = await updateSosLatestValuesViaDatabase({
@@ -2801,17 +2799,7 @@ async function upsertLastValue(
         },
         undefined,
         "uk_aq_public",
-      )
-    : await postgrestRequest(
-      "PATCH",
-      "timeseries",
-      {
-        id: `eq.${seriesId}`,
-        or: `(last_value_at.is.null,last_value_at.lt.${lastPoint.observed_at})`,
-      },
-      { last_value_at: lastPoint.observed_at },
-      "return=minimal",
-    );
+      );
   if (error) {
     console.warn(`timeseries update failed for ${seriesId}: ${error.message}`);
     await errorLogger.logError({

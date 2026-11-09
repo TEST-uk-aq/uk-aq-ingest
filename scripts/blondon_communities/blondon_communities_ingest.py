@@ -30,10 +30,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.blondon_communities.blondon_communities_list_stations import (
     BLONDON_COMMUNITIES_SERVICE_REF,
     BreatheLondonClient,
-    SupabaseWriter,
+    SupabaseWriter as ReferenceWriter,
     load_api_key,
     normalize_station_payload,
 )
+from scripts.uk_aq_retention import load_retention, eligible_observation, bounded_start
+from scripts.uk_aq_ingestdb_observation_writer import write_observations, build_compact_observation_rpc_args
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
 from scripts.uk_aq_retention import eligible_timestamp, retention_days, retention_start
 
@@ -48,8 +50,8 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logging.INFO))
 logging.getLogger("postgrest").setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logging.INFO))
 
-DEFAULT_INITIAL_DAYS = 1
-DEFAULT_WINDOW_HOURS = 24
+DEFAULT_INITIAL_DAYS = 7
+DEFAULT_WINDOW_HOURS = 6
 DEFAULT_SLEEP_SECONDS = 0.2
 DEFAULT_BATCH_SIZE = 500
 
@@ -77,6 +79,31 @@ SPECIES_CONFIG = {
 }
 
 
+class SupabaseWriter(ReferenceWriter):
+    def upsert_observations(self, rows):
+        def commit(batch):
+            if any(not eligible_observation(row["observed_at"]) for row in batch):
+                raise RuntimeError("Observation batch crossed retention boundary; retry eligible rows")
+            self.public.rpc("uk_aq_rpc_observations_compact_upsert_v1",
+                            build_compact_observation_rpc_args(batch)).execute()
+        return write_observations(rows, chunk_size=max(1, len(rows)),
+            connector_code="blondon_communities", write_chunk=commit,
+            config={"minimum_attempt_runtime_ms": 120_000, "shutdown_buffer_ms": 30_000},
+            should_stop=lambda: time.monotonic() >= self.deadline - 45,
+            remaining_runtime_ms=lambda: max(0, (self.deadline - time.monotonic()) * 1000))["committed_rows"]
+
+    def update_timeseries_last_values(self, rows):
+        rows = [r for r in rows if eligible_observation(r["last_value_at"])]
+        if not rows:
+            return 0
+        self.public.rpc("uk_aq_rpc_timeseries_last_values_compact_update_v1", {
+            "timeseries_ids": [r["id"] for r in rows],
+            "last_values": [r["last_value"] for r in rows],
+            "last_value_ats": [r["last_value_at"] for r in rows],
+        }).execute()
+        return len(rows)
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -86,14 +113,14 @@ def _floor_to_hour(value: datetime) -> datetime:
 
 
 def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
-    if not value:
+    if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(text)
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
     except ValueError:
         return None
 
@@ -102,8 +129,8 @@ def _coerce_float(value: Any) -> Optional[float]:
     if value is None:
         return None
     try:
-        result = float(value)
-        return result if math.isfinite(result) else None
+        number = float(value)
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 
@@ -114,7 +141,7 @@ def _parse_species_list(value: str) -> List[str]:
 
 
 def _parse_start_date(value: Optional[str]) -> Optional[datetime]:
-    if not value:
+    if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
     try:
@@ -270,12 +297,14 @@ def _extract_observations(
         payload = payload[0]
     if not isinstance(payload, list):
         return rows, last_observed, last_value
+    if len(payload) > 10000:
+        raise RuntimeError("Communities response work budget exceeded")
     for entry in payload:
         if not isinstance(entry, dict):
             continue
         observed_at = _parse_iso_datetime(entry.get("DateTime"))
         value = _coerce_float(entry.get("ScaledValue"))
-        if observed_at is None or value is None:
+        if observed_at is None or not eligible_observation(observed_at) or value is None:
             continue
         rows.append(
             {
@@ -323,17 +352,17 @@ def parse_args() -> argparse.Namespace:
         "--initial-days",
         type=int,
         default=DEFAULT_INITIAL_DAYS,
-        help="Days of history to fetch when no checkpoint exists (default: 7).",
+        help="Bootstrap hint; ordinary acquisition is bounded to the most recent 48 hours.",
     )
     parser.add_argument(
         "--start-date",
-        help="ISO date/time override for first fetch when no checkpoint exists.",
+        help="Manual retained start; one slice of at most 24 hours per species.",
     )
     parser.add_argument(
         "--window-hours",
         type=int,
         default=DEFAULT_WINDOW_HOURS,
-        help="Hours per API request window (default: 24).",
+        help="Recent window hours (bounded to 48 hours; manual slices to 24 hours).",
     )
     parser.add_argument(
         "--sleep-seconds",
@@ -389,14 +418,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    days = retention_days()
+    if args.window_hours <= 0 or args.batch_size <= 0 or args.initial_days <= 0:
+        raise ValueError("Window, batch size and initial days must be positive")
+    args.limit = min(20, max(1, args.limit or 20))
+    load_retention("blondon_communities")
+    deadline = time.monotonic() + 600
+    source_requests = 0
+    failures = 0
     species_list = _parse_species_list(args.species)
     if not species_list:
         raise SystemExit("No valid species specified.")
 
     api_key = load_api_key(args.api_key)
-    client = BreatheLondonClient(api_key)
+    client = BreatheLondonClient(api_key, timeout=15, raise_on_retry_exhaustion=True)
     writer = SupabaseWriter()
+    writer.deadline = deadline
     connector_id = writer.fetch_connector_id()
     if connector_id is None:
         raise SystemExit("Connector not found for Breathe London. Run the list_stations job first.")
@@ -551,132 +587,76 @@ def main() -> int:
     initial_start = _parse_start_date(args.start_date)
     if args.start_date and initial_start is None:
         raise ValueError("Invalid --start-date")
-    if initial_start:
-        initial_start = _floor_to_hour(initial_start)
-
     observation_total = 0
     observations_output = [] if args.output_observations else None
     checkpoint_rows = []
-
     for row in station_rows:
         station_ref = str(row["station_ref"])
         station_id = station_id_map.get(station_ref)
         if station_id is None:
             continue
         for species in species_list:
+            if source_requests >= 40 or time.monotonic() >= deadline - 90:
+                LOG.warning("Stopping incomplete Communities work at the request/runtime budget")
+                failures += 1
+                break
             timeseries_ref = _build_timeseries_ref(station_ref, species)
             timeseries_id = timeseries_id_map.get(timeseries_ref)
             if timeseries_id is None:
                 continue
-
-            key = (station_id, species)
-            checkpoint = checkpoints.get(key, {})
-            last_observed = _parse_iso_datetime(checkpoint.get("last_observed_at"))
-            last_error = None
-
-            previous_poll = _parse_iso_datetime(checkpoint.get("last_polled_at"))
-            hours_since_poll = max(0, (now - previous_poll).total_seconds() / 3600) if previous_poll else 24
-            recovery_hours = min(48, max(24, math.ceil(hours_since_poll + 6))) if (
-                checkpoint.get("last_error") or hours_since_poll >= 12
-            ) else 6
-            requested_start = initial_start or (
-                now - timedelta(days=min(max(args.initial_days, 1), days))
-                if args.ignore_checkpoints or not checkpoint
-                else now - timedelta(hours=recovery_hours)
-            )
-            start_time = max(earliest, _floor_to_hour(requested_start))
-            if start_time >= now:
+            checkpoint = {} if args.ignore_checkpoints else checkpoints.get((station_id, species), {})
+            prior = _parse_iso_datetime(checkpoint.get("last_observed_at"))
+            polled = _parse_iso_datetime(checkpoint.get("last_polled_at"))
+            stale = bool(checkpoint.get("last_error")) or prior is None or prior < now - timedelta(hours=6)
+            interrupted = (now - polled).total_seconds() / 3600 + 1 if polled else 24
+            hours = min(48, max(24 if stale else 6, min(args.window_hours, 24), interrupted))
+            start_time = bounded_start(initial_start or now - timedelta(hours=hours))
+            end_time = min(now, start_time + timedelta(hours=24)) if initial_start else now
+            if start_time >= end_time:
                 continue
-
-            window = timedelta(hours=min(
-                24 if initial_start or args.ignore_checkpoints or recovery_hours > 6 else 6,
-                max(args.window_hours, 1),
-            ))
-            cursor = start_time
-            last_value = None
-            windows_fetched = 0
-
-            while cursor < now and windows_fetched < 8:
-                end_time = min(cursor + window, now)
-                try:
-                    payload = client.get_clarity_data(station_ref, species, cursor, end_time)
-                except Exception as exc:
-                    LOG.warning(
-                        "Failed fetch for %s %s (%s to %s): %s",
-                        station_ref,
-                        species,
-                        cursor.isoformat(),
-                        end_time.isoformat(),
-                        exc,
-                    )
-                    last_error = str(exc)
-                    break
-
-                obs_rows, _, _ = _extract_observations(payload, timeseries_id)
-                obs_rows = [point for point in obs_rows if eligible_timestamp(
-                    _parse_iso_datetime(point["observed_at"]), utcnow(), days
-                )]
-                obs_rows = list({point["observed_at"]: point for point in obs_rows}.values())
-                if observations_output is not None and obs_rows:
-                    for obs_row in obs_rows:
-                        observations_output.append(
-                            {
-                                **obs_row,
-                                "timeseries_ref": timeseries_ref,
-                                "station_ref": station_ref,
-                                "species": species,
-                            }
-                        )
-                if obs_rows and not args.dry_run:
-                    for chunk in _chunked(obs_rows, args.batch_size):
-                        eligible_chunk = [point for point in chunk if eligible_timestamp(
-                            _parse_iso_datetime(point["observed_at"]), utcnow(), days
-                        )]
-                        if not eligible_chunk:
-                            continue
-                        try:
-                            writer.upsert_observations(eligible_chunk)
-                        except Exception as exc:
-                            last_error = str(exc)
-                            break
-                        observation_total += len(eligible_chunk)
-                        for point in eligible_chunk:
-                            observed = _parse_iso_datetime(point["observed_at"])
-                            if observed and (last_observed is None or observed >= last_observed):
-                                last_observed = observed
-                                last_value = point["value"]
-                    if last_error:
-                        break
-
-                cursor = end_time
-                windows_fetched += 1
-                if args.sleep_seconds:
-                    time.sleep(args.sleep_seconds)
-
-            if cursor < now and not last_error:
-                last_error = "bounded_request_limit"
-
-            if last_observed and last_value is not None and not args.dry_run:
-                try:
-                    writer.update_timeseries_last_values([
-                        {"id": timeseries_id, "last_value": last_value, "last_value_at": last_observed.isoformat()}
-                    ])
-                except Exception as exc:
-                    last_error = str(exc)
-
-            checkpoint_rows.append(
-                {
-                    "station_id": station_id,
-                    "species": species,
-                    "timeseries_id": timeseries_id,
-                    "last_observed_at": last_observed.isoformat() if last_observed else None,
-                    "last_polled_at": utcnow().isoformat(),
-                    "last_error": last_error,
-                    "updated_at": utcnow().isoformat(),
-                }
-            )
+            progress = {"station_id": station_id, "species": species, "timeseries_id": timeseries_id,
+                        "last_polled_at": utcnow().isoformat(), "updated_at": utcnow().isoformat(), "last_error": "attempt_incomplete"}
             if not args.dry_run:
-                writer.upsert_checkpoints([checkpoint_rows[-1]])
+                writer.upsert_checkpoints([progress])
+            last_error = None
+            latest = None
+            try:
+                start_time = bounded_start(start_time)
+                if start_time >= end_time:
+                    raise RuntimeError("Requested recovery slice left retention before acquisition")
+                source_requests += 1
+                payload = client.get_clarity_data(station_ref, species, start_time, end_time)
+                if isinstance(payload, list) and len(payload) > 10000:
+                    raise RuntimeError("Communities response work budget exceeded")
+                obs_rows, _, _ = _extract_observations(payload, timeseries_id)
+                if len(obs_rows) > 10000:
+                    raise RuntimeError("Communities response work budget exceeded")
+                obs_rows = [r for r in obs_rows if eligible_observation(r["observed_at"])]
+                if observations_output is not None:
+                    observations_output.extend(obs_rows)
+                for batch in _chunked(obs_rows, min(500, max(1, args.batch_size))):
+                    if not args.dry_run:
+                        observation_total += writer.upsert_observations(batch)
+                    candidate = max(batch, key=lambda r: r["observed_at"])
+                    if latest is None or candidate["observed_at"] >= latest["observed_at"]:
+                        latest = candidate
+                    if not args.dry_run:
+                        writer.upsert_checkpoints([{**progress, **({"last_observed_at": latest["observed_at"]} if eligible_observation(latest["observed_at"]) else {})}])
+                if latest and not args.dry_run:
+                    writer.update_timeseries_last_values([{"id": timeseries_id, "last_value": latest["value"],
+                                                          "last_value_at": latest["observed_at"]}])
+            except Exception as exc:
+                last_error = str(exc)
+                failures += 1
+                LOG.exception("Species ingest failed: %s %s", station_ref, species)
+            progress["last_error"] = last_error
+            if latest and eligible_observation(latest["observed_at"]):
+                progress["last_observed_at"] = latest["observed_at"]
+            checkpoint_rows.append(progress)
+            if not args.dry_run:
+                writer.upsert_checkpoints([progress])
+            if args.sleep_seconds and time.monotonic() < deadline - 90:
+                time.sleep(min(1, max(0, args.sleep_seconds)))
 
     if not args.dry_run:
         try:
@@ -696,7 +676,7 @@ def main() -> int:
     _write_json(args.output_timeseries, timeseries_output or [])
     _write_json(args.output_observations, observations_output or [])
     _write_json(args.output_checkpoints, checkpoints_output or [])
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

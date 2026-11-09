@@ -15,6 +15,7 @@ COPY supabase/functions/ingest_breathelondon/breathelondon_database.ts /app/runt
 # index.ts is copied to /app/runtime/ingest_blondon_communities, so its
 # ../../../shared import resolves to /shared inside the image.
 COPY shared/blondon_communities_reference.mjs /shared/blondon_communities_reference.mjs
+COPY supabase/functions/_shared/retention.mjs /app/runtime/_shared/retention.mjs
 COPY supabase/functions/_shared/cache.ts /app/runtime/_shared/cache.ts
 COPY supabase/functions/_shared/fetch_egress_patch.ts /app/runtime/_shared/fetch_egress_patch.ts
 COPY supabase/functions/_shared/egress_metrics.ts /app/runtime/_shared/egress_metrics.ts

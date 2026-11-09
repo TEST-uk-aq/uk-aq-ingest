@@ -38,8 +38,7 @@ Dropbox behavior in Cloud Run:
 - Raw uploads are gated by `BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL` (or `UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL`) matching `SUPABASE_URL`.
 - Wrapper-inserted direct failure `error_logs` rows are mirrored into `/error_log/YYYY-MM-DD/` and patch `error_logs.dropbox_path` when Dropbox error logging is enabled.
 - File prefixes are `uk_aq_log_cloud_run_*` and `uk_aq_raw_cloud_run_*`.
-- Runtime budget in `ingest_breathelondon` is disabled by default in Cloud Run (`BLONDON_COMMUNITIES_DROPBOX_UPLOAD_SOURCE=cloud_run`).
-  - Set `BLONDON_COMMUNITIES_ENFORCE_RUNTIME_BUDGET=true` to re-enable the edge-style cutoff.
+- Runtime budgeting is mandatory. `BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS` is capped at 600 seconds; acquisition stops with 45 seconds reserved internally, and deployment requires another 180 seconds before the outer service timeout.
 - The Cloud Run wrapper still enforces a hard child-process timeout at 14 minutes, one minute before the default 15-minute Cloud Run service timeout. On timeout it terminates the child process, returns HTTP 504 with `timed_out=true`, and clears the in-process run lock so the next scheduled request is not blocked indefinitely.
 
 ## Build and push
@@ -92,7 +91,8 @@ gcloud run deploy uk-aq-blondon-communities-ingest \
 - `BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL` or `UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL` (raw upload gate only)
 - `SB_UK_AQ_CRON_SECRET`
 - `BLONDON_COMMUNITIES_REQUEST_PAYLOAD` (JSON object overrides; dynamic connector-derived station/window/batch still apply)
-- `BLONDON_COMMUNITIES_ENFORCE_RUNTIME_BUDGET` (optional; defaults to `false` in Cloud Run)
+- `INGESTDB_RETENTION_DAYS` (required integer >= 2, matching the effective Prune setting)
+- `BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS` (existing cooperative budget, capped at 600 seconds)
 - `BLONDON_COMMUNITIES_IN_FLIGHT_TIMEOUT_MINUTES` (default `14`)
 - `BLONDON_COMMUNITIES_CLAIM_TIMEOUT_MINUTES` (default `14`)
 - `BLONDON_COMMUNITIES_LOCAL_PORT` (default `8000`; local ingest server port, separate from Cloud Run `PORT`)
@@ -111,3 +111,5 @@ gcloud run deploy uk-aq-blondon-communities-ingest \
 
 Any supplied connector code other than `blondon_communities` is rejected. In
 particular, the old connector code `breathelondon` is not accepted as an alias.
+
+See [bounded-ingestion handover](../../BOUNDED_INGESTION_HANDOVER.md) for per-species windows, manual retained recovery, SQL prerequisites and TEST acceptance.

@@ -1,3 +1,4 @@
+import { sourceTimestamp } from "../_shared/retention.mjs";
 let emptySeriesLogs = 0;
 
 export function parseDatapoints(
@@ -120,8 +121,8 @@ function parseTimestamp(value: unknown): Date | null {
       const observedAt = new Date(timestamp);
       return Number.isNaN(observedAt.getTime()) ? null : observedAt;
     }
-    const observedAt = new Date(trimmed);
-    return Number.isNaN(observedAt.getTime()) ? null : observedAt;
+    const normalized = sourceTimestamp(trimmed);
+    return normalized ? new Date(normalized) : null;
   }
   return null;
 }

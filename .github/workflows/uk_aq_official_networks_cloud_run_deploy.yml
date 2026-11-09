@@ -73,6 +73,14 @@ jobs:
       SERVICE_MAX_INSTANCES: "1"
       SERVICE_MIN_INSTANCES: "0"
     steps:
+      - name: Validate normal ingestion retention
+        run: |
+          python3 - <<'PYCODE'
+          import os, re
+          value = os.environ.get("INGESTDB_RETENTION_DAYS", "")
+          if not re.fullmatch(r"[0-9]+", value) or int(value) < 2:
+              raise SystemExit("INGESTDB_RETENTION_DAYS must match Prune and be an integer >= 2")
+          PYCODE
       - name: Checkout
         uses: actions/checkout@v5
 

@@ -27,6 +27,7 @@ if PROJECT_ROOT.name == "scripts":
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.uk_aq_retention import load_retention, eligible_observation, bounded_start, assert_eligible_rows
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 from scripts.uk_aq_retention import eligible_timestamp, retention_days, retention_start
 from scripts.uk_aq_service_egress_metrics import (
@@ -109,7 +110,7 @@ def utcnow() -> datetime:
 
 
 def parse_iso(value: Optional[str]) -> Optional[datetime]:
-    if not value:
+    if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip().replace("Z", "+00:00")
     try:
@@ -171,6 +172,9 @@ class BreatheLondonNodesClient:
         self.session.headers.update({"X-API-KEY": api_key, "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "uk-air-quality-networks"})
 
     def sensor_data(self, site_code: str, species: str, start_time: datetime, end_time: datetime) -> List[Dict[str, Any]]:
+        start_time = bounded_start(start_time)
+        if start_time >= end_time:
+            return []
         params = {"SiteCode": site_code, "Species": species, "startTime": iso_z(start_time), "endTime": iso_z(end_time)}
         raw_params = {
             "SiteCode": site_code,
@@ -469,6 +473,7 @@ class SupabaseWriter:
         ]
 
         def write_chunk(chunk: Sequence[Dict[str, Any]]) -> None:
+            assert_eligible_rows(chunk)
             arguments = build_compact_observation_rpc_args(chunk)
             if self.observation_database is not None:
                 self.observation_database.upsert_compact_observations_v1(arguments)
@@ -499,6 +504,7 @@ class SupabaseWriter:
         return int(stats["committed_rows"])
 
     def update_timeseries_value_bounds(self, rows: Sequence[Dict[str, Any]]) -> int:
+        rows = [r for r in rows if eligible_observation(r["observed_at"])]
         grouped: Dict[int, List[Dict[str, Any]]] = {}
         for row in rows:
             grouped.setdefault(int(row["timeseries_id"]), []).append(dict(row))
@@ -599,7 +605,7 @@ def write_secondary_rows(
         return stats
     for rows_chunk in rows_chunks:
         try:
-            chunk_stats = observs_writer.write(rows_chunk)
+            chunk_stats = observs_writer.write([r for r in rows_chunk if eligible_observation(r["observed_at"])])
             stats["written"] += chunk_stats["written"]
             stats["enqueued"] += chunk_stats["enqueued"]
             stats["pubsub_observs"] += chunk_stats["pubsub_observs"]
@@ -679,7 +685,7 @@ def build_rows(
         if value is None:
             nulls += 1; continue
         observed = parse_iso(entry.get("DateTime"))
-        if observed is None:
+        if observed is None or not eligible_observation(observed):
             continue
         meta = {k: entry.get(k) for k in ("Units", "RatificationStatus", "Source", "Duration", "SensorContract") if entry.get(k) is not None}
         status = entry.get("RatificationStatus")
@@ -694,7 +700,7 @@ def build_rows(
     last_value: Optional[float] = None
     for row in rows:
         observed = parse_iso(row["observed_at"])
-        if observed is None:
+        if observed is None or not eligible_observation(observed):
             continue
         if last_at is None or observed > last_at:
             last_at = observed
@@ -784,6 +790,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
+    load_retention("blondon_nodes")
     run_started = time.monotonic()
     days = retention_days()
     species = parse_species(args.species)
@@ -946,10 +953,11 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
         secondary_error_count += 1
         secondary_errors.append(f"observs_writer_init: {exc}")
         LOG.warning("Secondary Observs writer initialization failed: %s", exc)
-    manual_end = parse_iso(args.end_time)
-    if args.end_time and manual_end is None:
+    if args.end_time and parse_iso(args.end_time) is None:
         raise ValueError("Invalid --end-time")
-    end_time = floor_to_minute(min(manual_end or utcnow(), utcnow()))
+    if args.start_time and parse_iso(args.start_time) is None:
+        raise ValueError("Invalid --start-time")
+    end_time = floor_to_minute(min(parse_iso(args.end_time) or utcnow(), utcnow()))
     poll_hours = float(connector.get("poll_window_hours") or 6)
     earliest = retention_start(utcnow(), days)
     if end_time <= earliest:
@@ -1016,7 +1024,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
                 ),
                 default_start,
             )
-            start_time = max(earliest, floor_to_minute(start_time))
+            start_time = bounded_start(floor_to_minute(start_time))
             if start_time >= end_time:
                 continue
             last_at = None
@@ -1060,23 +1068,11 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
                     ]
                     committed_chunks = []
                     for rows_chunk in rows_chunks:
-                        eligible_chunk = [row for row in rows_chunk if eligible_timestamp(
-                            parse_iso(row["observed_at"]), utcnow(), days
-                        )]
-                        if not eligible_chunk:
-                            continue
-                        writer.upsert_observations(eligible_chunk)
-                        observations_upserted += len(eligible_chunk)
-                        written_observation_rows.extend(eligible_chunk)
-                        committed_chunks.append(eligible_chunk)
-                    committed_rows = [point for chunk in committed_chunks for point in chunk]
-                    if committed_rows:
-                        newest = max(committed_rows, key=lambda row: row["observed_at"])
-                        last_at = newest["observed_at"]
-                        last_value = newest["value"]
-                    else:
-                        last_at = last_value = None
-                    if last_at and last_value is not None:
+                        assert_eligible_rows(rows_chunk)
+                        writer.upsert_observations(rows_chunk)
+                        observations_upserted += len(rows_chunk)
+                        written_observation_rows.extend(rows_chunk)
+                    if last_at and eligible_observation(last_at) and last_value is not None:
                         species_last_observed[sp] = last_at
                         parsed_last_at = parse_iso(last_at)
                         if parsed_last_at:
@@ -1110,6 +1106,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
                 time.sleep(args.sleep_seconds)
 
         previous_last_observed = parse_iso(checkpoint.get("last_observed_at"))
+        successful_last_observed = [at for at in successful_last_observed if eligible_observation(at)]
         latest_success = max(successful_last_observed) if successful_last_observed else None
         station_last_observed = max(
             [value for value in (previous_last_observed, latest_success) if value is not None],

@@ -1,3 +1,4 @@
+import { loadRetention, eligibleObservation, boundedStart, assertEligibleRows, sourceTimestamp } from "../_shared/retention.mjs";
 // trigger deploy 2026-02-09 12:36 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import "../_shared/fetch_egress_patch.ts";
@@ -122,7 +123,7 @@ const DEFAULT_SERVICE_REF = "breathelondon";
 const DEFAULT_SERVICE_LABEL = "Breathe London";
 const DEFAULT_USER_AGENT = "uk-air-quality-networks";
 const DEFAULT_INITIAL_DAYS = 7;
-const DEFAULT_WINDOW_HOURS = 24;
+const DEFAULT_WINDOW_HOURS = 6;
 const DEFAULT_SLEEP_SECONDS = 0.2;
 const DEFAULT_BATCH_SIZE = 500;
 const DEFAULT_OBSERVS_BUFFER_FLUSH_ROWS = 5000;
@@ -241,13 +242,7 @@ const DROPBOX_UPLOAD_SOURCE = (() => {
     .toLowerCase();
   return value === "cloud_run" ? "cloud_run" : "edge";
 })();
-const BLONDON_COMMUNITIES_ENFORCE_RUNTIME_BUDGET = (() => {
-  const configured = asBoolean(Deno.env.get("BLONDON_COMMUNITIES_ENFORCE_RUNTIME_BUDGET"));
-  if (configured !== undefined) {
-    return configured;
-  }
-  return true;
-})();
+const BLONDON_COMMUNITIES_ENFORCE_RUNTIME_BUDGET = true;
 
 const REST_BASE_URL = SUPABASE_URL
   ? `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1`
@@ -515,28 +510,11 @@ function parseStationRefs(value: string | string[] | undefined | null): string[]
   return raw.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
-function parseStartDate(value: string | undefined | null): Date | null {
-  if (!value) {
-    return null;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  const hasTime = trimmed.includes("T") || trimmed.includes(" ");
-  if (!hasTime) {
-    const parsed = Date.parse(`${trimmed}T00:00:00Z`);
-    return Number.isNaN(parsed) ? null : new Date(parsed);
-  }
-  let candidate = trimmed;
-  if (candidate.includes(" ") && !candidate.includes("T")) {
-    candidate = candidate.replace(" ", "T");
-  }
-  if (!candidate.endsWith("Z") && !candidate.includes("+")) {
-    candidate = `${candidate}Z`;
-  }
-  const parsed = Date.parse(candidate);
-  return Number.isNaN(parsed) ? null : new Date(parsed);
+function parseStartDate(value: string | undefined): Date | null {
+  if (!value) return null;
+  const candidate = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value;
+  const parsed = sourceTimestamp(candidate);
+  return parsed ? new Date(parsed) : null;
 }
 
 function floorToHour(value: Date): Date {
@@ -559,16 +537,7 @@ function formatClarityTimestamp(value: Date): string {
 }
 
 function parseObservationTimestamp(value: unknown): string | null {
-  const text = asString(value);
-  if (!text) {
-    return null;
-  }
-  const candidate = text.endsWith("Z") || text.includes("+") ? text : text.replace(" ", "T") + "Z";
-  const parsed = Date.parse(candidate);
-  if (Number.isNaN(parsed)) {
-    return null;
-  }
-  return new Date(parsed).toISOString();
+  return sourceTimestamp(value);
 }
 
 function maxTimestampIso(current: string | null, candidate: string | null): string | null {
@@ -639,14 +608,16 @@ async function fetchJson(
   url: string,
   headers: Record<string, string>,
   rawRecorder?: RawRecorder | null,
+  deadline = Number.POSITIVE_INFINITY,
 ): Promise<unknown> {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (Date.now() >= deadline) throw new Error("runtime_budget_exceeded");
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), Math.min(DEFAULT_TIMEOUT_MS, deadline - Date.now()));
     try {
       const resp = await fetch(url, { headers, signal: controller.signal });
       if (RETRYABLE_STATUS.has(resp.status) && attempt < 3) {
-        await sleep(Math.min(30_000, 2 ** attempt * 1000));
+        await sleep(Math.max(0, Math.min(30_000, 2 ** attempt * 1000, deadline - Date.now())));
         continue;
       }
       if (!resp.ok) {
@@ -690,14 +661,17 @@ async function getClarityData(
   startTime: Date,
   endTime: Date,
   rawRecorder?: RawRecorder | null,
+  deadline = Number.POSITIVE_INFINITY,
 ): Promise<unknown> {
+  startTime = boundedStart(startTime);
+  if (startTime >= endTime) return [];
   const start = encodeURIComponent(formatClarityTimestamp(startTime));
   const end = encodeURIComponent(formatClarityTimestamp(endTime));
   const url = new URL(
     `${baseUrl}/getClarityData/${siteCode}/${species}/${start}/${end}/Hourly`,
   );
   url.searchParams.set("key", apiKey);
-  return await fetchJson(url.toString(), { "User-Agent": BLONDON_COMMUNITIES_USER_AGENT }, rawRecorder);
+  return await fetchJson(url.toString(), { "User-Agent": BLONDON_COMMUNITIES_USER_AGENT }, rawRecorder, deadline);
 }
 
 async function loadConnector(
@@ -756,7 +730,8 @@ async function fetchStationsFromDb(
   let offset = 0;
 
   while (true) {
-    const refFilter = stationRefs.length ? postgrestIn(stationRefs) : null;
+    const selectedRefs = maxRows === null ? stationRefs : stationRefs.slice(0, maxRows);
+    const refFilter = selectedRefs.length ? postgrestIn(selectedRefs) : null;
     if (refFilter && offset > 0) {
       break;
     }
@@ -822,6 +797,10 @@ async function fetchStationsFromDb(
     offset += pageLimit;
   }
 
+  if (stationRefs.length) {
+    const positions = new Map(stationRefs.map((ref, i) => [ref, i]));
+    rows.sort((a, b) => (positions.get(a.station_ref) ?? 0) - (positions.get(b.station_ref) ?? 0));
+  }
   return rows;
 }
 
@@ -1070,7 +1049,7 @@ async function fetchStationCheckpoints(
       undefined,
       UK_AQ_RAW_SCHEMA,
     );
-    if (error) throw new Error(`Communities station checkpoint read failed: ${error.message}`);
+    if (error) throw new Error(`Station checkpoint read failed: ${error.message}`);
     for (const row of data ?? []) {
       const stationId = Number(row.station_id);
       if (!Number.isFinite(stationId)) {
@@ -1094,31 +1073,27 @@ async function upsertStationCheckpoints(rows: Record<string, unknown>[]): Promis
     "resolution=merge-duplicates,return=minimal",
     UK_AQ_RAW_SCHEMA,
   );
-  if (error) throw new Error(`Communities station checkpoint write failed: ${error.message}`);
+  if (error) throw new Error(`Station checkpoint write failed: ${error.message}`);
   return rows.length;
 }
 
-async function fetchSpeciesCheckpoints(stationIds: number[]): Promise<Map<string, Record<string, unknown>>> {
-  const checkpoints = new Map<string, Record<string, unknown>>();
+async function fetchSpeciesCheckpoints(stationIds: number[]) {
+  const result: Record<string, Record<string, unknown>> = {};
   for (const ids of chunk(stationIds, 200)) {
     const { data, error } = await postgrestRequest<Array<Record<string, unknown>>>(
       "GET", "blondon_communities_timeseries_checkpoints",
       { select: "station_id,species,timeseries_id,last_observed_at,last_polled_at,last_error", station_id: postgrestIn(ids.map(String)) },
       undefined, undefined, UK_AQ_RAW_SCHEMA,
     );
-    if (error) throw new Error(`Communities species checkpoint read failed: ${error.message}`);
-    for (const row of data ?? []) checkpoints.set(`${row.station_id}:${row.species}`, row);
+    if (error) throw new Error(`Species checkpoint read failed: ${error.message}`);
+    for (const row of data ?? []) result[`${row.station_id}:${row.species}`] = row;
   }
-  return checkpoints;
+  return result;
 }
-
-async function upsertSpeciesCheckpoint(row: Record<string, unknown>): Promise<void> {
-  const { error } = await postgrestRequest(
-    "POST", "blondon_communities_timeseries_checkpoints",
-    { on_conflict: "station_id,species" }, [row],
-    "resolution=merge-duplicates,return=minimal", UK_AQ_RAW_SCHEMA,
-  );
-  if (error) throw new Error(`Communities species checkpoint write failed: ${error.message}`);
+async function persistSpeciesCheckpoint(row: Record<string, unknown>) {
+  const { error } = await postgrestRequest("POST", "blondon_communities_timeseries_checkpoints",
+    { on_conflict: "station_id,species" }, [{ ...row, updated_at: new Date().toISOString() }], "resolution=merge-duplicates,return=minimal", UK_AQ_RAW_SCHEMA);
+  if (error) throw new Error(`Species checkpoint write failed: ${error.message}`);
 }
 
 async function upsertObservations(
@@ -1135,6 +1110,7 @@ async function upsertObservations(
     requestBodyBytes: (chunk: Record<string, unknown>[]) =>
       serializedJsonUtf8Bytes(buildCompactObservationRpcArgs(chunk)),
     writeChunk: async (chunk: Record<string, unknown>[]) => {
+      assertEligibleRows(chunk);
       const arguments_ = buildCompactObservationRpcArgs(chunk);
       if (BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT === "database") {
         await upsertCommunitiesObservationsViaDatabase(arguments_);
@@ -1198,6 +1174,7 @@ async function updateTimeseriesLastValues(
   rows: Array<{ id: number; last_value: number; last_value_at: string }>,
   errors: string[],
 ): Promise<number> {
+  rows = rows.filter((row) => eligibleObservation(row.last_value_at));
   if (!rows.length) return 0;
   const { data, error } = await postgrestRequest<Array<{ timeseries_updated: number }>>(
     "POST",
@@ -1214,8 +1191,7 @@ async function updateTimeseriesLastValues(
   if (error) {
     const message = `timeseries update failed: ${error.message}`;
     errors.push(message);
-    console.warn(message);
-    return 0;
+    throw new Error(message);
   }
   return data?.[0]?.timeseries_updated ?? 0;
 }
@@ -1234,13 +1210,14 @@ function extractObservations(
   if (!Array.isArray(payload)) {
     return { rows, lastObserved, lastValue };
   }
+  if (payload.length > 10_000) throw new Error("Communities response work budget exceeded");
   for (const entry of payload) {
     if (!entry || typeof entry !== "object") {
       continue;
     }
     const observedAt = parseObservationTimestamp(entry.DateTime);
     const value = coerceFloat(entry.ScaledValue);
-    if (!observedAt || value === null) {
+    if (!observedAt || !eligibleObservation(observedAt) || value === null) {
       continue;
     }
     rows.push({ connector_id: connectorId, timeseries_id: timeseriesId, observed_at: observedAt, value });
@@ -1900,15 +1877,16 @@ serve(async (req) => {
   let observsRowsDedupedPrewrite = 0;
   const runStartedAt = Date.now();
   const maxRuntimeSeconds = Number.isFinite(BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS)
-    ? Math.max(30, BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS)
+    ? Math.min(600, Math.max(30, BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS))
     : DEFAULT_MAX_RUNTIME_SECONDS;
   const runtimeDeadline = BLONDON_COMMUNITIES_ENFORCE_RUNTIME_BUDGET
     ? runStartedAt + maxRuntimeSeconds * 1000
     : Number.POSITIVE_INFINITY;
   const shouldStop = () =>
-    BLONDON_COMMUNITIES_ENFORCE_RUNTIME_BUDGET && Date.now() >= runtimeDeadline - 30_000;
+    Date.now() + 45_000 >= runtimeDeadline;
 
   try {
+    await loadRetention(BLONDON_COMMUNITIES_CONNECTOR_CODE);
     if (!SUPABASE_URL || !SUPABASE_PRIVILEGED_KEY) {
       status = 500;
       responsePayload = { error: "Missing SUPABASE_URL or SB_SECRET_KEY." };
@@ -1946,7 +1924,7 @@ serve(async (req) => {
           ) ?? DEFAULT_OBSERVS_BUFFER_FLUSH_ROWS,
         ),
       );
-      const limit = asNumber(request.limit);
+      const limit = Math.min(20, Math.max(1, asNumber(request.limit, 20) ?? 20));
       const skipStations = asBoolean(request.skip_stations, false) ?? false;
       const activeOnly = asBoolean(request.active_only, false) ?? false;
       const dryRun = asBoolean(request.dry_run, false) ?? false;
@@ -1954,9 +1932,8 @@ serve(async (req) => {
       debug = asBoolean(request.debug, false) ?? false;
       const apiKey = asString(request.api_key) ?? BLONDON_COMMUNITIES_API_KEY;
       const startDateOverride = parseStartDate(asString(request.start_date));
-      if (request.start_date !== undefined && !startDateOverride) {
-        throw new Error("Invalid Communities start_date override");
-      }
+      if (request.start_date && !startDateOverride) throw new Error("Invalid start_date");
+      if (!Number.isFinite(windowHours) || windowHours <= 0) throw new Error("window_hours must be positive");
 
       log.info("Poll request", {
         connector_id: connectorId ?? null,
@@ -2069,7 +2046,7 @@ serve(async (req) => {
             }
           } else {
             const sensors = await listSensors(baseUrl, apiKey, rawRecorder);
-            const trimmedSensors = limit ? sensors.slice(0, Math.max(0, limit)) : sensors;
+            const trimmedSensors = sensors.filter((sensor) => !stationRefLookup.size || stationRefLookup.has(String(sensor.SiteCode ?? "").toLowerCase())).slice(0, limit);
             if (!trimmedSensors.length) {
               responsePayload = { warning: "No sensors returned from Breathe London." };
               log.warn("No sensors returned from Breathe London.");
@@ -2174,7 +2151,8 @@ serve(async (req) => {
                 if (!force && observsRowsPending.length < observsBufferFlushRows) {
                   return;
                 }
-                const rows = observsRowsPending.splice(0, observsRowsPending.length);
+                const rows = observsRowsPending.splice(0, observsRowsPending.length)
+                  .filter((row) => eligibleObservation(row.observed_at));
                 try {
                   const stats = await writeObservsWithOutbox(
                     publicRpcRequest,
@@ -2272,12 +2250,15 @@ serve(async (req) => {
               const stationIds = Array.from(new Set(Object.values(stationIdMap)));
               const checkpoints = await fetchStationCheckpoints(stationIds);
               const speciesCheckpoints = await fetchSpeciesCheckpoints(stationIds);
+              let sourceRequests = 0;
+              let speciesFailures = 0;
 
               const now = floorToHour(new Date());
               const timeseriesUpdates: Array<{ id: number; last_value: number; last_value_at: string }> = [];
               const checkpointRows: Record<string, unknown>[] = [];
               observationsUpserted = 0;
-              let timeBudgetHit = false;
+              let timeBudgetHit = stationRefs.length > limit;
+              let stoppedReason: string | null = timeBudgetHit ? "station_budget_exceeded" : null;
               let stationsProcessed = 0;
               const nowIso = new Date().toISOString();
               const nowMsForLag = Date.now();
@@ -2319,171 +2300,89 @@ serve(async (req) => {
                   if (!timeseriesId) {
                     continue;
                   }
-                  const speciesCheckpoint = speciesCheckpoints.get(`${stationId}:${species}`) ?? {};
-                  let lastObserved = parseObservationTimestamp(speciesCheckpoint.last_observed_at);
-                  let acceptedThisRun = false;
-                  let lastAcceptedAt: string | null = null;
-                  let lastAcceptedValue: number | null = null;
-                  let speciesError: string | null = null;
-                  const lastSpeciesPoll = parseObservationTimestamp(speciesCheckpoint.last_polled_at);
-                  const hoursSincePoll = lastSpeciesPoll
-                    ? Math.max(0, (now.getTime() - Date.parse(lastSpeciesPoll)) / 3_600_000)
-                    : 24;
-                  const recoveryHours = speciesCheckpoint.last_error || hoursSincePoll >= 12
-                    ? Math.min(48, Math.max(24, Math.ceil(hoursSincePoll + 6)))
-                    : 6;
-                  const requestedStart = startDateOverride ??
-                    (request.initial_days !== undefined
-                      ? new Date(now.getTime() - Math.min(Math.max(initialDays, 1), INGEST_RETENTION_DAYS) * 86_400_000)
-                      : new Date(now.getTime() - recoveryHours * 3_600_000));
-                  const startTime = floorToHour(new Date(Math.max(
-                    requestedStart.getTime(), ingestRetentionStart(new Date(), INGEST_RETENTION_DAYS).getTime(),
-                  )));
-                  if (startTime >= now) {
-                    continue;
+                  // One recent window per species, never a walk from an old high-water mark.
+                  if (shouldStop() || sourceRequests >= 40) {
+                    timeBudgetHit = true;
+                    stoppedReason = shouldStop() ? "runtime_budget_exceeded" : "source_request_budget_exceeded";
+                    break;
                   }
-                  const windowMs = (startDateOverride || request.initial_days !== undefined
-                    ? 24
-                    : Math.min(recoveryHours > 6 ? 24 : 6, Math.max(windowHours, 1))) * 3_600_000;
-                  let cursor = startTime;
-                  let windowsFetched = 0;
-
-                  while (cursor < now && windowsFetched < 8) {
-                    if (shouldStop()) {
-                      timeBudgetHit = true;
-                      break;
-                    }
-                    const endTime = new Date(Math.min(cursor.getTime() + windowMs, now.getTime()));
-                    try {
-                      const payload = await getClarityData(
-                        baseUrl,
-                        apiKey,
-                        stationRef,
-                        species,
-                        cursor,
-                        endTime,
-                        rawRecorder,
-                      );
-                      const { rows } = extractObservations(
-                        payload,
-                        timeseriesId,
-                        Number(connector.id),
-                      );
-                      const freshRows = rows.filter((point) =>
-                        eligibleIngestTimestamp(point.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
-                      );
-                      if (freshRows.length) {
-                        const observationDedupe = dedupeExactObservationRows(freshRows);
-                        const preparedRows = observationDedupe.rows;
-                        observationsRowsInput += freshRows.length;
-                        observationsRowsPrepared += preparedRows.length;
-                        observationsRowsDedupedPrewrite += observationDedupe.deduped;
-                        observsRowsDedupedPrewrite += observationDedupe.deduped;
-                        if (dryRun) {
-                          observsRowsPrepared += toObservsObservationRows(
-                            preparedRows,
-                            Number(connector.id),
-                            timeseriesId,
-                          ).length;
-                        } else {
-                          for (const batch of chunk(preparedRows, batchSize)) {
-                            const eligibleBatch = batch.filter((point) =>
-                              eligibleIngestTimestamp(point.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
-                            );
-                            if (!eligibleBatch.length) continue;
-                            const writeStats = await upsertObservations(
-                              eligibleBatch,
-                              BLONDON_COMMUNITIES_ENFORCE_RUNTIME_BUDGET
-                                ? {
-                                  shouldStop,
-                                  remainingRuntimeMs: () =>
-                                    Math.max(0, runtimeDeadline - Date.now()),
-                                }
-                                : undefined,
-                            );
-                            mergeIngestDbObservationWriteStats(
-                              ingestDbObservationWriteStats,
-                              writeStats,
-                            );
-                            observationsUpserted =
-                              ingestDbObservationWriteStats.committed_rows;
-                            acceptedThisRun = true;
-                            const observsRows = toObservsObservationRows(
-                              eligibleBatch,
-                              Number(connector.id),
-                              timeseriesId,
-                            );
-                            observsRowsPrepared += observsRows.length;
-                            observsRowsPending.push(...observsRows);
-                            for (const point of eligibleBatch) {
-                              const observedAt = String(point.observed_at);
-                              if (!lastAcceptedAt || observedAt >= lastAcceptedAt) {
-                                lastAcceptedAt = observedAt;
-                                lastAcceptedValue = Number(point.value);
-                              }
-                              if (!lastObserved || observedAt >= lastObserved) {
-                                lastObserved = observedAt;
-                              }
-                            }
-                            await flushPendingObservsRows(false, "batch_threshold");
-                          }
-                        }
-                      }
-                    } catch (error) {
-                      speciesError = error instanceof Error ? error.message : String(error);
-                      errors.push(`communities:${stationRef}:${species}:${speciesError}`);
-                      break;
-                    }
-                    cursor = endTime;
-                    windowsFetched += 1;
-                    if (sleepSeconds && sleepSeconds > 0 && !shouldStop()) {
-                      await sleep(sleepSeconds * 1000);
-                    }
-                  }
-
-                  if (cursor < now && windowsFetched >= 8 && !speciesError) {
-                    speciesError = "bounded_request_limit";
-                    errors.push(`communities:${stationRef}:${species}:${speciesError}`);
-                  }
-                  if (timeBudgetHit && cursor < now && !speciesError) {
-                    speciesError = "runtime_budget";
-                    errors.push(`communities:${stationRef}:${species}:${speciesError}`);
-                  }
-
-                  if (lastAcceptedAt && lastAcceptedValue !== null) {
-                    timeseriesUpdates.push({ id: timeseriesId, last_value: lastAcceptedValue, last_value_at: lastAcceptedAt });
-                    seriesPolled += 1;
-                  }
-
+                  const speciesCheckpoint = speciesCheckpoints[`${stationId}:${species}`] ?? {};
+                  const prior = parseObservationTimestamp(speciesCheckpoint.last_observed_at);
+                  const polledMs = Date.parse(String(speciesCheckpoint.last_polled_at ?? ""));
+                  const stale = Boolean(speciesCheckpoint.last_error) || !prior || Date.parse(prior) < Date.now() - 6 * 3600_000;
+                  const interruptedHours = Number.isFinite(polledMs) ? (Date.now() - polledMs) / 3600_000 + 1 : 24;
+                  const recentHours = Math.min(48, Math.max(stale ? 24 : 6, Math.min(windowHours, 24), interruptedHours));
+                  const startTime = boundedStart(startDateOverride ?? new Date(now.getTime() - recentHours * 3600_000));
+                  // Manual recovery is one bounded slice; repeat explicitly for another retained slice.
+                  const endTime = new Date(Math.min(now.getTime(), startDateOverride ? startTime.getTime() + 24 * 3600_000 : now.getTime()));
+                  if (startTime >= endTime) continue;
+                  const attemptedAt = new Date().toISOString();
+                  const progress: Record<string, unknown> = { station_id: stationId, species,
+                    timeseries_id: timeseriesId, last_polled_at: attemptedAt, last_error: "attempt_incomplete" };
                   if (!dryRun) {
-                    try {
-                      await flushPendingObservsRows(true, "species_complete");
-                    } catch (error) {
-                      const secondaryError = error instanceof Error ? error.message : String(error);
-                      errors.push(`communities:${stationRef}:${species}:${secondaryError}`);
-                      speciesError = speciesError ? `${speciesError}; ${secondaryError}` : secondaryError;
-                    }
-                    try {
-                      await upsertSpeciesCheckpoint({
-                        station_id: stationId, species, timeseries_id: timeseriesId,
-                        last_observed_at: lastObserved, last_polled_at: new Date().toISOString(),
-                        last_error: speciesError,
-                      });
-                      checkpointsUpserted += 1;
-                    } catch (error) {
-                      const checkpointError = error instanceof Error ? error.message : String(error);
-                      errors.push(`communities:${stationRef}:${species}:${checkpointError}`);
-                      speciesError = speciesError ? `${speciesError}; ${checkpointError}` : checkpointError;
-                    }
+                    // Persist attempts before acquisition; failure cannot monopolise stale slots.
+                    await upsertStationCheckpoints([{ station_id: stationId, last_polled_at: attemptedAt }]);
+                    await persistSpeciesCheckpoint(progress);
                   }
-                  if (speciesError) stationHasSpeciesError = true;
-
-                  if (acceptedThisRun && lastAcceptedAt && (!stationLatestObserved || lastAcceptedAt > stationLatestObserved)) {
-                    stationLatestObserved = lastAcceptedAt;
+                  let lastObserved: string | null = null;
+                  let lastValue: number | null = null;
+                  let failure: unknown = null;
+                  try {
+                    sourceRequests += 1; // fetchJson has at most three attempts (120 total source attempts/run).
+                    const payload = await getClarityData(baseUrl, apiKey, stationRef, species, startTime, endTime, rawRecorder, runtimeDeadline - 45_000);
+                    const extracted = extractObservations(payload, timeseriesId, Number(connector.id));
+                    if (extracted.rows.length > 10_000) throw new Error("Communities response work budget exceeded");
+                    const freshRows = extracted.rows.filter((point) => eligibleObservation(point.observed_at));
+                    const deduped = dedupeExactObservationRows(freshRows);
+                    observationsRowsInput += freshRows.length;
+                    observationsRowsPrepared += deduped.rows.length;
+                    observationsRowsDedupedPrewrite += deduped.deduped;
+                    observsRowsDedupedPrewrite += deduped.deduped;
+                    for (const batch of chunk(deduped.rows, Math.min(500, Math.max(1, batchSize)))) {
+                      assertEligibleRows(batch);
+                      if (!dryRun) {
+                        const writeStats = await upsertObservations(batch, { shouldStop, remainingRuntimeMs: () => Math.max(0, runtimeDeadline - Date.now()) });
+                        mergeIngestDbObservationWriteStats(ingestDbObservationWriteStats, writeStats);
+                        observationsUpserted = ingestDbObservationWriteStats.committed_rows;
+                      }
+                      for (const point of batch) {
+                        const at = String(point.observed_at);
+                        if (!lastObserved || at >= lastObserved) { lastObserved = at; lastValue = Number(point.value); }
+                      }
+                      if (!dryRun) {
+                        // Durable observation progress immediately after each successful commit.
+                        await persistSpeciesCheckpoint({ ...progress,
+                          ...(lastObserved && eligibleObservation(lastObserved) ? { last_observed_at: lastObserved } : {}) });
+                        const secondary = toObservsObservationRows(batch, Number(connector.id), timeseriesId)
+                          .filter((point) => eligibleObservation(point.observed_at));
+                        observsRowsPrepared += secondary.length;
+                        observsRowsPending.push(...secondary);
+                        await flushPendingObservsRows(true, "species_commit");
+                      }
+                    }
+                    if (lastObserved && lastValue !== null && eligibleObservation(lastObserved) && !dryRun) {
+                      timeseriesUpdated += await updateTimeseriesLastValues([{ id: timeseriesId, last_value: lastValue, last_value_at: lastObserved }], errors);
+                    }
+                    seriesPolled += 1;
+                  } catch (error) {
+                    failure = error;
+                    speciesFailures += 1;
+                    errors.push(`${stationRef}:${species}:${String(error)}`);
+                  }
+                  if (!dryRun) {
+                    // Failure of checkpoint persistence is fatal and visible, never swallowed.
+                    await persistSpeciesCheckpoint({ ...progress,
+                      ...(lastObserved && eligibleObservation(lastObserved) ? { last_observed_at: lastObserved } : {}),
+                      last_error: failure ? String(failure).slice(0, 2000) : null });
+                  }
+                  if (lastObserved && eligibleObservation(lastObserved) && (!stationLatestObserved || lastObserved > stationLatestObserved)) {
+                    stationLatestObserved = lastObserved;
                     stationHasNewObservation = true;
                   }
-                  if (timeBudgetHit) {
-                    break;
+                  if (sleepSeconds > 0 && !shouldStop()) await sleep(Math.min(sleepSeconds, 1) * 1000);
+                  if (failure && isIngestDbObservationWriteError(failure)) {
+                    await flushUpdates();
+                    throw failure;
                   }
                 }
 
@@ -2492,9 +2391,7 @@ serve(async (req) => {
                 }
                 runLastObservedAt = maxTimestampIso(runLastObservedAt, updatedLastObserved);
 
-                if (stationHasSpeciesError) {
-                  nextDueAt = new Date(nowMsForLag + 5 * 60 * 1000).toISOString();
-                } else if (stationHasNewObservation && updatedLastObserved) {
+                if (stationHasNewObservation && updatedLastObserved && eligibleObservation(updatedLastObserved)) {
                   const lagSeconds = Math.max(
                     0,
                     Math.round((nowMsForLag - Date.parse(updatedLastObserved)) / 1000),
@@ -2525,10 +2422,12 @@ serve(async (req) => {
                   last_polled_at: nowIso,
                 });
 
+                await flushUpdates();
                 stationsProcessed += 1;
 
                 if (shouldStop()) {
                   timeBudgetHit = true;
+                  stoppedReason = "runtime_budget_exceeded";
                   await flushUpdates();
                   break;
                 }
@@ -2570,13 +2469,17 @@ serve(async (req) => {
                 timeseries_updated: timeseriesUpdated,
                 series_polled: seriesPolled,
                 checkpoints_upserted: checkpointsUpserted,
+                species_failures: speciesFailures,
+                source_windows_requested: sourceRequests,
                 dry_run: dryRun,
-                partial: incomplete,
-                run_status: runStatus,
-                run_message: isolatedStations.size
+                partial: timeBudgetHit || speciesFailures > 0 || errors.length > 0 || isolatedStations.size > 0,
+                run_status: timeBudgetHit || speciesFailures > 0 || errors.length > 0 || isolatedStations.size > 0
+                  ? "partial"
+                  : (dryRun ? "dry_run" : "succeeded"),
+                run_message: speciesFailures > 0 ? "species_failures" : errors.length > 0 ? "partial_write_errors" : isolatedStations.size
                   ? "reference_station_isolation"
-                  : (timeBudgetHit ? "runtime_budget_exceeded" : (errors.length ? "ingest_errors" : "ok")),
-                stopped_reason: timeBudgetHit ? "runtime_budget_exceeded" : null,
+                  : (timeBudgetHit ? stoppedReason : "ok"),
+                stopped_reason: stoppedReason,
                 reference_repair_attempts: referenceRepairAttempts,
                 missing_refs_repaired: missingRefsRepaired,
                 isolated_station_count: isolatedStations.size,
@@ -2588,7 +2491,7 @@ serve(async (req) => {
               log.info("Stations polled.", {
                 stations_selected: stationsSelected,
                 stations_processed: stationsProcessed,
-                partial: incomplete,
+                partial: timeBudgetHit || speciesFailures > 0 || errors.length > 0 || isolatedStations.size > 0,
               });
               if (!dryRun) {
                 const { error: pollUpdateError } = await postgrestRequest(
