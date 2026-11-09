@@ -1996,15 +1996,11 @@ serve(async (req) => {
               if (!normalized.station_ref) {
                 continue;
               }
-              const observedAt = parseTimestamp(record.timestamp);
-              if (!observedAt || !eligibleIngestTimestamp(observedAt, new Date(), INGEST_RETENTION_DAYS)) {
-                continue;
-              }
-              processedRecords.push(record);
               const stationRef = normalized.station_ref;
               stationRefSet.add(stationRef);
               const observedAt = parseTimestamp(record.timestamp);
               if (!observedAt || !eligibleObservation(observedAt)) continue;
+              processedRecords.push(record);
               const observedMs = Date.parse(observedAt);
               const sensorValues = Array.isArray(record.sensordatavalues)
                 ? record.sensordatavalues

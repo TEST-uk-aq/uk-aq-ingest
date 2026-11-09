@@ -178,7 +178,8 @@ def test_active_python_observation_writers_use_shared_contract_and_canonical_key
     sos_source = paths[3].read_text(encoding="utf-8")
     assert sos_source.count("if isinstance(exc, IngestDbObservationWriteError):") >= 2
 
-    dormant_source = (
+    communities_source = (
         root / "scripts/blondon_communities/blondon_communities_list_stations.py"
     ).read_text(encoding="utf-8")
-    assert "def upsert_observations" not in dormant_source
+    assert "def upsert_observations" in communities_source
+    assert "uk_aq_rpc_observations_compact_upsert_v1" in communities_source
