@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - "supabase/functions/_shared/retention.mjs"
       - "workers/uk_aq_blondon_communities_cloud_run/**"
       - "supabase/functions/ingest_breathelondon/**"
       - "shared/blondon_communities_reference.mjs"
@@ -43,6 +44,7 @@ jobs:
       SERVICE_CONCURRENCY: ${{ vars.GCP_BLONDON_COMMUNITIES_SERVICE_CONCURRENCY || '1' }}
       SERVICE_MAX_INSTANCES: ${{ vars.GCP_BLONDON_COMMUNITIES_SERVICE_MAX_INSTANCES || '1' }}
       SERVICE_MIN_INSTANCES: ${{ vars.GCP_BLONDON_COMMUNITIES_SERVICE_MIN_INSTANCES || '0' }}
+      INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
@@ -97,6 +99,17 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       SCHEDULER_D1_JOB_KEY: uk_aq_blondon_communities
     steps:
+      - name: Validate normal ingestion retention
+        run: |
+          python3 - <<'PYCODE'
+          import os, re
+          value = os.environ.get("INGESTDB_RETENTION_DAYS", "")
+          if not re.fullmatch(r"[0-9]+", value) or int(value) < 2:
+              raise SystemExit("INGESTDB_RETENTION_DAYS must match Prune and be an integer >= 2")
+          runtime = min(600, max(30, int(os.environ["BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS"])))
+          if int(os.environ["SERVICE_TIMEOUT_SECONDS"]) < runtime + 180:
+              raise SystemExit("Communities service timeout must leave 180 seconds of cleanup headroom")
+          PYCODE
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -356,6 +369,7 @@ jobs:
           require_env SUPABASE_URL
 
           env_updates=()
+          add_env INGESTDB_RETENTION_DAYS
           add_env SUPABASE_URL
           add_env UK_AQ_CORE_SCHEMA
           add_env UK_AQ_RAW_SCHEMA

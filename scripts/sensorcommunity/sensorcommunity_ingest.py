@@ -61,6 +61,7 @@ if PROJECT_ROOT.name == "scripts":
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.uk_aq_retention import load_retention, eligible_observation, bounded_start, assert_eligible_rows
 from scripts.ingest_helpers import station_coords, station_in_bbox_or_missing_coords
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
@@ -701,13 +702,14 @@ def _prepare_raw_dropbox_session(args: argparse.Namespace) -> Optional[RawDropbo
 
 
 def parse_timestamp(value: Optional[str]) -> Optional[datetime]:
-    if not value:
+    if not isinstance(value, str) or not value.strip():
         return None
     cleaned = value.strip()
     if cleaned.endswith("Z"):
         cleaned = cleaned[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(cleaned)
+        parsed = datetime.fromisoformat(cleaned)
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
     except ValueError:
         try:
             return datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -999,6 +1001,7 @@ class SupabaseWriter:
         payload = list(rows)
 
         def write_chunk(chunk: List[Dict[str, Any]]) -> None:
+            assert_eligible_rows(chunk)
             self.core.table("observations").upsert(
                 list(chunk),
                 on_conflict="connector_id,timeseries_id,observed_at",
@@ -1162,6 +1165,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    load_retention("sensorcommunity")
     _configure_logging(args.log_level, DEFAULT_FILE_LOG_LEVEL)
     if not args.refresh_recent:
         LOG.error("No action specified. Use --refresh-recent.")
@@ -1211,7 +1215,9 @@ def main() -> None:
             if not station_ref:
                 continue
             station_refs.append(station_ref)
-            observed_at = parse_timestamp(record.get("timestamp")) or utcnow()
+            observed_at = parse_timestamp(record.get("timestamp"))
+            if observed_at is None or not eligible_observation(observed_at):
+                continue
             values, series_refs = build_observation_rows(station_ref, record, observed_at)
             timeseries_refs.extend(series_refs)
             for key, value in values:
@@ -1275,8 +1281,14 @@ def main() -> None:
                 }
             )
 
+        observation_rows = [r for r in observation_rows if eligible_observation(r["observed_at"])]
         inserted = writer.upsert_observations(observation_rows)
-        writer.upsert_timeseries(timeseries_payload)
+        observation_rows = [r for r in observation_rows if eligible_observation(r["observed_at"])]
+        writer.client.schema("uk_aq_public").rpc("uk_aq_rpc_timeseries_last_values_compact_update_v1", {
+            "timeseries_ids": [r["timeseries_id"] for r in observation_rows],
+            "last_values": [r["value"] for r in observation_rows],
+            "last_value_ats": [r["observed_at"] for r in observation_rows],
+        }).execute()
         LOG.info("Upserted %s observations.", inserted)
         LOG.info(
             "IngestDB observation write stats: %s",

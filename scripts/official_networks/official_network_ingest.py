@@ -20,6 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.uk_aq_retention import load_retention, eligible_observation, bounded_start, assert_eligible_rows
 from scripts.official_networks.graph_parser import (
     GraphDataError,
     parse_embedded_graph_data,
@@ -496,6 +497,7 @@ class IngestDatabase:
         changed = 0
         for offset in range(0, len(rows), 500):
             chunk = list(rows[offset : offset + 500])
+            assert_eligible_rows(chunk)
             arguments: Dict[str, Any] = {
                 "timeseries_ids": [row["timeseries_id"] for row in chunk],
                 "observed_ats": [row["observed_at"] for row in chunk],
@@ -520,6 +522,7 @@ class IngestDatabase:
         return changed
 
     def update_last_values(self, rows: Sequence[Dict[str, Any]]) -> int:
+        rows = [r for r in rows if eligible_observation(r["observed_at"])]
         latest: Dict[int, Dict[str, Any]] = {}
         for row in rows:
             current = latest.get(int(row["timeseries_id"]))
@@ -586,7 +589,7 @@ def html_observations(
             stats["series_polled"] += 1
             for point in series.points:
                 observed = parse_iso(point.observed_at)
-                if observed is None or observed < start or observed > end:
+                if observed is None or not eligible_observation(observed) or observed < start or observed > end:
                     continue
                 observations.append(
                     {
@@ -665,7 +668,7 @@ def sos_observations(
     failed = 0
     for timeseries_id, source_id in mapping.items():
         try:
-            payload = client.data(source_id, start, end)
+            payload = client.data(source_id, bounded_start(start), end)
             points = extract_tvp_points(payload)
         except Exception as exc:
             failed += 1
@@ -674,7 +677,7 @@ def sos_observations(
             )
             continue
         for observed, value in points:
-            if observed < start or observed > end:
+            if not eligible_observation(observed) or observed < start or observed > end:
                 continue
             observations.append(
                 {
@@ -715,6 +718,7 @@ def run_ingest(
 ) -> Dict[str, Any]:
     profile = get_profile(connector_code)
     connector_code = profile.connector_code
+    load_retention(connector_code)
     db = IngestDatabase(profile)
     connector = db.connector()
     config = connector.get("config") if isinstance(connector.get("config"), dict) else {}
@@ -728,6 +732,8 @@ def run_ingest(
     )
     if start is None:
         raise ValueError("Invalid --start-time")
+    end = min(end, now)
+    start = bounded_start(start)
     if start >= end:
         raise ValueError("start_time must be before end_time")
 
@@ -845,12 +851,13 @@ def run_ingest(
     observations_upserted = 0
     timeseries_updated = 0
     secondary = {"written": 0, "enqueued": 0, "pubsub_observs": 0}
+    observations = [row for row in observations if eligible_observation(row["observed_at"])]
     if not dry_run and observations:
         observations_upserted = db.write_observations(
             observations, acquisition_method
         )
         timeseries_updated = db.update_last_values(observations)
-        secondary = ObservsWriter(db.client).write(observations)
+        secondary = ObservsWriter(db.client).write([r for r in observations if eligible_observation(r["observed_at"])])
 
     last_observed_at = (
         max(str(row["observed_at"]) for row in observations)

@@ -20,6 +20,8 @@ COPY supabase/functions/ingest_sos/sos_database.ts /app/runtime/ingest_sos/sos_d
 COPY supabase/functions/ingest_sos/selected_work.ts /app/runtime/ingest_sos/selected_work.ts
 COPY supabase/functions/ingest_sos/uk_aq_html_fallback.ts /app/runtime/ingest_sos/uk_aq_html_fallback.ts
 COPY supabase/functions/ingest_sos/uk_aq_html_parser.ts /app/runtime/ingest_sos/uk_aq_html_parser.ts
+COPY supabase/functions/_shared/retention.mjs /app/runtime/_shared/retention.mjs
+COPY supabase/functions/_shared/retention.mjs /app/supabase/functions/_shared/retention.mjs
 COPY supabase/functions/_shared/cache.ts /app/runtime/_shared/cache.ts
 COPY supabase/functions/_shared/fetch_egress_patch.ts /app/runtime/_shared/fetch_egress_patch.ts
 COPY supabase/functions/_shared/egress_metrics.ts /app/runtime/_shared/egress_metrics.ts

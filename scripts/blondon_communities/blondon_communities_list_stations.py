@@ -172,11 +172,13 @@ class BreatheLondonClient:
         base_url: str = BLONDON_COMMUNITIES_BASE_URL,
         timeout: int = 60,
         retries: int = 3,
+        raise_on_retry_exhaustion: bool = False,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url
         self.timeout = timeout
         self.retries = retries
+        self.raise_on_retry_exhaustion = raise_on_retry_exhaustion
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": BLONDON_COMMUNITIES_USER_AGENT})
 
@@ -198,6 +200,8 @@ class BreatheLondonClient:
                 if attempt == self.retries:
                     raise
                 self._sleep(attempt)
+        if self.raise_on_retry_exhaustion:
+            raise RuntimeError("Breathe London request retries exhausted")
         return []
 
     def _sleep(self, attempt: int) -> None:

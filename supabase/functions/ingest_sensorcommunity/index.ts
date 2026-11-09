@@ -1,3 +1,4 @@
+import { loadRetention, eligibleObservation, boundedStart, assertEligibleRows, sourceTimestamp } from "../_shared/retention.mjs";
 // trigger deploy 2026-02-09 12:36
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import "../_shared/fetch_egress_patch.ts";
@@ -737,30 +738,7 @@ function mergeStationRow(
 }
 
 function parseTimestamp(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  let candidate = trimmed;
-  if (
-    !candidate.endsWith("Z") && !candidate.includes("+") &&
-    !candidate.includes("T")
-  ) {
-    candidate = candidate.replace(" ", "T") + "Z";
-  } else if (
-    !candidate.endsWith("Z") && candidate.includes("T") &&
-    !candidate.includes("+")
-  ) {
-    candidate = candidate + "Z";
-  }
-  const ms = Date.parse(candidate);
-  if (Number.isNaN(ms)) {
-    return null;
-  }
-  return new Date(ms).toISOString();
+  return sourceTimestamp(value);
 }
 
 function quotePostgrestValue(value: string): string {
@@ -1042,6 +1020,7 @@ async function upsertObservations(
     runtimeBudget,
     config: { minimumAttemptRuntimeMs: DEFAULT_TIMEOUT_MS },
     writeChunk: async (chunk: Array<Record<string, unknown>>) => {
+      assertEligibleRows(chunk);
       const { error } = await postgrestRequest(
         "POST",
         "observations",
@@ -1769,6 +1748,9 @@ serve(async (req) => {
   if (authResponse) {
     return authResponse;
   }
+  try { await loadRetention("sensorcommunity"); } catch (error) {
+    return new Response(String(error), { status: 500 });
+  }
   const log = createLogBuffer();
   const dropboxConfig = loadDropboxConfig();
   const errorLogger = ERROR_LOGGER;
@@ -2014,8 +1996,8 @@ serve(async (req) => {
               processedRecords.push(record);
               const stationRef = normalized.station_ref;
               stationRefSet.add(stationRef);
-              const observedAt = parseTimestamp(record.timestamp) ??
-                new Date().toISOString();
+              const observedAt = parseTimestamp(record.timestamp);
+              if (!observedAt || !eligibleObservation(observedAt)) continue;
               const observedMs = Date.parse(observedAt);
               const sensorValues = Array.isArray(record.sensordatavalues)
                 ? record.sensordatavalues
@@ -2176,7 +2158,7 @@ serve(async (req) => {
 
               observationsRowsInput = rawObservationRows.length;
               const observationDedupe = dedupeExactObservationRows(
-                rawObservationRows,
+                rawObservationRows.filter((row) => eligibleObservation(row.observed_at)),
               );
               const observationRows = observationDedupe.rows;
               observationsRowsPrepared = observationRows.length;
@@ -2197,7 +2179,7 @@ serve(async (req) => {
                   }),
                   writeObservsWithOutbox(
                     publicRpcRequest,
-                    observsRows,
+                    observsRows.filter((row) => eligibleObservation(row.observed_at)),
                     (message) => {
                       log.warn("Observs dual-write warning.", {
                         message,
@@ -2228,7 +2210,13 @@ serve(async (req) => {
                   throw error;
                 }
                 if (checkBudget("before_commit_timeseries_last_value")) {
-                  await upsertTimeseries(timeseriesPayload);
+                  const latest = observationRows.filter((row) => eligibleObservation(row.observed_at));
+                  const { error } = await postgrestRequest("POST", "rpc/uk_aq_rpc_timeseries_last_values_compact_update_v1", {}, {
+                    timeseries_ids: latest.map((row) => row.timeseries_id),
+                    last_values: latest.map((row) => row.value),
+                    last_value_ats: latest.map((row) => row.observed_at),
+                  }, undefined, "uk_aq_public");
+                  if (error) throw new Error(`Latest-value update failed: ${error.message}`);
                 }
                 if (observsResult.status === "rejected") {
                   const error = observsResult.reason instanceof Error

@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - "scripts/uk_aq_retention.py"
       - "scripts/official_networks/**"
       - "scripts/uk_aq_supabase.py"
       - "scripts/uk_aq_service_egress_metrics.py"
@@ -46,6 +47,7 @@ jobs:
       CONNECTOR_CODE: ${{ matrix.connector_code }}
       SCHEDULER_D1_JOB_KEY: ${{ matrix.scheduler_job_key }}
       SERVICE_ACCOUNT: ${{ vars.GCP_SOS_SERVICE_ACCOUNT || vars.GCP_SOS_JOB_SERVICE_ACCOUNT || '' }}
+      INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_ENV_NAME: ${{ vars.UK_AQ_ENV_NAME }}
@@ -71,6 +73,14 @@ jobs:
       SERVICE_MAX_INSTANCES: "1"
       SERVICE_MIN_INSTANCES: "0"
     steps:
+      - name: Validate normal ingestion retention
+        run: |
+          python3 - <<'PYCODE'
+          import os, re
+          value = os.environ.get("INGESTDB_RETENTION_DAYS", "")
+          if not re.fullmatch(r"[0-9]+", value) or int(value) < 2:
+              raise SystemExit("INGESTDB_RETENTION_DAYS must match Prune and be an integer >= 2")
+          PYCODE
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -193,6 +203,7 @@ jobs:
           path = sys.argv[1]
           values = {
               "SUPABASE_URL": os.environ["SUPABASE_URL"],
+              "INGESTDB_RETENTION_DAYS": os.environ["INGESTDB_RETENTION_DAYS"],
               "UK_AQ_ENV_NAME": os.environ["UK_AQ_ENV_NAME"],
               "UK_AQ_CORE_SCHEMA": os.environ["UK_AQ_CORE_SCHEMA"],
               "OBSERVS_WRITE_MODE": os.environ["OBSERVS_WRITE_MODE"],

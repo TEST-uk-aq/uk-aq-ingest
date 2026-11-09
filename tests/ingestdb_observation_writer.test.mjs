@@ -426,21 +426,16 @@ test("the shared helper is directly importable by the Node runtime", async () =>
   assert.equal(typeof helper.writeIngestDbObservations, "function");
 });
 
-test("SOS null latest values advance only the timestamp", async () => {
+test("SOS null latest values preserve timestamp and value consistency", async () => {
   const source = await readFile(
     new URL("../supabase/functions/ingest_sos/index.ts", import.meta.url),
     "utf8",
   );
   const upsertLastValue = source.slice(source.indexOf("async function upsertLastValue("));
-  assert.match(
-    upsertLastValue,
-    /lastPoint\.value !== null && lastPoint\.value !== undefined[\s\S]*uk_aq_rpc_timeseries_last_values_compact_update_v1/,
-  );
-  assert.match(
-    upsertLastValue,
-    /: await postgrestRequest\([\s\S]*?"PATCH",[\s\S]*?"timeseries",[\s\S]*?\{ last_value_at: lastPoint\.observed_at \}/,
-  );
-  assert.doesNotMatch(upsertLastValue, /last_values: \[lastPoint\.value \?\? null\]/);
+  assert.match(upsertLastValue, /lastPoint\.value == null/);
+  assert.match(upsertLastValue, /uk_aq_rpc_timeseries_last_values_compact_update_v1/);
+  assert.doesNotMatch(upsertLastValue, /\{ last_value_at: lastPoint\.observed_at \}/);
+
 });
 
 test("changed callers preserve canonical upsert, committed accounting, and checkpoint safety", async () => {
@@ -485,7 +480,7 @@ test("changed callers preserve canonical upsert, committed accounting, and check
       sources[1].indexOf("upsertObservations(observationRows"),
   );
   assert.ok(
-    sources[1].indexOf("upsertTimeseries(timeseriesPayload)",
+    sources[1].indexOf("uk_aq_rpc_timeseries_last_values_compact_update_v1",
       sources[1].indexOf("upsertObservations(observationRows")) >
       sources[1].indexOf("upsertObservations(observationRows"),
   );

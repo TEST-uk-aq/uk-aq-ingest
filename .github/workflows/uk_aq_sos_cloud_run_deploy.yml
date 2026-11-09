@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - "supabase/functions/_shared/retention.mjs"
       - "workers/uk_aq_sos_cloud_run/**"
       - "supabase/functions/ingest_sos/**"
       - "supabase/functions/_shared/cache.ts"
@@ -92,6 +93,14 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       SCHEDULER_D1_JOB_KEY: uk_aq_sos
     steps:
+      - name: Validate normal ingestion retention
+        run: |
+          python3 - <<'PYCODE'
+          import os, re
+          value = os.environ.get("INGESTDB_RETENTION_DAYS", "")
+          if not re.fullmatch(r"[0-9]+", value) or int(value) < 2:
+              raise SystemExit("INGESTDB_RETENTION_DAYS must match Prune and be an integer >= 2")
+          PYCODE
       - name: Checkout
         uses: actions/checkout@v5
 

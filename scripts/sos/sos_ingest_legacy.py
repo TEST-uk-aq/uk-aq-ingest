@@ -49,6 +49,7 @@ if PROJECT_ROOT.name == "scripts":
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.uk_aq_retention import load_retention, bounded_start, eligible_observation, assert_eligible_rows
 from scripts.ingest_helpers import station_coords, station_in_bbox, station_in_bbox_or_missing_coords
 from scripts.sos.sos_failure_classification import (
     SOS_UPSTREAM_UNAVAILABLE_EXIT_CODE,
@@ -1580,6 +1581,8 @@ class SupabaseWriter:
                 series_id,
             )
         def write_chunk(chunk: Sequence[Dict[str, Any]]) -> None:
+            if getattr(self, "enforce_normal_retention", False):
+                assert_eligible_rows(chunk)
             self.core.table("observations").upsert(
                 list(chunk), on_conflict="connector_id,timeseries_id,observed_at"
             ).execute()
@@ -1611,16 +1614,15 @@ class SupabaseWriter:
             if isinstance(last_value_at, datetime)
             else _parse_timestamp(last_value_at)
         )
-        if parsed_last_value_at is None and last_value is None:
+        if parsed_last_value_at is None or last_value is None:
             return
-        payload: Dict[str, Any] = {}
-        if parsed_last_value_at is not None:
-            payload["last_value_at"] = parsed_last_value_at.isoformat()
-        if last_value is not None:
-            payload["last_value"] = last_value
-        if not payload:
+        if getattr(self, "enforce_normal_retention", False) and not eligible_observation(parsed_last_value_at):
             return
-        self.core.table("timeseries").update(payload).eq("id", series_id).execute()
+        self.client.schema("uk_aq_public").rpc("uk_aq_rpc_timeseries_last_values_compact_update_v1", {
+            "timeseries_ids": [series_id], "last_values": [last_value],
+            "last_value_ats": [parsed_last_value_at.isoformat()],
+        }).execute()
+
 
 
 class UkAirIngestor:
@@ -2086,9 +2088,13 @@ class UkAirIngestor:
         hours: int = 6,
         connector_id: Optional[int] = None,
     ) -> int:
+        load_retention(SOS_CONNECTOR_CODE)
+        self.writer.enforce_normal_retention = True
         errors = 0
-        window_start = utcnow() - timedelta(hours=hours)
+        window_start = bounded_start(utcnow() - timedelta(hours=hours))
         window_end = utcnow()
+        if window_start >= window_end:
+            return 0
         timespan = f"{window_start.isoformat()}/{window_end.isoformat()}"
         eligible = [ts for ts in series if ts.get("id") is not None and ts.get("_db_id") is not None]
         total = len(eligible)
@@ -2098,8 +2104,8 @@ class UkAirIngestor:
             ts_db_id = ts.get("_db_id")
             try:
                 LOG.debug("Refreshing recent window for %s (%sh)", ts_ref, hours)
-                data = self.client.timeseries_data(str(ts_ref), timespan)
-                points = _parse_datapoints(data.get("values", []))
+                data = self.client.timeseries_data(str(ts_ref), f"{bounded_start(window_start).isoformat()}/{window_end.isoformat()}")
+                points = [p for p in _parse_datapoints(data.get("values", [])) if eligible_observation(p.get("observed_at"))]
                 self.writer.upsert_observations(
                     ts_db_id, points, connector_id=connector_id
                 )
@@ -2107,12 +2113,7 @@ class UkAirIngestor:
                     last_val = points[-1]["value"]
                     last_at = points[-1]["observed_at"]
                 else:
-                    last_val = data.get("lastValue")
-                    last_at = _parse_timestamp(
-                        data.get("lastValueTimestamp")
-                        if data.get("lastValueTimestamp") is not None
-                        else data.get("lastValue")
-                    )
+                    continue
                 self.writer.update_last_value(ts_db_id, last_at, _safe_number(last_val))
             except Exception as exc:
                 errors += 1
@@ -2261,7 +2262,7 @@ def _parse_timestamp(raw: Any) -> Optional[datetime]:
             return datetime.fromtimestamp(raw / 1000, tz=timezone.utc)
         if isinstance(raw, str):
             return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError, OSError):
         return None
     return None
 

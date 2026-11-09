@@ -1,0 +1,74 @@
+name: UK-AQ Ingest Edge Deploy
+
+# Explicit operator deployment only; merge does not deploy these edge backends.
+on:
+  workflow_dispatch:
+    inputs:
+      function:
+        description: Ingest edge backend to deploy after the retention migration
+        type: choice
+        default: all
+        options:
+          - all
+          - ingest_breathelondon
+          - ingest_openaq
+          - ingest_sos
+          - ingest_sensorcommunity
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uk-aq-ingest-edge-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+      INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS }}
+      TARGET_FUNCTION: ${{ inputs.function }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: supabase/setup-cli@45a513f8c64c0bc8e0e3dfe572b5c95be85f6359
+        with:
+          version: latest
+      - name: Verify retention configuration and schema prerequisite
+        run: |
+          python3 - <<'PY'
+          import json, os, re, urllib.request
+          from urllib.parse import urlparse
+          days = os.environ.get("INGESTDB_RETENTION_DAYS", "")
+          if not re.fullmatch(r"[0-9]+", days) or int(days) < 2:
+              raise SystemExit("INGESTDB_RETENTION_DAYS must match Prune and be an integer >= 2")
+          url = os.environ["SUPABASE_URL"].rstrip("/")
+          parsed = urlparse(url)
+          if parsed.scheme != "https" or not re.fullmatch(r"[a-z0-9]+\.supabase\.co", parsed.netloc):
+              raise SystemExit("SUPABASE_URL must identify the configured Supabase project")
+          key = os.environ["SB_SECRET_KEY"]
+          request = urllib.request.Request(url + "/rest/v1/rpc/uk_aq_rpc_ingest_retention_boundaries",
+              data=json.dumps({"p_retention_days": int(days)}).encode(),
+              headers={"apikey": key, "Authorization": "Bearer " + key,
+                       "Content-Type": "application/json", "Content-Profile": "uk_aq_public"})
+          with urllib.request.urlopen(request, timeout=20) as response:
+              rows = json.load(response)
+          if not isinstance(rows, list) or not rows or any(not r.get("not_before") for r in rows):
+              raise SystemExit("Retention schema prerequisite not ready")
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write("PROJECT_REF=" + parsed.hostname.split(".")[0] + "\n")
+          PY
+      - name: Set retention and deploy selected backends
+        run: |
+          set -euo pipefail
+          supabase secrets set --project-ref "$PROJECT_REF" INGESTDB_RETENTION_DAYS="$INGESTDB_RETENTION_DAYS"
+          case "$TARGET_FUNCTION" in
+            all) functions=(ingest_breathelondon ingest_openaq ingest_sos ingest_sensorcommunity) ;;
+            ingest_breathelondon|ingest_openaq|ingest_sos|ingest_sensorcommunity) functions=("$TARGET_FUNCTION") ;;
+            *) echo "Unknown ingest function" >&2; exit 1 ;;
+          esac
+          for function in "${functions[@]}"; do
+            supabase functions deploy "$function" --project-ref "$PROJECT_REF" --no-verify-jwt
+          done

@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - "supabase/functions/_shared/retention.mjs"
       - "workers/uk_aq_openaq_cloud_run/**"
       - "supabase/functions/ingest_openaq/**"
       - "supabase/functions/_shared/cache.ts"
@@ -43,6 +44,7 @@ jobs:
       TASKS_ENABLED: ${{ vars.GCP_OPENAQ_TASKS_ENABLED || 'true' }}
       TASK_QUEUE_ID: ${{ vars.GCP_OPENAQ_TASK_QUEUE_ID || 'uk-aq-openaq-trigger-queue' }}
       TASK_INVOKER_SERVICE_ACCOUNT: ${{ vars.GCP_OPENAQ_TASK_INVOKER_SERVICE_ACCOUNT || '' }}
+      INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
@@ -116,6 +118,14 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       SCHEDULER_D1_JOB_KEY: uk_aq_openaq_safety
     steps:
+      - name: Validate normal ingestion retention
+        run: |
+          python3 - <<'PYCODE'
+          import os, re
+          value = os.environ.get("INGESTDB_RETENTION_DAYS", "")
+          if not re.fullmatch(r"[0-9]+", value) or int(value) < 2:
+              raise SystemExit("INGESTDB_RETENTION_DAYS must match Prune and be an integer >= 2")
+          PYCODE
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -368,6 +378,7 @@ jobs:
           require_env SUPABASE_URL
 
           env_updates=()
+          add_env INGESTDB_RETENTION_DAYS
           add_env SUPABASE_URL
           add_env UK_AQ_CORE_SCHEMA
           add_env UK_AQ_RAW_SCHEMA
