@@ -420,10 +420,13 @@ def main() -> int:
     args = parse_args()
     if args.window_hours <= 0 or args.batch_size <= 0 or args.initial_days <= 0:
         raise ValueError("Window, batch size and initial days must be positive")
-    args.limit = min(20, max(1, args.limit or 20))
+    if args.limit is not None and args.limit <= 0:
+        raise ValueError("Limit must be a positive integer")
     load_retention("blondon_communities")
-    deadline = time.monotonic() + 600
-    source_requests = 0
+    max_runtime_seconds = min(600, max(30, int(os.getenv("BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS", "600"))))
+    deadline = time.monotonic() + max_runtime_seconds
+    acquisition_deadline = deadline - 90
+    runtime_budget_hit = False
     failures = 0
     species_list = _parse_species_list(args.species)
     if not species_list:
@@ -591,15 +594,13 @@ def main() -> int:
     observations_output = [] if args.output_observations else None
     checkpoint_rows = []
     for row in station_rows:
+        if runtime_budget_hit:
+            break
         station_ref = str(row["station_ref"])
         station_id = station_id_map.get(station_ref)
         if station_id is None:
             continue
         for species in species_list:
-            if source_requests >= 40 or time.monotonic() >= deadline - 90:
-                LOG.warning("Stopping incomplete Communities work at the request/runtime budget")
-                failures += 1
-                break
             timeseries_ref = _build_timeseries_ref(station_ref, species)
             timeseries_id = timeseries_id_map.get(timeseries_ref)
             if timeseries_id is None:
@@ -614,6 +615,11 @@ def main() -> int:
             end_time = min(now, start_time + timedelta(hours=24)) if initial_start else now
             if start_time >= end_time:
                 continue
+            if time.monotonic() >= acquisition_deadline:
+                LOG.warning("Stopping incomplete Communities work at the runtime budget")
+                runtime_budget_hit = True
+                failures += 1
+                break
             progress = {"station_id": station_id, "species": species, "timeseries_id": timeseries_id,
                         "last_polled_at": utcnow().isoformat(), "updated_at": utcnow().isoformat(), "last_error": "attempt_incomplete"}
             if not args.dry_run:
@@ -624,7 +630,6 @@ def main() -> int:
                 start_time = bounded_start(start_time)
                 if start_time >= end_time:
                     raise RuntimeError("Requested recovery slice left retention before acquisition")
-                source_requests += 1
                 payload = client.get_clarity_data(station_ref, species, start_time, end_time)
                 if isinstance(payload, list) and len(payload) > 10000:
                     raise RuntimeError("Communities response work budget exceeded")
@@ -655,7 +660,7 @@ def main() -> int:
             checkpoint_rows.append(progress)
             if not args.dry_run:
                 writer.upsert_checkpoints([progress])
-            if args.sleep_seconds and time.monotonic() < deadline - 90:
+            if args.sleep_seconds and time.monotonic() < acquisition_deadline:
                 time.sleep(min(1, max(0, args.sleep_seconds)))
 
     if not args.dry_run:
