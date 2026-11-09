@@ -12,6 +12,20 @@ import {
 } from "./service_egress_metrics.mjs";
 
 const CONNECTOR_CODE = "sensorcommunity";
+const INGEST_RETENTION_DAYS = (() => {
+  const raw = process.env.INGESTDB_RETENTION_DAYS;
+  if (!raw || !/^[1-9][0-9]*$/.test(raw) ||
+    !Number.isSafeInteger(Number(raw)) || Number(raw) < 2) {
+    throw new Error("INGESTDB_RETENTION_DAYS must be configured as an integer of at least 2");
+  }
+  return Number(raw);
+})();
+function eligibleSourceTimestamp(value, now = new Date()) {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const at = Date.parse(value);
+  const first = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - INGEST_RETENTION_DAYS);
+  return Number.isFinite(at) && at >= first && at <= now.getTime();
+}
 const SCHEDULER_BACKEND_SUPABASE_FUNCTION = "supabase_function";
 const SCHEDULER_BACKEND_GOOGLE_CLOUD_RUN = "google_cloud_run";
 
@@ -2168,8 +2182,6 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
   }
 
   const rawObservationRows = [];
-  let lastObservedMs = Number.NEGATIVE_INFINITY;
-  let lastObservedAt = null;
 
   for (const [timeseriesRef, observation] of observationsByTimeseries.entries()) {
     const timeseriesId = timeseriesIdMap[timeseriesRef];
@@ -2177,6 +2189,7 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
       throw new Error(`Missing Sensor.Community timeseries identity: ${timeseriesRef}`);
     }
 
+    if (!eligibleSourceTimestamp(observation.observed_at)) continue;
     rawObservationRows.push({
       connector_id: connectorId,
       timeseries_id: timeseriesId,
@@ -2184,11 +2197,6 @@ async function runDirectIngest(connectorId, overwriteStationName, dropboxCapture
       value: observation.value,
       status: null,
     });
-
-    if (observation.observed_ms > lastObservedMs) {
-      lastObservedMs = observation.observed_ms;
-      lastObservedAt = observation.observed_at;
-    }
   }
 
   const observationDedupe = dedupeExactObservationRows(rawObservationRows.filter((row) => eligibleObservation(row.observed_at)));

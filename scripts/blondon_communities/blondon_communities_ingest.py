@@ -37,6 +37,7 @@ from scripts.blondon_communities.blondon_communities_list_stations import (
 from scripts.uk_aq_retention import load_retention, eligible_observation, bounded_start
 from scripts.uk_aq_ingestdb_observation_writer import write_observations, build_compact_observation_rpc_args
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
+from scripts.uk_aq_retention import eligible_timestamp, retention_days, retention_start
 
 load_dotenv()
 
@@ -148,7 +149,7 @@ def _parse_start_date(value: Optional[str]) -> Optional[datetime]:
             parsed = datetime.fromisoformat(text)
             return parsed.replace(tzinfo=timezone.utc)
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except ValueError:
         return None
 
@@ -582,6 +583,7 @@ def main() -> int:
             checkpoints_output.append(entry)
 
     now = _floor_to_hour(utcnow())
+    earliest = retention_start(utcnow(), days)
     initial_start = _parse_start_date(args.start_date)
     if args.start_date and initial_start is None:
         raise ValueError("Invalid --start-date")

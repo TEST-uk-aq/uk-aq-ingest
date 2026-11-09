@@ -1,5 +1,6 @@
 import { loadRetention, eligibleObservation, boundedStart, assertEligibleRows } from "../_shared/retention.mjs";
 import { parseDatapoints } from "./sos_datapoints.ts";
+import { eligibleIngestTimestamp, ingestRetentionDays, ingestRetentionStart } from "../_shared/ingest_retention.ts";
 // trigger deploy 2026-02-09 12:36
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import "../_shared/fetch_egress_patch.ts";
@@ -100,6 +101,7 @@ const DEFAULT_CONNECTOR_CODE = "sos";
 const SOS_PRIMARY_ACQUISITION_METHOD = "sos";
 const SOS_HTML_FALLBACK_ACQUISITION_METHOD = "ukair_html";
 const DEFAULT_WINDOW_HOURS = 6;
+const INGEST_RETENTION_DAYS = ingestRetentionDays(Deno.env.get("INGESTDB_RETENTION_DAYS"));
 const DEFAULT_MAX_RUNTIME_SECONDS = 600;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MIN_FETCH_TIMEOUT_MS = 4_000;
@@ -579,7 +581,11 @@ serve(async (req) => {
         };
 
         let shouldPoll = true;
-        const pollWindow = requestedWindowHours ?? connector.poll_window_hours ?? DEFAULT_WINDOW_HOURS;
+        const configuredWindow = requestedWindowHours ?? connector.poll_window_hours ?? DEFAULT_WINDOW_HOURS;
+        if (!Number.isFinite(configuredWindow) || configuredWindow <= 0) {
+          throw new Error("SOS poll window must be positive and finite");
+        }
+        const pollWindow = Math.min(configuredWindow, 24);
         const effectiveLimit = requestedLimit ?? connector.poll_timeseries_batch_size ?? undefined;
         const baseUrl = (connector.service_url || SOS_BASE_URL).replace(/\/$/, "");
         const now = new Date();
@@ -844,13 +850,16 @@ serve(async (req) => {
                 total: points.length,
               });
             }
-            const observationRows = Array.from(deduped.values()).map((point) => ({
+            const observationRows = Array.from(deduped.values()).filter((point) =>
+              eligibleIngestTimestamp(point.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
+            ).map((point) => ({
               connector_id: connectorIdForObs,
               timeseries_id: timeseriesId,
               observed_at: point.observed_at,
               value: point.value,
               status: point.status,
             }));
+            if (!observationRows.length) return;
             const writeStats = await writeIngestDbObservations({
               rows: observationRows,
               chunkSize: observationRows.length,

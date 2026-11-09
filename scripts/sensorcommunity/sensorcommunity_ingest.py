@@ -64,6 +64,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts.uk_aq_retention import load_retention, eligible_observation, bounded_start, assert_eligible_rows
 from scripts.ingest_helpers import station_coords, station_in_bbox_or_missing_coords
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
+from scripts.uk_aq_retention import eligible_timestamp, retention_days
 from scripts.uk_aq_phenomena_rpc import upsert_phenomena_via_rpc
 from scripts.uk_aq_ingestdb_observation_writer import (
     DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS,
@@ -1228,6 +1229,8 @@ def main() -> None:
         station_id_map = writer.fetch_station_ids(connector_id, service_ref, station_refs)
         timeseries_payload = []
         for key, (value, observed_at) in observations_by_timeseries.items():
+            if not eligible_timestamp(observed_at, utcnow(), days):
+                continue
             station_id = station_id_map.get(key.station_ref)
             if not station_id:
                 continue
@@ -1267,6 +1270,8 @@ def main() -> None:
 
         observation_rows = []
         for key, (value, observed_at) in observations_by_timeseries.items():
+            if not eligible_timestamp(observed_at, utcnow(), days):
+                continue
             timeseries_ref = f"{key.station_ref}:{key.pollutant}"
             timeseries_id = timeseries_id_map.get(timeseries_ref)
             if not timeseries_id:

@@ -16,6 +16,9 @@ import {
   writeIngestDbObservations,
 } from "../_shared/ingestdb_observation_writer.mjs";
 import { writeOpenAqIngestDbObservations } from "./ingestdb_observation_write.mjs";
+import { eligibleIngestTimestamp, ingestRetentionDays, ingestRetentionStart } from "../_shared/ingest_retention.ts";
+
+const INGEST_RETENTION_DAYS = ingestRetentionDays(Deno.env.get("INGESTDB_RETENTION_DAYS"));
 
 type PollRequest = {
   connector_code?: string;
@@ -3521,6 +3524,7 @@ serve(async (req) => {
           const tsObservedMs = Date.parse(tsCheckpoint.last_observed_at);
           if (
             Number.isFinite(tsObservedMs) &&
+            tsObservedMs <= nowMs &&
             nowMs - tsObservedMs < 60 * 60 * 1000
           ) {
             if (stationId === debugStationId) {
@@ -3773,7 +3777,7 @@ serve(async (req) => {
         value,
         stationId,
         nowMs,
-        windowMs,
+          null,
         stationIdByObservedTimeseriesRef,
       );
     }

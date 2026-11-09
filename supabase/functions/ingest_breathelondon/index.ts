@@ -31,6 +31,7 @@ import {
   classifyCommunitiesTimeseriesRows,
 } from "../../../shared/blondon_communities_reference.mjs";
 import { upsertCommunitiesObservationsViaDatabase } from "./breathelondon_database.ts";
+import { eligibleIngestTimestamp, ingestRetentionDays, ingestRetentionStart } from "../_shared/ingest_retention.ts";
 
 configureServiceEgressMetrics("ingest.blondon_communities");
 configureObservsPostgrestFetch(serviceEgressPostgrestFetch);
@@ -192,6 +193,7 @@ const BLONDON_COMMUNITIES_USER_AGENT = Deno.env.get("BLONDON_COMMUNITIES_USER_AG
 const BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS = Number(
   Deno.env.get("BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS") ?? DEFAULT_MAX_RUNTIME_SECONDS,
 );
+const INGEST_RETENTION_DAYS = ingestRetentionDays(Deno.env.get("INGESTDB_RETENTION_DAYS"));
 const BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT = (() => {
   const value = (Deno.env.get("BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT") ??
     "postgrest").trim();
@@ -1127,24 +1129,6 @@ async function upsertObservations(
   });
 }
 
-function observationValueDedupeToken(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "null";
-  }
-  const numericValue = Number(value);
-  if (Number.isFinite(numericValue)) {
-    return `n:${numericValue}`;
-  }
-  return `s:${String(value)}`;
-}
-
-function observationStatusDedupeToken(value: unknown): string {
-  if (value === null || value === undefined) {
-    return "";
-  }
-  return String(value).trim();
-}
-
 function dedupeExactObservationRows(
   rows: Record<string, unknown>[],
 ): { rows: Record<string, unknown>[]; deduped: number } {
@@ -1156,13 +1140,8 @@ function dedupeExactObservationRows(
     const connectorId = String(row.connector_id ?? "");
     const timeseriesId = String(row.timeseries_id ?? "");
     const observedAt = String(row.observed_at ?? "").trim();
-    const valueToken = observationValueDedupeToken(row.value);
-    const statusToken = observationStatusDedupeToken(row.status);
-    const key =
-      `${connectorId}:${timeseriesId}:${observedAt}:${valueToken}:${statusToken}`;
-    if (!dedup.has(key)) {
-      dedup.set(key, row);
-    }
+    const key = `${connectorId}:${timeseriesId}:${observedAt}`;
+    dedup.set(key, row); // The final valid source occurrence wins.
   }
   const preparedRows = Array.from(dedup.values());
   return { rows: preparedRows, deduped: rows.length - preparedRows.length };
@@ -1870,6 +1849,7 @@ serve(async (req) => {
   );
 
   const errors: string[] = [];
+  const warnings: string[] = [];
   let status = 200;
   let responsePayload: Record<string, unknown> = {};
   let debug = false;
@@ -2183,7 +2163,7 @@ serve(async (req) => {
                         rows: rows.length,
                         reason,
                       });
-                      errors.push("observs_dual_write");
+                      warnings.push("observs_dual_write");
                     },
                   );
                   observsFlushes += 1;
@@ -2191,6 +2171,7 @@ serve(async (req) => {
                   observsReceiptsUpserted += stats.receipts_upserted;
                   observsEnqueued += stats.enqueued;
                 } catch (error) {
+                  observsRowsPending.unshift(...rows);
                   const message = error instanceof Error ? error.message : String(error);
                   log.warn("Observs dual-write flush failed.", {
                     message,
@@ -2198,6 +2179,7 @@ serve(async (req) => {
                     reason,
                   });
                   errors.push("observs_dual_write_flush");
+                  throw new Error(`Observs dual-write flush failed: ${message}`);
                 }
               };
 
@@ -2310,6 +2292,7 @@ serve(async (req) => {
                   : [];
                 let stationLatestObserved = previousLastObserved ?? null;
                 let stationHasNewObservation = false;
+                let stationHasSpeciesError = false;
 
                 for (const species of speciesList) {
                   const timeseriesRef = `${stationRef}:${species}`;
@@ -2450,8 +2433,18 @@ serve(async (req) => {
                 }
               }
 
-              await flushPendingObservsRows(true, "run_complete");
+              try {
+                await flushPendingObservsRows(true, "run_complete");
+              } catch {
+                // Primary commits and their latest-value updates still complete.
+              }
               await flushUpdates();
+
+              const incomplete = timeBudgetHit || isolatedStations.size > 0 || errors.length > 0 ||
+                observsRowsPending.length > 0;
+              const runStatus = incomplete
+                ? (observationsUpserted > 0 ? "partial" : "failed")
+                : (dryRun ? "dry_run" : "succeeded");
 
               responsePayload = {
                 connector_id: connector.id,
@@ -2493,6 +2486,7 @@ serve(async (req) => {
                 isolated_station_refs: isolatedStationRefs.slice(0, 100),
                 unresolved_timeseries_refs: unresolvedTimeseriesRefs.slice(0, 200),
                 errors,
+                warnings,
               };
               log.info("Stations polled.", {
                 stations_selected: stationsSelected,

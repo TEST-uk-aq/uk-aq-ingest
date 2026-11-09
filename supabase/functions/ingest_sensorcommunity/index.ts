@@ -3,6 +3,7 @@ import { loadRetention, eligibleObservation, boundedStart, assertEligibleRows, s
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import "../_shared/fetch_egress_patch.ts";
 import { cacheControlHeaders } from "../_shared/cache.ts";
+import { eligibleIngestTimestamp, ingestRetentionDays } from "../_shared/ingest_retention.ts";
 import {
   type ObservsObservationRow,
   writeObservsWithOutbox,
@@ -55,6 +56,7 @@ const DEFAULT_SERVICE_LABEL = "Sensor.Community";
 const DEFAULT_COUNTRY = "GB";
 const DEFAULT_USER_AGENT = "uk-air-quality-networks";
 const DEFAULT_TIMEOUT_MS = 30_000;
+const INGEST_RETENTION_DAYS = ingestRetentionDays(Deno.env.get("INGESTDB_RETENTION_DAYS"));
 const DEFAULT_MAX_RUNTIME_SECONDS = 130;
 const DEFAULT_RESPONSE_BUFFER_MS = 10_000;
 const DEFAULT_OBSERVATION_UPSERT_CHUNK_SIZE = 1000;
@@ -142,7 +144,7 @@ const SCOMM_OBSERVATION_UPSERT_CHUNK_SIZE = parsePositiveInt(
   Deno.env.get("SCOMM_OBSERVATION_UPSERT_CHUNK_SIZE"),
   DEFAULT_OBSERVATION_UPSERT_CHUNK_SIZE,
 );
-const SB_UK_AQ_CRON_SECRET = Deno.env.get("SB_UK_AQ_CRON_SECRET") ?? "";
+const SB_UK_AQ_CRON_SECRET = (Deno.env.get("SB_UK_AQ_CRON_SECRET") ?? "").trim();
 
 const VALUE_TYPE_MAP: Record<
   string,
@@ -285,7 +287,7 @@ function postgrestHeaders(
 
 function requireCronSecret(req: Request): Response | null {
   if (!SB_UK_AQ_CRON_SECRET) {
-    return null;
+    return new Response("Cron authentication is not configured", { status: 503 });
   }
   const header = req.headers.get("x-cron-secret");
   if (!header || header !== SB_UK_AQ_CRON_SECRET) {
@@ -971,13 +973,14 @@ async function upsertTimeseries(
   if (!rows.length) {
     return 0;
   }
-  await postgrestRequest(
+  const { error } = await postgrestRequest(
     "POST",
     "timeseries",
     { on_conflict: "connector_id,service_ref,timeseries_ref" },
     rows,
     "resolution=merge-duplicates,return=minimal",
   );
+  if (error) throw new Error(`Sensor.Community timeseries upsert failed: ${error.message}`);
   return rows.length;
 }
 
@@ -1993,6 +1996,10 @@ serve(async (req) => {
               if (!normalized.station_ref) {
                 continue;
               }
+              const observedAt = parseTimestamp(record.timestamp);
+              if (!observedAt || !eligibleIngestTimestamp(observedAt, new Date(), INGEST_RETENTION_DAYS)) {
+                continue;
+              }
               processedRecords.push(record);
               const stationRef = normalized.station_ref;
               stationRefSet.add(stationRef);
@@ -2160,7 +2167,9 @@ serve(async (req) => {
               const observationDedupe = dedupeExactObservationRows(
                 rawObservationRows.filter((row) => eligibleObservation(row.observed_at)),
               );
-              const observationRows = observationDedupe.rows;
+              const observationRows = observationDedupe.rows.filter((row) =>
+                eligibleIngestTimestamp(row.observed_at, new Date(), INGEST_RETENTION_DAYS) !== null
+              );
               observationsRowsPrepared = observationRows.length;
               observationsRowsDedupedPrewrite = observationDedupe.deduped;
               observsRows = observationRows.map(toObservsObservationRow)

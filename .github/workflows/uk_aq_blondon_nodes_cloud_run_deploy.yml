@@ -13,6 +13,7 @@ on:
       - "scripts/blondon_nodes/blondon_nodes_recovery.py"
       - "scripts/blondon_nodes/blondon_nodes_reference_data.py"
       - "scripts/uk_aq_supabase.py"
+      - "scripts/uk_aq_retention.py"
       - "scripts/uk_aq_service_egress_metrics.py"
       - "scripts/uk_aq_ingestdb_observation_writer.py"
       - "scripts/gcp/**"
@@ -49,6 +50,7 @@ jobs:
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
       UK_AQ_RAW_SCHEMA: ${{ vars.UK_AQ_RAW_SCHEMA || 'uk_aq_raw' }}
+      INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS || '' }}
       OBS_AQIDB_RPC_SCHEMA: ${{ vars.OBS_AQIDB_RPC_SCHEMA || 'uk_aq_public' }}
       UK_AQ_SERVICE_EGRESS_METRICS_ENABLED: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_ENABLED || 'false' }}
       UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL || vars.OBS_AQIDB_SUPABASE_URL || '' }}
@@ -394,6 +396,7 @@ jobs:
           add_env SUPABASE_URL
           add_env UK_AQ_CORE_SCHEMA
           add_env UK_AQ_RAW_SCHEMA
+          add_env INGESTDB_RETENTION_DAYS
           add_env UK_AQ_SERVICE_EGRESS_METRICS_ENABLED
           add_env UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL
           add_env UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA
