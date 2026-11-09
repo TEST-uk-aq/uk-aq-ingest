@@ -611,9 +611,10 @@ async function fetchJson(
   deadline = Number.POSITIVE_INFINITY,
 ): Promise<unknown> {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    if (Date.now() >= deadline) throw new Error("runtime_budget_exceeded");
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error("runtime_budget_exceeded");
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Math.min(DEFAULT_TIMEOUT_MS, deadline - Date.now()));
+    const timeout = setTimeout(() => controller.abort(), Math.min(DEFAULT_TIMEOUT_MS, remainingMs));
     try {
       const resp = await fetch(url, { headers, signal: controller.signal });
       if (RETRYABLE_STATUS.has(resp.status) && attempt < 3) {
@@ -1924,7 +1925,15 @@ serve(async (req) => {
           ) ?? DEFAULT_OBSERVS_BUFFER_FLUSH_ROWS,
         ),
       );
-      const limit = Math.min(20, Math.max(1, asNumber(request.limit, 20) ?? 20));
+      const requestedLimit = asNumber(request.limit);
+      if (request.limit != null &&
+        (requestedLimit === undefined || !Number.isSafeInteger(requestedLimit) || requestedLimit <= 0)) {
+        throw new Error("limit must be a positive integer");
+      }
+      if (!Number.isSafeInteger(batchSize) || batchSize <= 0) {
+        throw new Error("batch_size must be a positive integer");
+      }
+      const limit = requestedLimit ?? (stationRefs.length || batchSize);
       const skipStations = asBoolean(request.skip_stations, false) ?? false;
       const activeOnly = asBoolean(request.active_only, false) ?? false;
       const dryRun = asBoolean(request.dry_run, false) ?? false;
@@ -2257,8 +2266,8 @@ serve(async (req) => {
               const timeseriesUpdates: Array<{ id: number; last_value: number; last_value_at: string }> = [];
               const checkpointRows: Record<string, unknown>[] = [];
               observationsUpserted = 0;
-              let timeBudgetHit = stationRefs.length > limit;
-              let stoppedReason: string | null = timeBudgetHit ? "station_budget_exceeded" : null;
+              let timeBudgetHit = false;
+              let stoppedReason: string | null = null;
               let stationsProcessed = 0;
               const nowIso = new Date().toISOString();
               const nowMsForLag = Date.now();
@@ -2275,7 +2284,7 @@ serve(async (req) => {
                 }
               };
 
-              for (const row of stationRows) {
+              for (const [stationIndex, row] of stationRows.entries()) {
                 const stationRef = String(row.station_ref);
                 if (isolatedStations.has(stationRef)) continue;
                 const stationId = stationIdMap[stationRef];
@@ -2301,11 +2310,6 @@ serve(async (req) => {
                     continue;
                   }
                   // One recent window per species, never a walk from an old high-water mark.
-                  if (shouldStop() || sourceRequests >= 40) {
-                    timeBudgetHit = true;
-                    stoppedReason = shouldStop() ? "runtime_budget_exceeded" : "source_request_budget_exceeded";
-                    break;
-                  }
                   const speciesCheckpoint = speciesCheckpoints[`${stationId}:${species}`] ?? {};
                   const prior = parseObservationTimestamp(speciesCheckpoint.last_observed_at);
                   const polledMs = Date.parse(String(speciesCheckpoint.last_polled_at ?? ""));
@@ -2316,6 +2320,11 @@ serve(async (req) => {
                   // Manual recovery is one bounded slice; repeat explicitly for another retained slice.
                   const endTime = new Date(Math.min(now.getTime(), startDateOverride ? startTime.getTime() + 24 * 3600_000 : now.getTime()));
                   if (startTime >= endTime) continue;
+                  if (shouldStop()) {
+                    timeBudgetHit = true;
+                    stoppedReason = "runtime_budget_exceeded";
+                    break;
+                  }
                   const attemptedAt = new Date().toISOString();
                   const progress: Record<string, unknown> = { station_id: stationId, species,
                     timeseries_id: timeseriesId, last_polled_at: attemptedAt, last_error: "attempt_incomplete" };
@@ -2328,7 +2337,7 @@ serve(async (req) => {
                   let lastValue: number | null = null;
                   let failure: unknown = null;
                   try {
-                    sourceRequests += 1; // fetchJson has at most three attempts (120 total source attempts/run).
+                    sourceRequests += 1; // fetchJson retains its bounded per-request retries.
                     const payload = await getClarityData(baseUrl, apiKey, stationRef, species, startTime, endTime, rawRecorder, runtimeDeadline - 45_000);
                     const extracted = extractObservations(payload, timeseriesId, Number(connector.id));
                     if (extracted.rows.length > 10_000) throw new Error("Communities response work budget exceeded");
@@ -2368,6 +2377,10 @@ serve(async (req) => {
                     failure = error;
                     speciesFailures += 1;
                     errors.push(`${stationRef}:${species}:${String(error)}`);
+                    if (shouldStop()) {
+                      timeBudgetHit = true;
+                      stoppedReason = "runtime_budget_exceeded";
+                    }
                   }
                   if (!dryRun) {
                     // Failure of checkpoint persistence is fatal and visible, never swallowed.
@@ -2425,7 +2438,7 @@ serve(async (req) => {
                 await flushUpdates();
                 stationsProcessed += 1;
 
-                if (shouldStop()) {
+                if (shouldStop() && stationIndex < stationRows.length - 1) {
                   timeBudgetHit = true;
                   stoppedReason = "runtime_budget_exceeded";
                   await flushUpdates();
