@@ -38,7 +38,6 @@ jobs:
       SERVICE_CONCURRENCY: '1'
       SERVICE_MAX_INSTANCES: '1'
       SERVICE_MIN_INSTANCES: '0'
-      INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
@@ -319,7 +318,6 @@ jobs:
           require_env SUPABASE_URL
 
           env_updates=()
-          add_env INGESTDB_RETENTION_DAYS
           add_env SUPABASE_URL
           add_env OBSERVS_WRITE_MODE
           add_env GCP_OBSERVS_PUBSUB_TOPIC

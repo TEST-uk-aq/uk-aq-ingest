@@ -5,7 +5,6 @@ on:
     branches:
       - main
     paths:
-      - "scripts/uk_aq_retention.py"
       - "scripts/official_networks/**"
       - "scripts/uk_aq_supabase.py"
       - "scripts/uk_aq_retention.py"
@@ -48,7 +47,6 @@ jobs:
       CONNECTOR_CODE: ${{ matrix.connector_code }}
       SCHEDULER_D1_JOB_KEY: ${{ matrix.scheduler_job_key }}
       SERVICE_ACCOUNT: ${{ vars.GCP_SOS_SERVICE_ACCOUNT || vars.GCP_SOS_JOB_SERVICE_ACCOUNT || '' }}
-      INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_ENV_NAME: ${{ vars.UK_AQ_ENV_NAME }}
@@ -205,7 +203,6 @@ jobs:
           path = sys.argv[1]
           values = {
               "SUPABASE_URL": os.environ["SUPABASE_URL"],
-              "INGESTDB_RETENTION_DAYS": os.environ["INGESTDB_RETENTION_DAYS"],
               "UK_AQ_ENV_NAME": os.environ["UK_AQ_ENV_NAME"],
               "UK_AQ_CORE_SCHEMA": os.environ["UK_AQ_CORE_SCHEMA"],
               "INGESTDB_RETENTION_DAYS": os.environ["INGESTDB_RETENTION_DAYS"],

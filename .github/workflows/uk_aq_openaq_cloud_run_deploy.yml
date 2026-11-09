@@ -45,7 +45,6 @@ jobs:
       TASKS_ENABLED: ${{ vars.GCP_OPENAQ_TASKS_ENABLED || 'true' }}
       TASK_QUEUE_ID: ${{ vars.GCP_OPENAQ_TASK_QUEUE_ID || 'uk-aq-openaq-trigger-queue' }}
       TASK_INVOKER_SERVICE_ACCOUNT: ${{ vars.GCP_OPENAQ_TASK_INVOKER_SERVICE_ACCOUNT || '' }}
-      INGESTDB_RETENTION_DAYS: ${{ vars.INGESTDB_RETENTION_DAYS }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       OBS_AQIDB_SUPABASE_URL: ${{ vars.OBS_AQIDB_SUPABASE_URL }}
       UK_AQ_CORE_SCHEMA: ${{ vars.UK_AQ_CORE_SCHEMA || 'uk_aq_core' }}
@@ -380,7 +379,6 @@ jobs:
           require_env SUPABASE_URL
 
           env_updates=()
-          add_env INGESTDB_RETENTION_DAYS
           add_env SUPABASE_URL
           add_env UK_AQ_CORE_SCHEMA
           add_env UK_AQ_RAW_SCHEMA

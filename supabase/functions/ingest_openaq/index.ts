@@ -2671,7 +2671,8 @@ serve(async (req) => {
     return authResponse;
   }
   try { await loadRetention("openaq"); } catch (error) {
-    return new Response(String(error), { status: 500 });
+    console.error("Retention ownership lookup failed:", error);
+    return new Response("Internal server error.", { status: 500 });
   }
   if (!OPENAQ_API_KEY) {
     return jsonResponse({ error: "OPENAQ_API_KEY is required." }, 500);

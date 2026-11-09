@@ -1,4 +1,4 @@
-import { loadRetention, eligibleObservation, boundedStart, assertEligibleRows, sourceTimestamp } from "../_shared/retention.mjs";
+import { loadRetention, eligibleObservation, assertEligibleRows, sourceTimestamp } from "../_shared/retention.mjs";
 // trigger deploy 2026-02-09 12:36
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import "../_shared/fetch_egress_patch.ts";
@@ -1752,7 +1752,8 @@ serve(async (req) => {
     return authResponse;
   }
   try { await loadRetention("sensorcommunity"); } catch (error) {
-    return new Response(String(error), { status: 500 });
+    console.error("Retention ownership lookup failed:", error);
+    return new Response("Internal server error.", { status: 500 });
   }
   const log = createLogBuffer();
   const dropboxConfig = loadDropboxConfig();

@@ -405,7 +405,8 @@ serve(async (req) => {
     return authResponse;
   }
   try { await loadRetention("sos"); } catch (error) {
-    return new Response(String(error), { status: 500 });
+    console.error("Retention ownership lookup failed:", error);
+    return new Response("Internal server error.", { status: 500 });
   }
   const log = createLogBuffer();
   const dropboxConfig = loadDropboxConfig();

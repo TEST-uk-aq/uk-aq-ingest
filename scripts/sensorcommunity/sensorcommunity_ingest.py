@@ -61,7 +61,7 @@ if PROJECT_ROOT.name == "scripts":
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.uk_aq_retention import load_retention, eligible_observation, bounded_start, assert_eligible_rows
+from scripts.uk_aq_retention import load_retention, eligible_observation, assert_eligible_rows
 from scripts.ingest_helpers import station_coords, station_in_bbox_or_missing_coords
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 from scripts.uk_aq_retention import eligible_timestamp, retention_days
