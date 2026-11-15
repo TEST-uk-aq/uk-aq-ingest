@@ -174,3 +174,89 @@ export async function upsertCommunitiesObservationsViaDatabase(
     releaseOperation();
   }
 }
+
+type CheckpointOperation = "station" | "timeseries";
+
+async function upsertCommunitiesCheckpointViaDatabase(
+  operation: CheckpointOperation,
+  payload: Record<string, unknown> | Record<string, unknown>[],
+  expectedCount: number,
+): Promise<number> {
+  // Share the observation client's queue, but commit each checkpoint invocation
+  // in its own transaction. A later failed write cannot undo an earlier one.
+  const previousOperation = communitiesDatabaseOperationQueue;
+  let releaseOperation: () => void = () => undefined;
+  communitiesDatabaseOperationQueue = new Promise<void>((resolve) => {
+    releaseOperation = resolve;
+  });
+  await previousOperation;
+
+  let timeoutId: number | undefined;
+  try {
+    const sql = getCommunitiesDatabaseClient();
+    const query = sql.begin(async (transaction) => {
+      await transaction.unsafe(
+        `set local statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`,
+      );
+      if (operation === "station") {
+        return await transaction<Array<{ checkpoint_rows_upserted: number }>>`
+          select uk_aq_public.uk_aq_rpc_blondon_communities_station_checkpoint_upsert_v1(
+            ${JSON.stringify(payload)}::jsonb
+          ) as checkpoint_rows_upserted
+        `;
+      }
+      return await transaction<Array<{ checkpoint_rows_upserted: number }>>`
+        select uk_aq_public.uk_aq_rpc_blondon_communities_timeseries_checkpoint_upsert_v1(
+          ${JSON.stringify(payload)}::jsonb
+        ) as checkpoint_rows_upserted
+      `;
+    });
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `Communities ${operation} checkpoint database request timed out; commit outcome is uncertain.`,
+            ),
+          ),
+        QUERY_TIMEOUT_MS,
+      );
+    });
+    const rows = await Promise.race([query, timeout]);
+    const count = Number(rows[0]?.checkpoint_rows_upserted);
+    if (
+      rows.length !== 1 || !Number.isInteger(count) || count !== expectedCount
+    ) {
+      throw new Error(
+        `Communities ${operation} checkpoint database write returned an unexpected row count.`,
+      );
+    }
+    return count;
+  } catch (error) {
+    await closeCommunitiesDatabaseClient();
+    // Retain the original postgres.js SQLSTATE/code and never retry through
+    // PostgREST, including when the commit outcome is uncertain.
+    throw error;
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+    releaseOperation();
+  }
+}
+
+export async function upsertCommunitiesStationCheckpointsViaDatabase(
+  rows: Record<string, unknown>[],
+): Promise<number> {
+  return await upsertCommunitiesCheckpointViaDatabase(
+    "station",
+    rows,
+    rows.length,
+  );
+}
+
+export async function upsertCommunitiesSpeciesCheckpointViaDatabase(
+  row: Record<string, unknown>,
+): Promise<void> {
+  await upsertCommunitiesCheckpointViaDatabase("timeseries", row, 1);
+}

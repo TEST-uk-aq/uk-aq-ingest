@@ -30,7 +30,11 @@ import {
   canonicalCommunitiesMappings,
   classifyCommunitiesTimeseriesRows,
 } from "../../../shared/blondon_communities_reference.mjs";
-import { upsertCommunitiesObservationsViaDatabase } from "./breathelondon_database.ts";
+import {
+  upsertCommunitiesObservationsViaDatabase,
+  upsertCommunitiesSpeciesCheckpointViaDatabase,
+  upsertCommunitiesStationCheckpointsViaDatabase,
+} from "./breathelondon_database.ts";
 import { eligibleIngestTimestamp, ingestRetentionDays, ingestRetentionStart } from "../_shared/ingest_retention.ts";
 
 configureServiceEgressMetrics("ingest.blondon_communities");
@@ -200,6 +204,16 @@ const BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT = (() => {
   if (value !== "postgrest" && value !== "database") {
     throw new Error(
       "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT must be exactly postgrest or database.",
+    );
+  }
+  return value;
+})();
+const BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT = (() => {
+  const value = (Deno.env.get("BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT") ??
+    "postgrest").trim();
+  if (value !== "postgrest" && value !== "database") {
+    throw new Error(
+      "BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT must be exactly postgrest or database.",
     );
   }
   return value;
@@ -1066,6 +1080,9 @@ async function upsertStationCheckpoints(rows: Record<string, unknown>[]): Promis
   if (!rows.length) {
     return 0;
   }
+  if (BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT === "database") {
+    return await upsertCommunitiesStationCheckpointsViaDatabase(rows);
+  }
   const { error } = await postgrestRequest(
     "POST",
     "blondon_communities_station_checkpoints",
@@ -1092,8 +1109,13 @@ async function fetchSpeciesCheckpoints(stationIds: number[]) {
   return result;
 }
 async function persistSpeciesCheckpoint(row: Record<string, unknown>) {
+  const checkpoint = { ...row, updated_at: new Date().toISOString() };
+  if (BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT === "database") {
+    await upsertCommunitiesSpeciesCheckpointViaDatabase(checkpoint);
+    return;
+  }
   const { error } = await postgrestRequest("POST", "blondon_communities_timeseries_checkpoints",
-    { on_conflict: "station_id,species" }, [{ ...row, updated_at: new Date().toISOString() }], "resolution=merge-duplicates,return=minimal", UK_AQ_RAW_SCHEMA);
+    { on_conflict: "station_id,species" }, [checkpoint], "resolution=merge-duplicates,return=minimal", UK_AQ_RAW_SCHEMA);
   if (error) throw new Error(`Species checkpoint write failed: ${error.message}`);
 }
 
