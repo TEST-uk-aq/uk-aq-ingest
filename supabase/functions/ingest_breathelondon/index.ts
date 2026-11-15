@@ -32,6 +32,7 @@ import {
 } from "../../../shared/blondon_communities_reference.mjs";
 import {
   upsertCommunitiesObservationsViaDatabase,
+  updateCommunitiesLastValuesViaDatabase,
   upsertCommunitiesSpeciesCheckpointViaDatabase,
   upsertCommunitiesStationCheckpointsViaDatabase,
 } from "./breathelondon_database.ts";
@@ -198,22 +199,14 @@ const BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS = Number(
   Deno.env.get("BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS") ?? DEFAULT_MAX_RUNTIME_SECONDS,
 );
 const INGEST_RETENTION_DAYS = ingestRetentionDays(Deno.env.get("INGESTDB_RETENTION_DAYS"));
-const BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT = (() => {
-  const value = (Deno.env.get("BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT") ??
-    "postgrest").trim();
-  if (value !== "postgrest" && value !== "database") {
+const BLONDON_COMMUNITIES_WRITE_PROFILE = (() => {
+  const value = Deno.env.get("BLONDON_COMMUNITIES_WRITE_PROFILE");
+  if (
+    value !== "postgrest" && value !== "observations" &&
+    value !== "observations_checkpoints" && value !== "all_database"
+  ) {
     throw new Error(
-      "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT must be exactly postgrest or database.",
-    );
-  }
-  return value;
-})();
-const BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT = (() => {
-  const value = (Deno.env.get("BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT") ??
-    "postgrest").trim();
-  if (value !== "postgrest" && value !== "database") {
-    throw new Error(
-      "BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT must be exactly postgrest or database.",
+      "BLONDON_COMMUNITIES_WRITE_PROFILE must be explicitly set to exactly postgrest, observations, observations_checkpoints or all_database.",
     );
   }
   return value;
@@ -1080,7 +1073,8 @@ async function upsertStationCheckpoints(rows: Record<string, unknown>[]): Promis
   if (!rows.length) {
     return 0;
   }
-  if (BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT === "database") {
+  if (BLONDON_COMMUNITIES_WRITE_PROFILE === "observations_checkpoints" ||
+    BLONDON_COMMUNITIES_WRITE_PROFILE === "all_database") {
     return await upsertCommunitiesStationCheckpointsViaDatabase(rows);
   }
   const { error } = await postgrestRequest(
@@ -1110,7 +1104,8 @@ async function fetchSpeciesCheckpoints(stationIds: number[]) {
 }
 async function persistSpeciesCheckpoint(row: Record<string, unknown>) {
   const checkpoint = { ...row, updated_at: new Date().toISOString() };
-  if (BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT === "database") {
+  if (BLONDON_COMMUNITIES_WRITE_PROFILE === "observations_checkpoints" ||
+    BLONDON_COMMUNITIES_WRITE_PROFILE === "all_database") {
     await upsertCommunitiesSpeciesCheckpointViaDatabase(checkpoint);
     return;
   }
@@ -1135,7 +1130,7 @@ async function upsertObservations(
     writeChunk: async (chunk: Record<string, unknown>[]) => {
       assertEligibleRows(chunk);
       const arguments_ = buildCompactObservationRpcArgs(chunk);
-      if (BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT === "database") {
+      if (BLONDON_COMMUNITIES_WRITE_PROFILE !== "postgrest") {
         await upsertCommunitiesObservationsViaDatabase(arguments_);
         return;
       }
@@ -1199,6 +1194,23 @@ async function updateTimeseriesLastValues(
 ): Promise<number> {
   rows = rows.filter((row) => eligibleObservation(row.last_value_at));
   if (!rows.length) return 0;
+  if (BLONDON_COMMUNITIES_WRITE_PROFILE === "all_database") {
+    try {
+      return await updateCommunitiesLastValuesViaDatabase({
+        timeseries_ids: rows.map((row) => row.id),
+        last_values: rows.map((row) => row.last_value),
+        last_value_ats: rows.map((row) => row.last_value_at),
+      });
+    } catch (error) {
+      const message = `timeseries update failed: ${error instanceof Error ? error.message : String(error)}`;
+      errors.push(message);
+      const failure = new Error(message);
+      if (error && typeof error === "object" && "code" in error) {
+        Object.assign(failure, { code: error.code });
+      }
+      throw failure;
+    }
+  }
   const { data, error } = await postgrestRequest<Array<{ timeseries_updated: number }>>(
     "POST",
     "rpc/uk_aq_rpc_timeseries_last_values_compact_update_v1",

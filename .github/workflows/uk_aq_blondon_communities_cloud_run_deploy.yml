@@ -65,8 +65,7 @@ jobs:
       BLONDON_COMMUNITIES_SERVICE_LABEL: ${{ vars.BLONDON_COMMUNITIES_SERVICE_LABEL || 'Breathe London' }}
       BLONDON_COMMUNITIES_USER_AGENT: ${{ vars.BLONDON_COMMUNITIES_USER_AGENT || 'uk-air-quality-networks' }}
       BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS: ${{ vars.BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS || '300' }}
-      BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT: ${{ vars.BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT || 'postgrest' }}
-      BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT: ${{ vars.BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT || 'postgrest' }}
+      BLONDON_COMMUNITIES_WRITE_PROFILE: ${{ vars.BLONDON_COMMUNITIES_WRITE_PROFILE }}
       BLONDON_COMMUNITIES_IN_FLIGHT_TIMEOUT_MINUTES: ${{ vars.BLONDON_COMMUNITIES_IN_FLIGHT_TIMEOUT_MINUTES || '14' }}
       BLONDON_COMMUNITIES_CLAIM_TIMEOUT_MINUTES: ${{ vars.BLONDON_COMMUNITIES_CLAIM_TIMEOUT_MINUTES || '14' }}
       BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
@@ -149,37 +148,20 @@ jobs:
             echo "Use connector_code=blondon_communities for Breathe London Communities. network_code/service_ref may remain breathelondon."
             exit 1
           fi
-          case "${BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT}" in
-            postgrest) ;;
-            database)
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL:-}" ]; then
-                echo "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
-                exit 1
-              fi
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME:-}" ]; then
-                echo "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
-                exit 1
-              fi
-              ;;
+          case "${BLONDON_COMMUNITIES_WRITE_PROFILE}" in
+            postgrest|observations|observations_checkpoints|all_database) ;;
             *)
-              echo "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT must be exactly postgrest or database."
+              echo "BLONDON_COMMUNITIES_WRITE_PROFILE must be explicitly set to exactly postgrest, observations, observations_checkpoints or all_database."
               exit 1
               ;;
           esac
-          case "${BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT}" in
-            postgrest|database) ;;
-            *)
-              echo "BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT must be exactly postgrest or database."
-              exit 1
-              ;;
-          esac
-          if [ "${BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT}" = "database" ]; then
+          if [ "${BLONDON_COMMUNITIES_WRITE_PROFILE}" != "postgrest" ]; then
             if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL:-}" ]; then
-              echo "BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
+              echo "BLONDON_COMMUNITIES_WRITE_PROFILE=${BLONDON_COMMUNITIES_WRITE_PROFILE} requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
               exit 1
             fi
             if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME:-}" ]; then
-              echo "BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
+              echo "BLONDON_COMMUNITIES_WRITE_PROFILE=${BLONDON_COMMUNITIES_WRITE_PROFILE} requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
               exit 1
             fi
           fi
@@ -320,10 +302,10 @@ jobs:
           upsert_secret "UK_AQ_EDGE_UPSTREAM_SECRET" "${UK_AQ_EDGE_UPSTREAM_SECRET}" 1
           upsert_secret "${BLONDON_COMMUNITIES_API_KEY_SECRET_NAME}" "${BLONDON_COMMUNITIES_API_KEY}" 1
           upsert_secret "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" "${SB_UK_AQ_CRON_SECRET}" 0
-          if [ "${BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT}" = "database" ] || [ "${BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT}" = "database" ]; then
+          if [ "${BLONDON_COMMUNITIES_WRITE_PROFILE}" != "postgrest" ]; then
             upsert_secret "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL}" 1
           else
-            echo "Skipping shared database secret sync (both Communities database transports are postgrest)."
+            echo "Skipping shared database secret sync (Communities write profile is postgrest)."
           fi
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "direct" ]; then
@@ -386,6 +368,7 @@ jobs:
           }
 
           require_env SUPABASE_URL
+          require_env BLONDON_COMMUNITIES_WRITE_PROFILE
 
           env_updates=()
           add_env SUPABASE_URL
@@ -406,8 +389,7 @@ jobs:
           add_env BLONDON_COMMUNITIES_SERVICE_LABEL
           add_env BLONDON_COMMUNITIES_USER_AGENT
           add_env BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS
-          add_env BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT
-          add_env BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT
+          add_env BLONDON_COMMUNITIES_WRITE_PROFILE
           add_env BLONDON_COMMUNITIES_IN_FLIGHT_TIMEOUT_MINUTES
           add_env BLONDON_COMMUNITIES_CLAIM_TIMEOUT_MINUTES
           add_env BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL
@@ -429,10 +411,10 @@ jobs:
           add_secret_binding "UK_AQ_EDGE_UPSTREAM_SECRET" "UK_AQ_EDGE_UPSTREAM_SECRET" 1
           add_secret_binding "SB_SECRET_KEY" "${SB_SECRET_KEY_SECRET_NAME}" 1
           add_secret_binding "BLONDON_COMMUNITIES_API_KEY" "${BLONDON_COMMUNITIES_API_KEY_SECRET_NAME}" 1
-          if [ "${BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT}" = "database" ] || [ "${BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT}" = "database" ]; then
+          if [ "${BLONDON_COMMUNITIES_WRITE_PROFILE}" != "postgrest" ]; then
             add_secret_binding "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" 1
           else
-            echo "Skipping shared database secret binding (both Communities database transports are postgrest)."
+            echo "Skipping shared database secret binding (Communities write profile is postgrest)."
           fi
           if [ -n "${SB_UK_AQ_CRON_SECRET:-}" ]; then
             add_secret_binding "SB_UK_AQ_CRON_SECRET" "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" 0
@@ -490,12 +472,37 @@ jobs:
             --allow-unauthenticated
           )
           if [ -n "${ENV_FILE}" ]; then
+            # A complete env file replaces the previous revision's plain env vars,
+            # including the two retired Communities transport settings.
             CMD+=(--env-vars-file "${ENV_FILE}")
           fi
           if [ -n "${SECRET_CSV}" ]; then
             CMD+=(--set-secrets "${SECRET_CSV}")
           fi
           "${CMD[@]}"
+
+      - name: Verify Communities write profile configuration
+        run: |
+          set -euo pipefail
+          service_json="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format=json)"
+          python3 -c '
+          import json, os, sys
+          service = json.load(sys.stdin)
+          containers = service["spec"]["template"]["spec"]["containers"]
+          env = {entry["name"]: entry for entry in containers[0].get("env", [])}
+          profile = os.environ["BLONDON_COMMUNITIES_WRITE_PROFILE"]
+          if env.get("BLONDON_COMMUNITIES_WRITE_PROFILE", {}).get("value") != profile:
+              raise SystemExit("Cloud Run Communities write profile does not match the selected profile")
+          retired = (
+              "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT",
+              "BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT",
+          )
+          if any(key in env for key in retired):
+              raise SystemExit("Retired Communities transport settings remain in Cloud Run")
+          if profile != "postgrest" and "valueFrom" not in env.get("UK_AQ_GCP_CLOUD_RUN_DATABASE_URL", {}):
+              raise SystemExit("Cloud Run pooled database secret binding is missing")
+          print(f"Verified Communities profile={profile} and retired settings absent")
+          ' <<< "${service_json}"
 
       - name: Verify service labels
         run: |

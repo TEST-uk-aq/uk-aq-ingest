@@ -7,6 +7,12 @@ export type CommunitiesCompactObservationRpcArgsV1 = {
   statuses?: Array<string | null>;
 };
 
+export type CommunitiesLastValuesRpcArgsV1 = {
+  timeseries_ids: number[];
+  last_values: number[];
+  last_value_ats: string[];
+};
+
 const DATABASE_URL_ENV = "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL";
 const QUERY_TIMEOUT_MS = 30_000;
 const STATEMENT_TIMEOUT_MS = 29_000;
@@ -166,6 +172,66 @@ export async function upsertCommunitiesObservationsViaDatabase(
     await closeCommunitiesDatabaseClient();
     // Preserve postgres.js SQLSTATE/code fields for the existing observation
     // writer classifier. Cross-transport fallback is deliberately absent.
+    throw error;
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+    releaseOperation();
+  }
+}
+
+export async function updateCommunitiesLastValuesViaDatabase(
+  args: CommunitiesLastValuesRpcArgsV1,
+): Promise<number> {
+  const previousOperation = communitiesDatabaseOperationQueue;
+  let releaseOperation: () => void = () => undefined;
+  communitiesDatabaseOperationQueue = new Promise<void>((resolve) => {
+    releaseOperation = resolve;
+  });
+  await previousOperation;
+
+  let timeoutId: number | undefined;
+  try {
+    const sql = getCommunitiesDatabaseClient();
+    const query = sql.begin(async (transaction) => {
+      await transaction.unsafe(
+        `set local statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`,
+      );
+      return await transaction<Array<{ timeseries_updated: number }>>`
+        select timeseries_updated
+        from uk_aq_public.uk_aq_rpc_timeseries_last_values_compact_update_v1(
+          ${postgresArrayLiteral(args.timeseries_ids)}::integer[],
+          ${postgresArrayLiteral(args.last_values)}::double precision[],
+          ${postgresArrayLiteral(args.last_value_ats)}::timestamptz[]
+        )
+      `;
+    });
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error(
+          "Communities latest-value database request timed out; commit outcome is uncertain.",
+        )),
+        QUERY_TIMEOUT_MS,
+      );
+    });
+    const rows = await Promise.race([query, timeout]);
+    const rawCount = rows[0]?.timeseries_updated;
+    const count = Number(rawCount);
+    if (
+      rows.length !== 1 || rawCount === null || rawCount === undefined ||
+      (typeof rawCount === "string" && !rawCount.trim()) ||
+      !Number.isInteger(count) || count < 0
+    ) {
+      throw new Error(
+        "Communities latest-value database write returned an unexpected row count.",
+      );
+    }
+    return count;
+  } catch (error) {
+    await closeCommunitiesDatabaseClient();
+    // Preserve postgres.js SQLSTATE/code; an uncertain commit is never retried
+    // through PostgREST.
     throw error;
   } finally {
     if (timeoutId !== undefined) {
