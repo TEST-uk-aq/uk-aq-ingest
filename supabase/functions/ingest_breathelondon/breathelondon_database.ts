@@ -264,16 +264,17 @@ async function upsertCommunitiesCheckpointViaDatabase(
       await transaction.unsafe(
         `set local statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`,
       );
+      const jsonPayload = payload as Parameters<typeof transaction.json>[0];
       if (operation === "station") {
         return await transaction<Array<{ checkpoint_rows_upserted: number }>>`
           select uk_aq_public.uk_aq_rpc_blondon_communities_station_checkpoint_upsert_v1(
-            ${JSON.stringify(payload)}::jsonb
+            ${transaction.json(jsonPayload)}::jsonb
           ) as checkpoint_rows_upserted
         `;
       }
       return await transaction<Array<{ checkpoint_rows_upserted: number }>>`
         select uk_aq_public.uk_aq_rpc_blondon_communities_timeseries_checkpoint_upsert_v1(
-          ${JSON.stringify(payload)}::jsonb
+          ${transaction.json(jsonPayload)}::jsonb
         ) as checkpoint_rows_upserted
       `;
     });
