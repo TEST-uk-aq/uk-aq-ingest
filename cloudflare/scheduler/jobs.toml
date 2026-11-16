@@ -16,7 +16,7 @@ notes = "UK-AQ Stations Daily Sync"
 
 [jobs.uk_aq_blondon_communities]
 enabled = true
-cron_expr = "*/15 * * * *"
+cron_expr = "*/3 * * * *"
 target_type = "cloud_run"
 cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
