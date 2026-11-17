@@ -2245,16 +2245,27 @@ serve(async (req) => {
                 initiallyMissing.has(String(row.timeseries_ref))
               );
               let referenceRepairAttempts = 0;
-              if (initiallyMissingRows.length && !dryRun) {
+              const referenceRepairAttempted = initiallyMissingRows.length > 0 && !dryRun;
+              if (referenceRepairAttempted) {
                 referenceRepairAttempts = await repairMissingTimeseriesByStation(
                   initiallyMissingRows,
                   errors,
                 );
               }
-              const finalRows = await fetchTimeseriesRows(
-                connector.id,
-                timeseriesRefs,
-              );
+              // The initial persisted result is sufficient only when every
+              // requested static identity is valid and no repair was attempted.
+              const reuseInitialReferences = !referenceRepairAttempted &&
+                new Set(timeseriesRefs).size === timeseriesRows.length &&
+                beforeRows.length === timeseriesRows.length &&
+                before.actualByRef.size === timeseriesRows.length &&
+                before.missingRefs.length === 0 &&
+                before.mismatchedRefs.length === 0 &&
+                before.changedIdRefs.length === 0 &&
+                Object.keys(before.validIds).length === timeseriesRows.length &&
+                new Set(Object.values(before.validIds)).size === timeseriesRows.length;
+              const finalRows = reuseInitialReferences
+                ? beforeRows
+                : await fetchTimeseriesRows(connector.id, timeseriesRefs);
               const stableIds = new Map(
                 beforeRows.map((row) => [String(row.timeseries_ref), Number(row.id)]),
               );
