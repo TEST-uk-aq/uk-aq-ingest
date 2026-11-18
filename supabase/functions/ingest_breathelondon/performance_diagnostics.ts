@@ -30,6 +30,8 @@ export type PerformanceDiagnostics = {
   stations_processed: number;
   timeseries_processed: number;
   observations_upserted: number;
+  throttle_sleep_calls: number;
+  throttle_sleep_ms: number;
   runtime_budget_reached: boolean;
   runtime_budget_phase: string | null;
   database: {
@@ -54,6 +56,8 @@ export function withPerformanceDiagnostics<T>(run: () => Promise<T>): Promise<T>
     stations_processed: 0,
     timeseries_processed: 0,
     observations_upserted: 0,
+    throttle_sleep_calls: 0,
+    throttle_sleep_ms: 0,
     runtime_budget_reached: false,
     runtime_budget_phase: null,
     database: {
@@ -85,6 +89,17 @@ export function performanceBudgetReached(): void {
 }
 
 export function performanceNow(): number { return performance.now(); }
+
+export function recordThrottleSleep(started: number): void {
+  try {
+    const target = context.getStore()?.data;
+    const elapsed = performance.now() - started;
+    if (target && Number.isFinite(elapsed)) {
+      target.throttle_sleep_calls += 1;
+      target.throttle_sleep_ms += Math.max(0, elapsed);
+    }
+  } catch { /* diagnostics are best effort */ }
+}
 
 function add(target: Operation, elapsed: number, failed: boolean): void {
   if (!Number.isFinite(elapsed)) return;
@@ -156,6 +171,7 @@ export function performanceSnapshot(counts: {
     for (const op of [data.source_api, data.postgrest_reads, data.postgrest_writes, data.obsaqidb_forwarding]) round(op);
     data.source_api.backoff_ms = Math.round(data.source_api.backoff_ms);
     data.source_api.total_with_backoff_ms = Math.round(data.source_api.total_with_backoff_ms);
+    data.throttle_sleep_ms = Math.round(data.throttle_sleep_ms);
     data.elapsed_ms = Math.round(data.elapsed_ms);
     return data;
   } catch { return null; }

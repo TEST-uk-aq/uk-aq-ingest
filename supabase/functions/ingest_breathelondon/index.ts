@@ -40,7 +40,7 @@ import { eligibleIngestTimestamp, ingestRetentionDays, ingestRetentionStart } fr
 import {
   withPerformanceDiagnostics, performanceNow, performancePhase,
   performanceBudgetReached, performanceSnapshot, recordOperation,
-  recordSourceRetry, recordSourceCycle,
+  recordSourceRetry, recordSourceCycle, recordThrottleSleep,
 } from "./performance_diagnostics.ts";
 
 configureServiceEgressMetrics("ingest.blondon_communities");
@@ -2493,7 +2493,14 @@ serve(async (req) => {
                     stationLatestObserved = lastObserved;
                     stationHasNewObservation = true;
                   }
-                  if (sleepSeconds > 0 && !shouldStop()) await sleep(Math.min(sleepSeconds, 1) * 1000);
+                  if (sleepSeconds > 0 && !shouldStop()) {
+                    const throttleStarted = performanceNow();
+                    try {
+                      await sleep(Math.min(sleepSeconds, 1) * 1000);
+                    } finally {
+                      recordThrottleSleep(throttleStarted);
+                    }
+                  }
                   if (failure && isIngestDbObservationWriteError(failure)) {
                     await flushUpdates();
                     throw failure;
