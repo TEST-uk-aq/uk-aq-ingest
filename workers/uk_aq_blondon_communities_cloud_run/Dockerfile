@@ -12,6 +12,7 @@ COPY workers/shared/dropbox_error_log.ts /app/workers/shared/dropbox_error_log.t
 # Reuse existing BL ingest implementation + shared helpers.
 COPY supabase/functions/ingest_breathelondon/index.ts /app/runtime/ingest_blondon_communities/index.ts
 COPY supabase/functions/ingest_breathelondon/breathelondon_database.ts /app/runtime/ingest_blondon_communities/breathelondon_database.ts
+COPY supabase/functions/ingest_breathelondon/performance_diagnostics.ts /app/runtime/ingest_blondon_communities/performance_diagnostics.ts
 # index.ts is copied to /app/runtime/ingest_blondon_communities, so its
 # ../../../shared import resolves to /shared inside the image.
 COPY shared/blondon_communities_reference.mjs /shared/blondon_communities_reference.mjs

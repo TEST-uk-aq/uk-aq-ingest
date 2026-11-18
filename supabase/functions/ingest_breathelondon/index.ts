@@ -37,6 +37,11 @@ import {
   upsertCommunitiesStationCheckpointsViaDatabase,
 } from "./breathelondon_database.ts";
 import { eligibleIngestTimestamp, ingestRetentionDays, ingestRetentionStart } from "../_shared/ingest_retention.ts";
+import {
+  withPerformanceDiagnostics, performanceNow, performancePhase,
+  performanceBudgetReached, performanceSnapshot, recordOperation,
+  recordSourceRetry, recordSourceCycle, recordThrottleSleep,
+} from "./performance_diagnostics.ts";
 
 configureServiceEgressMetrics("ingest.blondon_communities");
 configureObservsPostgrestFetch(serviceEgressPostgrestFetch);
@@ -287,6 +292,21 @@ function requireCronSecret(req: Request): Response | null {
 }
 
 async function postgrestRequest<T>(
+  method: string, table: string, params?: Record<string, string>, body?: unknown,
+  prefer?: string, schema?: string,
+): Promise<{ data: T | null; error: { message: string; code?: string | null; details?: string | null; hint?: string | null; http_status?: number | null } | null }> {
+  const started = performanceNow();
+  let failed = true;
+  try {
+    const result = await postgrestRequestInner<T>(method, table, params, body, prefer, schema);
+    failed = Boolean(result.error);
+    return result;
+  } finally {
+    recordOperation(method === "GET" ? "postgrest_reads" : "postgrest_writes", started, failed);
+  }
+}
+
+async function postgrestRequestInner<T>(
   method: string,
   table: string,
   params?: Record<string, string>,
@@ -617,15 +637,24 @@ async function fetchJson(
   rawRecorder?: RawRecorder | null,
   deadline = Number.POSITIVE_INFINITY,
 ): Promise<unknown> {
+  const cycleStarted = performanceNow();
+  try {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) throw new Error("runtime_budget_exceeded");
+    if (remainingMs <= 0) { performanceBudgetReached(); throw new Error("runtime_budget_exceeded"); }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), Math.min(DEFAULT_TIMEOUT_MS, remainingMs));
+    const attemptStarted = performanceNow();
+    let attemptFailed = true;
+    let recorded = false;
     try {
       const resp = await fetch(url, { headers, signal: controller.signal });
       if (RETRYABLE_STATUS.has(resp.status) && attempt < 3) {
+        recordOperation("source_api", attemptStarted, true);
+        recorded = true;
+        const backoffStarted = performanceNow();
         await sleep(Math.max(0, Math.min(30_000, 2 ** attempt * 1000, deadline - Date.now())));
+        recordSourceRetry(performanceNow() - backoffStarted);
         continue;
       }
       if (!resp.ok) {
@@ -642,12 +671,17 @@ async function fetchJson(
         });
         rawRecorder.recordResponse(parsed.pathname, params, resp.status, payload);
       }
+      attemptFailed = false;
       return payload;
     } finally {
       clearTimeout(timeout);
+      if (!recorded) {
+        recordOperation("source_api", attemptStarted, attemptFailed);
+      }
     }
   }
   return [];
+  } finally { recordSourceCycle(cycleStarted); }
 }
 
 async function listSensors(
@@ -1874,6 +1908,8 @@ serve(async (req) => {
     return authResponse;
   }
 
+  return await withPerformanceDiagnostics(async () => {
+
   const log = createLogBuffer();
   const dropboxConfig = loadDropboxConfig();
   const dropboxDiagnostics = buildDropboxDiagnostics();
@@ -1900,6 +1936,8 @@ serve(async (req) => {
   let observsEnqueued = 0;
   let observsFlushes = 0;
   let stationsSelected = 0;
+  let diagnosticsStationsProcessed = 0;
+  let diagnosticsTimeseriesProcessed = 0;
   let stationsRequested: number | null = null;
   let runLastObservedAt: string | null = null;
   let stationFetchEnabled: boolean | null = null;
@@ -1917,8 +1955,11 @@ serve(async (req) => {
   const runtimeDeadline = BLONDON_COMMUNITIES_ENFORCE_RUNTIME_BUDGET
     ? runStartedAt + maxRuntimeSeconds * 1000
     : Number.POSITIVE_INFINITY;
-  const shouldStop = () =>
-    Date.now() + 45_000 >= runtimeDeadline;
+  const shouldStop = () => {
+    const reached = Date.now() + 45_000 >= runtimeDeadline;
+    if (reached) performanceBudgetReached();
+    return reached;
+  };
 
   try {
     await loadRetention(BLONDON_COMMUNITIES_CONNECTOR_CODE);
@@ -2064,6 +2105,7 @@ serve(async (req) => {
           let stationIdMap: Record<string, number> = {};
           stationsRequested = stationRefs.length ? stationRefs.length : null;
 
+          performancePhase("station_selection");
           if (skipStations) {
             const stations = await fetchStationsFromDb(
               connector.id,
@@ -2180,6 +2222,7 @@ serve(async (req) => {
               };
             }
           } else {
+              performancePhase("reference_data");
               const { phenomenonIds, observedPropertyIds } = dryRun
                 ? await fetchCanonicalPhenomenaMappings(connector.id, speciesList)
                 : await upsertPhenomena(connector.id, speciesList);
@@ -2196,6 +2239,9 @@ serve(async (req) => {
                 }
                 const rows = observsRowsPending.splice(0, observsRowsPending.length)
                   .filter((row) => eligibleObservation(row.observed_at));
+                performancePhase("obsaqidb_forwarding");
+                const forwardingStarted = performanceNow();
+                let forwardingFailed = true;
                 try {
                   const stats = await writeObservsWithOutbox(
                     publicRpcRequest,
@@ -2209,6 +2255,7 @@ serve(async (req) => {
                       warnings.push("observs_dual_write");
                     },
                   );
+                  forwardingFailed = false;
                   observsFlushes += 1;
                   observsWritten += stats.written;
                   observsReceiptsUpserted += stats.receipts_upserted;
@@ -2223,6 +2270,8 @@ serve(async (req) => {
                   });
                   errors.push("observs_dual_write_flush");
                   throw new Error(`Observs dual-write flush failed: ${message}`);
+                } finally {
+                  recordOperation("obsaqidb_forwarding", forwardingStarted, forwardingFailed);
                 }
               };
 
@@ -2330,6 +2379,7 @@ serve(async (req) => {
               };
 
               for (const [stationIndex, row] of stationRows.entries()) {
+                performancePhase("station_polling");
                 const stationRef = String(row.station_ref);
                 if (isolatedStations.has(stationRef)) continue;
                 const stationId = stationIdMap[stationRef];
@@ -2370,11 +2420,13 @@ serve(async (req) => {
                     stoppedReason = "runtime_budget_exceeded";
                     break;
                   }
+                  diagnosticsTimeseriesProcessed += 1;
                   const attemptedAt = new Date().toISOString();
                   const progress: Record<string, unknown> = { station_id: stationId, species,
                     timeseries_id: timeseriesId, last_polled_at: attemptedAt, last_error: "attempt_incomplete" };
                   if (!dryRun) {
                     // Persist attempts before acquisition; failure cannot monopolise stale slots.
+                    performancePhase("checkpoint_write");
                     await upsertStationCheckpoints([{ station_id: stationId, last_polled_at: attemptedAt }]);
                     await persistSpeciesCheckpoint(progress);
                   }
@@ -2382,6 +2434,7 @@ serve(async (req) => {
                   let lastValue: number | null = null;
                   let failure: unknown = null;
                   try {
+                    performancePhase("source_api");
                     sourceRequests += 1; // fetchJson retains its bounded per-request retries.
                     const payload = await getClarityData(baseUrl, apiKey, stationRef, species, startTime, endTime, rawRecorder, runtimeDeadline - 45_000);
                     const extracted = extractObservations(payload, timeseriesId, Number(connector.id));
@@ -2395,6 +2448,7 @@ serve(async (req) => {
                     for (const batch of chunk(deduped.rows, Math.min(500, Math.max(1, batchSize)))) {
                       assertEligibleRows(batch);
                       if (!dryRun) {
+                        performancePhase("observation_write");
                         const writeStats = await upsertObservations(batch, { shouldStop, remainingRuntimeMs: () => Math.max(0, runtimeDeadline - Date.now()) });
                         mergeIngestDbObservationWriteStats(ingestDbObservationWriteStats, writeStats);
                         observationsUpserted = ingestDbObservationWriteStats.committed_rows;
@@ -2415,6 +2469,7 @@ serve(async (req) => {
                       }
                     }
                     if (lastObserved && lastValue !== null && eligibleObservation(lastObserved) && !dryRun) {
+                      performancePhase("latest_values");
                       timeseriesUpdated += await updateTimeseriesLastValues([{ id: timeseriesId, last_value: lastValue, last_value_at: lastObserved }], errors);
                     }
                     seriesPolled += 1;
@@ -2429,6 +2484,7 @@ serve(async (req) => {
                   }
                   if (!dryRun) {
                     // Failure of checkpoint persistence is fatal and visible, never swallowed.
+                    performancePhase("checkpoint_write");
                     await persistSpeciesCheckpoint({ ...progress,
                       ...(lastObserved && eligibleObservation(lastObserved) ? { last_observed_at: lastObserved } : {}),
                       last_error: failure ? String(failure).slice(0, 2000) : null });
@@ -2437,7 +2493,14 @@ serve(async (req) => {
                     stationLatestObserved = lastObserved;
                     stationHasNewObservation = true;
                   }
-                  if (sleepSeconds > 0 && !shouldStop()) await sleep(Math.min(sleepSeconds, 1) * 1000);
+                  if (sleepSeconds > 0 && !shouldStop()) {
+                    const throttleStarted = performanceNow();
+                    try {
+                      await sleep(Math.min(sleepSeconds, 1) * 1000);
+                    } finally {
+                      recordThrottleSleep(throttleStarted);
+                    }
+                  }
                   if (failure && isIngestDbObservationWriteError(failure)) {
                     await flushUpdates();
                     throw failure;
@@ -2482,6 +2545,7 @@ serve(async (req) => {
 
                 await flushUpdates();
                 stationsProcessed += 1;
+                diagnosticsStationsProcessed = stationsProcessed;
 
                 if (shouldStop() && stationIndex < stationRows.length - 1) {
                   timeBudgetHit = true;
@@ -2724,11 +2788,19 @@ serve(async (req) => {
     };
   }
   await flushServiceEgressMetrics();
+  const diagnostics = performanceSnapshot({
+    stations_selected: stationsSelected,
+    stations_processed: diagnosticsStationsProcessed,
+    timeseries_processed: diagnosticsTimeseriesProcessed,
+    observations_upserted: observationsUpserted,
+  });
+  if (diagnostics) responsePayload.performance_diagnostics_v1 = diagnostics;
   return new Response(JSON.stringify(responsePayload), {
     status,
     headers: {
       "Content-Type": "application/json",
       ...cacheControlHeaders(status),
     },
+  });
   });
 });
