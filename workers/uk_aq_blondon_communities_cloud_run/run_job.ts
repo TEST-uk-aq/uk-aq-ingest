@@ -477,6 +477,7 @@ function deriveRunSummary(ingestResponse: IngestResponse): {
 }
 
 const STORED_RESPONSE_PAYLOAD_KEYS = [
+  "performance_diagnostics_v1",
   "partial",
   "stopped_reason",
   "reference_repair_attempts",

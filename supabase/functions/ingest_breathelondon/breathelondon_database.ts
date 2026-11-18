@@ -1,4 +1,5 @@
 import postgres from "npm:postgres@3.4.7";
+import { performanceNow, recordDatabaseOperation } from "./performance_diagnostics.ts";
 
 export type CommunitiesCompactObservationRpcArgsV1 = {
   timeseries_ids: number[];
@@ -128,14 +129,18 @@ function postgresArrayLiteral(
 export async function upsertCommunitiesObservationsViaDatabase(
   args: CommunitiesCompactObservationRpcArgsV1,
 ): Promise<number> {
+  const diagnosticStarted = performanceNow();
+  let queueMs = 0;
+  let failed = false;
   const previousOperation = communitiesDatabaseOperationQueue;
   let releaseOperation: () => void = () => undefined;
   communitiesDatabaseOperationQueue = new Promise<void>((resolve) => {
     releaseOperation = resolve;
   });
   await previousOperation;
+  queueMs = performanceNow() - diagnosticStarted;
 
-  let timeoutId: number | undefined;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     const sql = getCommunitiesDatabaseClient();
     const query = sql.begin(async (transaction) => {
@@ -169,6 +174,7 @@ export async function upsertCommunitiesObservationsViaDatabase(
     }
     return requiredInteger(rows[0].observations_upserted);
   } catch (error) {
+    failed = true;
     await closeCommunitiesDatabaseClient();
     // Preserve postgres.js SQLSTATE/code fields for the existing observation
     // writer classifier. Cross-transport fallback is deliberately absent.
@@ -178,20 +184,25 @@ export async function upsertCommunitiesObservationsViaDatabase(
       clearTimeout(timeoutId);
     }
     releaseOperation();
+    recordDatabaseOperation("observations", diagnosticStarted, queueMs, failed);
   }
 }
 
 export async function updateCommunitiesLastValuesViaDatabase(
   args: CommunitiesLastValuesRpcArgsV1,
 ): Promise<number> {
+  const diagnosticStarted = performanceNow();
+  let queueMs = 0;
+  let failed = false;
   const previousOperation = communitiesDatabaseOperationQueue;
   let releaseOperation: () => void = () => undefined;
   communitiesDatabaseOperationQueue = new Promise<void>((resolve) => {
     releaseOperation = resolve;
   });
   await previousOperation;
+  queueMs = performanceNow() - diagnosticStarted;
 
-  let timeoutId: number | undefined;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     const sql = getCommunitiesDatabaseClient();
     const query = sql.begin(async (transaction) => {
@@ -216,7 +227,7 @@ export async function updateCommunitiesLastValuesViaDatabase(
       );
     });
     const rows = await Promise.race([query, timeout]);
-    const rawCount = rows[0]?.timeseries_updated;
+    const rawCount: unknown = rows[0]?.timeseries_updated;
     const count = Number(rawCount);
     if (
       rows.length !== 1 || rawCount === null || rawCount === undefined ||
@@ -229,6 +240,7 @@ export async function updateCommunitiesLastValuesViaDatabase(
     }
     return count;
   } catch (error) {
+    failed = true;
     await closeCommunitiesDatabaseClient();
     // Preserve postgres.js SQLSTATE/code; an uncertain commit is never retried
     // through PostgREST.
@@ -238,6 +250,7 @@ export async function updateCommunitiesLastValuesViaDatabase(
       clearTimeout(timeoutId);
     }
     releaseOperation();
+    recordDatabaseOperation("latest_values", diagnosticStarted, queueMs, failed);
   }
 }
 
@@ -248,6 +261,9 @@ async function upsertCommunitiesCheckpointViaDatabase(
   payload: Record<string, unknown> | Record<string, unknown>[],
   expectedCount: number,
 ): Promise<number> {
+  const diagnosticStarted = performanceNow();
+  let queueMs = 0;
+  let failed = false;
   // Share the observation client's queue, but commit each checkpoint invocation
   // in its own transaction. A later failed write cannot undo an earlier one.
   const previousOperation = communitiesDatabaseOperationQueue;
@@ -256,8 +272,9 @@ async function upsertCommunitiesCheckpointViaDatabase(
     releaseOperation = resolve;
   });
   await previousOperation;
+  queueMs = performanceNow() - diagnosticStarted;
 
-  let timeoutId: number | undefined;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     const sql = getCommunitiesDatabaseClient();
     const query = sql.begin(async (transaction) => {
@@ -300,6 +317,7 @@ async function upsertCommunitiesCheckpointViaDatabase(
     }
     return count;
   } catch (error) {
+    failed = true;
     await closeCommunitiesDatabaseClient();
     // Retain the original postgres.js SQLSTATE/code and never retry through
     // PostgREST, including when the commit outcome is uncertain.
@@ -309,6 +327,7 @@ async function upsertCommunitiesCheckpointViaDatabase(
       clearTimeout(timeoutId);
     }
     releaseOperation();
+    recordDatabaseOperation(operation === "station" ? "station_checkpoints" : "species_checkpoints", diagnosticStarted, queueMs, failed);
   }
 }
 
