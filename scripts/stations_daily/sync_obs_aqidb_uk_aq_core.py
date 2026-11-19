@@ -22,6 +22,10 @@ from scripts.stations_daily.sync_obs_aqidb_uk_aq_core_batching import (
     delete_keys_in_batches,
     parse_delete_batch_size,
 )
+from scripts.uk_aq_service_egress_metrics import (
+    configure_service_egress_metrics,
+    flush_service_egress_metrics,
+)
 
 LEGACY_PATH = Path(__file__).with_name("sync_obs_aqidb_uk_aq_core_legacy.py")
 
@@ -170,7 +174,17 @@ for _name, _value in vars(_legacy).items():
 
 
 def main() -> int:
-    return _legacy.main()
+    try:
+        configure_service_egress_metrics("ops.stations_daily")
+    except Exception:
+        pass
+    try:
+        return _legacy.main()
+    finally:
+        try:
+            flush_service_egress_metrics()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

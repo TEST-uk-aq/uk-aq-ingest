@@ -4,6 +4,16 @@ import { eligibleIngestTimestamp, ingestRetentionDays, ingestRetentionStart } fr
 // trigger deploy 2026-02-09 12:36
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import "../_shared/fetch_egress_patch.ts";
+import {
+  configureServiceEgressMetrics,
+  flushServiceEgressMetrics,
+  recordServiceEgressPostgrestResponse,
+  serviceEgressBypassHeaders,
+  serviceEgressMetricsEnabled,
+  utf8ByteLength,
+} from "../_shared/service_egress_metrics.ts";
+
+configureServiceEgressMetrics("ingest.sos");
 import { cacheControlHeaders } from "../_shared/cache.ts";
 import {
   type ObservsObservationRow,
@@ -201,6 +211,7 @@ function postgrestHeaders(prefer?: string, schema = UK_AQ_CORE_SCHEMA): Record<s
     apikey: SUPABASE_PRIVILEGED_KEY,
     "Content-Type": "application/json",
     "x-ukaq-egress-caller": "ingest_sos",
+    ...serviceEgressBypassHeaders(),
   };
   if (prefer) {
     headers.Prefer = prefer;
@@ -254,15 +265,46 @@ async function postgrestRequest<T>(
       url.searchParams.set(key, String(value));
     }
   }
+  const startedAt = Date.now();
   const resp = await postgrestFetch(url.toString(), {
     method,
     headers: postgrestHeaders(prefer, schema),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   let payload: unknown = null;
+  let responseText = "";
   if (resp.status !== 204) {
     const contentType = resp.headers.get("content-type") ?? "";
-    payload = contentType.includes("application/json") ? await resp.json() : await resp.text();
+    responseText = await resp.text();
+    if (serviceEgressMetricsEnabled()) recordServiceEgressPostgrestResponse({
+      durationMs: Date.now() - startedAt,
+      httpStatus: resp.status,
+      method,
+      routePath: table,
+      sourceUrl: SUPABASE_URL,
+      responseBytes: utf8ByteLength(responseText),
+      measurementMethod: "body_utf8",
+      queryName: table === "sos_timeseries_checkpoints" && method === "GET"
+        ? "load_timeseries_checkpoints"
+        : table === "sos_station_checkpoints" && method === "GET"
+        ? "load_station_checkpoints"
+        : table === "timeseries" && method === "GET"
+        ? "load_timeseries_refs"
+        : undefined,
+    });
+    payload = contentType.includes("application/json")
+      ? JSON.parse(responseText)
+      : responseText;
+  } else {
+    if (serviceEgressMetricsEnabled()) recordServiceEgressPostgrestResponse({
+      durationMs: Date.now() - startedAt,
+      httpStatus: resp.status,
+      method,
+      routePath: table,
+      sourceUrl: SUPABASE_URL,
+      responseBytes: 0,
+      measurementMethod: "body_bytes",
+    });
   }
   if (!resp.ok) {
     const message = (payload as { message?: string; error_description?: string; error?: string })?.message
@@ -1638,6 +1680,7 @@ serve(async (req) => {
 
   responsePayload.stations_attempted = attemptedStationIds.size;
   responsePayload.stations_polled = successfullyPolledStationIds.size;
+  await flushServiceEgressMetrics();
   return json(responsePayload, status);
 });
 

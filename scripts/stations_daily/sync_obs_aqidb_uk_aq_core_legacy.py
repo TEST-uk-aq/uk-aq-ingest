@@ -557,6 +557,7 @@ class PostgrestClient:
         request_label = format_retry_prefix(method, path, params)
 
         for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+            started_at = time.monotonic()
             try:
                 response = requests.request(
                     method=method,
@@ -582,6 +583,32 @@ class PostgrestClient:
                 )
                 time.sleep(sleep_seconds)
                 continue
+
+            # requests has already buffered this body. Observe every HTTP attempt
+            # before parsing or retrying; telemetry must remain fail-open.
+            try:
+                from scripts.uk_aq_service_egress_metrics import configured_service_egress_metrics
+
+                collector = configured_service_egress_metrics()
+                if collector is not None:
+                    query_name = None
+                    if path.endswith(f"/rpc/{CORE_SELECT_RPC}") and isinstance(payload, dict):
+                        table_name = payload.get("p_table_name")
+                        if table_name in SYNC_TABLES:
+                            query_name = f"mirror_{table_name}_page"
+                    elif method.upper() == "GET" and path.startswith("/rest/v1/"):
+                        table_name = path.removeprefix("/rest/v1/")
+                        if table_name in SYNC_TABLES:
+                            query_name = f"mirror_{table_name}_page"
+                    collector.record_requests_response(
+                        base_url=self.base_url, method=method, path=path,
+                        http_status=response.status_code,
+                        response_content=response.content,
+                        duration_ms=int((time.monotonic() - started_at) * 1000),
+                        query_name=query_name,
+                    )
+            except Exception:
+                pass
 
             if response.ok:
                 if response.status_code == 204 or not response.text.strip():

@@ -58,9 +58,11 @@ def _normalized_origin(url: str) -> str:
 def _source_name(url: str) -> str:
     origin = _normalized_origin(url)
     observs_origin = _normalized_origin(
-        os.getenv("OBS_AQIDB_SUPABASE_URL") or ""
+        os.getenv("OBS_AQIDB_SUPABASE_URL") or os.getenv("DST_SUPABASE_URL") or ""
     )
-    ingest_origin = _normalized_origin(os.getenv("SUPABASE_URL") or "")
+    ingest_origin = _normalized_origin(
+        os.getenv("SUPABASE_URL") or os.getenv("SRC_SUPABASE_URL") or ""
+    )
     if origin and observs_origin and origin == observs_origin:
         return "obs_aqidb"
     if origin and ingest_origin and origin == ingest_origin:
@@ -229,6 +231,24 @@ class ServiceEgressMetricsCollector:
         aggregate["error_count"] += 1 if status == "error" else 0
         aggregate["http_statuses"].add(int(http_status))
         aggregate["http_status_classes"].add(f"{int(http_status) // 100}xx")
+
+    def record_requests_response(
+        self, *, base_url: str, method: str, path: str,
+        http_status: int, response_content: bytes, duration_ms: int,
+        query_name: Optional[str] = None,
+    ) -> None:
+        """Record one already-buffered requests response, including retry responses."""
+        route_name, default_query_name = _route_and_query(method, path)
+        self.record(
+            completed_at=datetime.now(timezone.utc),
+            duration_ms=duration_ms,
+            http_status=http_status,
+            project_ref=_project_ref(base_url),
+            query_name=query_name or default_query_name,
+            response_bytes=len(response_content),
+            route_name=route_name,
+            source_name=_source_name(base_url),
+        )
 
     def rows(self) -> list[Dict[str, Any]]:
         rows: list[Dict[str, Any]] = []

@@ -21,6 +21,7 @@ type Aggregate = {
   httpStatuses: Set<number>;
   httpStatusClasses: Set<string>;
   measurementMethods: Set<string>;
+  unavailableMeasurements: number;
 };
 
 type RecordInput = {
@@ -29,7 +30,7 @@ type RecordInput = {
   httpStatus: number;
   method: string;
   queryName?: string;
-  responseBytes: number;
+  responseBytes: number | null;
   responseData?: unknown;
   routePath: string;
   sourceUrl: string;
@@ -130,6 +131,17 @@ function responseRows(data: unknown): number {
   return Array.isArray(data) ? data.length : 0;
 }
 
+/** Count already-decoded response text without allocating another full body. */
+export function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2
+      : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
 function isLikelyJwt(value: string): boolean {
   return value.startsWith("eyJ") && value.split(".").length === 3;
 }
@@ -196,15 +208,19 @@ class ServiceEgressMetricsCollector {
           httpStatuses: new Set<number>(),
           httpStatusClasses: new Set<string>(),
           measurementMethods: new Set<string>(),
+          unavailableMeasurements: 0,
         };
         this.aggregates.set(key, aggregate);
       }
       aggregate.request_count += 1;
       aggregate.response_rows += responseRows(input.responseData);
-      aggregate.response_bytes_est += Math.max(
-        0,
-        Math.trunc(Number(input.responseBytes) || 0),
-      );
+      if (input.responseBytes === null ||
+        !Number.isFinite(input.responseBytes) || input.responseBytes < 0) {
+        aggregate.unavailableMeasurements += 1;
+        aggregate.measurementMethods.add("unavailable");
+      } else {
+        aggregate.response_bytes_est += Math.trunc(input.responseBytes);
+      }
       aggregate.duration_ms += Math.max(
         0,
         Math.trunc(Number(input.durationMs) || 0),
@@ -229,6 +245,11 @@ class ServiceEgressMetricsCollector {
       const notes: Record<string, unknown> = {};
       if (aggregate.measurementMethods.size === 1) {
         notes.measurement_method = Array.from(aggregate.measurementMethods)[0];
+      } else if (aggregate.measurementMethods.size > 1) {
+        notes.measurement_method = "mixed";
+      }
+      if (aggregate.unavailableMeasurements > 0) {
+        notes.unavailable_measurements = aggregate.unavailableMeasurements;
       }
       if (aggregate.httpStatuses.size === 1) {
         notes.http_status = Array.from(aggregate.httpStatuses)[0];
@@ -282,6 +303,9 @@ class ServiceEgressMetricsCollector {
       });
       return;
     }
+    // The batch RPC adds counters. Once an attempt starts, an ambiguous
+    // response cannot be replayed without risking duplicate attribution.
+    this.aggregates.clear();
     const headers: Record<string, string> = {
       apikey: apiKey,
       Accept: "application/json",
@@ -314,7 +338,6 @@ class ServiceEgressMetricsCollector {
         });
         return;
       }
-      this.aggregates.clear();
     } catch (error) {
       this.warn("service_egress_metrics_flush_warning", {
         reason: error instanceof DOMException && error.name === "AbortError"
@@ -393,7 +416,7 @@ export async function serviceEgressPostgrestFetch(
     : Number.NaN;
   const responseBytes = Number.isFinite(contentLength) && contentLength >= 0
     ? Math.trunc(contentLength)
-    : 0;
+    : null;
   const routePath = url.pathname.replace(/^\/rest\/v1\/?/, "");
   collector?.record({
     durationMs: Date.now() - startedAt,
@@ -404,7 +427,7 @@ export async function serviceEgressPostgrestFetch(
     sourceUrl: url.origin,
     measurementMethod: Number.isFinite(contentLength) && contentLength >= 0
       ? "content_length"
-      : undefined,
+      : "unavailable",
   });
   return response;
 }
