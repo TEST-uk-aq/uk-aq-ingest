@@ -56,7 +56,7 @@ jobs:
       - name: Install dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install requests python-dotenv supabase pyproj psycopg2-binary pandas pyreadr
+          python3 -m pip install requests httpx python-dotenv supabase pyproj psycopg2-binary pandas pyreadr
 
       - name: Validate SUPABASE_DB_URL for pooler
         env:
@@ -902,6 +902,12 @@ jobs:
           SYNC_TARGET_LABEL: obs_aqidb
           SYNC_CALLER_PREFIX: stations_daily_sync_obs_aqidb
           OBS_AQIDB_REPAIR_OBSERVED_PROPERTY_IDS: ${{ vars.OBS_AQIDB_REPAIR_OBSERVED_PROPERTY_IDS }}
+          UK_AQ_ENV_NAME: ${{ vars.UK_AQ_ENV_NAME }}
+          UK_AQ_SERVICE_EGRESS_METRICS_ENABLED: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_ENABLED || 'false' }}
+          UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_SUPABASE_URL || vars.OBS_AQIDB_SUPABASE_URL }}
+          UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_SCHEMA || 'uk_aq_public' }}
+          UK_AQ_SERVICE_EGRESS_METRICS_RPC: ${{ vars.UK_AQ_SERVICE_EGRESS_METRICS_RPC || 'uk_aq_rpc_service_egress_metrics_batch_upsert' }}
+          UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY: ${{ secrets.UK_AQ_SERVICE_EGRESS_METRICS_SB_SECRET_KEY || secrets.OBS_AQIDB_SECRET_KEY }}
         run: |
           python3 scripts/stations_daily/sync_obs_aqidb_uk_aq_core.py
 

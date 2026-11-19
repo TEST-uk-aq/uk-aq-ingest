@@ -25,11 +25,13 @@ COPY supabase/functions/_shared/retention.mjs /app/supabase/functions/_shared/re
 COPY supabase/functions/_shared/cache.ts /app/runtime/_shared/cache.ts
 COPY supabase/functions/_shared/fetch_egress_patch.ts /app/runtime/_shared/fetch_egress_patch.ts
 COPY supabase/functions/_shared/egress_metrics.ts /app/runtime/_shared/egress_metrics.ts
+COPY supabase/functions/_shared/service_egress_metrics.ts /app/runtime/_shared/service_egress_metrics.ts
 COPY supabase/functions/_shared/observs_client.ts /app/runtime/_shared/observs_client.ts
 COPY supabase/functions/_shared/ingestdb_observation_writer.mjs /app/runtime/_shared/ingestdb_observation_writer.mjs
 COPY supabase/functions/_shared/ingest_retention.ts /app/runtime/_shared/ingest_retention.ts
 COPY supabase/functions/_shared/fetch_egress_patch.ts /app/supabase/functions/_shared/fetch_egress_patch.ts
 COPY supabase/functions/_shared/egress_metrics.ts /app/supabase/functions/_shared/egress_metrics.ts
+COPY supabase/functions/_shared/service_egress_metrics.ts /app/supabase/functions/_shared/service_egress_metrics.ts
 COPY supabase/functions/ingest_sos/selected_work.ts /app/supabase/functions/ingest_sos/selected_work.ts
 COPY supabase/functions/ingest_sos/uk_aq_html_parser.ts /app/supabase/functions/ingest_sos/uk_aq_html_parser.ts
 COPY supabase/functions/ingest_sos/uk_aq_html_fallback.ts /app/supabase/functions/ingest_sos/uk_aq_html_fallback.ts

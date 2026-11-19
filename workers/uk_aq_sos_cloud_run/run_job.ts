@@ -11,6 +11,16 @@ import {
 } from "../../supabase/functions/_shared/observs_client.ts";
 import "../../supabase/functions/_shared/fetch_egress_patch.ts";
 import {
+  configureServiceEgressMetrics,
+  flushServiceEgressMetrics,
+  recordServiceEgressPostgrestResponse,
+  serviceEgressBypassHeaders,
+  serviceEgressMetricsEnabled,
+  utf8ByteLength,
+} from "../../supabase/functions/_shared/service_egress_metrics.ts";
+
+configureServiceEgressMetrics("ingest.sos");
+import {
   normalizeDropboxPath,
   uploadErrorLogJsonToDropbox,
 } from "../shared/dropbox_error_log.ts";
@@ -391,6 +401,7 @@ async function postgrestRequest(
   const schema = options.schema || UK_AQ_CORE_SCHEMA;
   const write = method !== "GET";
   const headers = postgrestHeaders(schema, write);
+  Object.assign(headers, serviceEgressBypassHeaders());
   if (options.prefer) {
     headers.Prefer = options.prefer;
   }
@@ -402,6 +413,7 @@ async function postgrestRequest(
     if (options.deadlineMs !== undefined && options.deadlineMs <= Date.now()) {
       throw new Error("SOS recovery database budget exhausted.");
     }
+    const startedAt = Date.now();
     const response = await fetch(url, {
       method,
       headers,
@@ -411,6 +423,28 @@ async function postgrestRequest(
       }),
     });
     const text = await response.text();
+    if (serviceEgressMetricsEnabled()) recordServiceEgressPostgrestResponse({
+      durationMs: Date.now() - startedAt,
+      httpStatus: response.status,
+      method,
+      routePath: path,
+      sourceUrl: SUPABASE_URL,
+      responseBytes: utf8ByteLength(text),
+      measurementMethod: "body_utf8",
+      queryName: path === "rpc/uk_aq_rpc_sos_selected_work_v1"
+        ? "load_selected_work"
+        : options.deadlineMs !== undefined
+        ? "recovery_request"
+        : path === "sos_station_checkpoints" && method === "GET"
+        ? "load_station_checkpoints"
+        : path === "sos_timeseries_checkpoints" && method === "GET"
+        ? "load_timeseries_checkpoints"
+        : path === "timeseries" && method === "GET" && options.query?.station_id
+        ? "load_station_latest_observed"
+        : path === "timeseries" && method === "GET" && options.query?.last_value_at
+        ? "load_max_last_value_at"
+        : undefined,
+    });
     let data: unknown = null;
     if (text) {
       try {
@@ -1768,7 +1802,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
+main().then(async () => {
+  await flushServiceEgressMetrics();
+}).catch(async (error) => {
+  await flushServiceEgressMetrics();
   const message = error instanceof Error ? error.message : String(error);
   logSummary("failure", { error: message });
   Deno.exit(1);
