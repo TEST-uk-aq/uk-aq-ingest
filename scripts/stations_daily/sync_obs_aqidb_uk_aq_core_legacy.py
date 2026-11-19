@@ -608,6 +608,8 @@ class PostgrestClient:
                         query_name=query_name,
                     )
             except Exception:
+                # Attribution is optional; keep the original response, retry, and
+                # parsing path even if recording this HTTP attempt fails.
                 pass
 
             if response.ok:

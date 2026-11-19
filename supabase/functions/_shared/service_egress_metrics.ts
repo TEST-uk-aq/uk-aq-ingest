@@ -154,11 +154,18 @@ class ServiceEgressMetricsCollector {
 
   constructor(serviceName: string) {
     this.serviceName = serviceName.trim();
-    this.enabled = parseBoolean(
+    const requestedEnabled = parseBoolean(
       Deno.env.get("UK_AQ_SERVICE_EGRESS_METRICS_ENABLED"),
       false,
     );
-    this.envName = (Deno.env.get("UK_AQ_ENV_NAME") || "TEST").trim();
+    this.envName = (Deno.env.get("UK_AQ_ENV_NAME") || "").trim();
+    this.enabled = requestedEnabled &&
+      (this.envName === "TEST" || this.envName === "LIVE");
+    if (requestedEnabled && !this.enabled) {
+      this.warn("service_egress_metrics_configuration_warning", {
+        reason: "missing_or_invalid_environment_name",
+      });
+    }
   }
 
   private warn(message: string, details: Record<string, unknown> = {}): void {

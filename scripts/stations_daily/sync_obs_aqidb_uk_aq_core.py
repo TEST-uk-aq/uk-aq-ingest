@@ -177,6 +177,7 @@ def main() -> int:
     try:
         configure_service_egress_metrics("ops.stations_daily")
     except Exception:
+        # Telemetry setup must not prevent the required core mirror from running.
         pass
     try:
         return _legacy.main()
@@ -184,6 +185,7 @@ def main() -> int:
         try:
             flush_service_egress_metrics()
         except Exception:
+            # A metrics delivery failure must not change the mirror's result.
             pass
 
 

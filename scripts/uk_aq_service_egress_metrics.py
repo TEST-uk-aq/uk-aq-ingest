@@ -118,11 +118,17 @@ def _route_and_query(method: str, path: str) -> tuple[str, str]:
 class ServiceEgressMetricsCollector:
     def __init__(self, service_name: str) -> None:
         self.service_name = str(service_name).strip()
-        self.enabled = _parse_bool(
+        requested_enabled = _parse_bool(
             os.getenv("UK_AQ_SERVICE_EGRESS_METRICS_ENABLED"), False
         )
-        self.env_name = (os.getenv("UK_AQ_ENV_NAME") or "TEST").strip()
+        self.env_name = (os.getenv("UK_AQ_ENV_NAME") or "").strip()
+        self.enabled = requested_enabled and self.env_name in {"TEST", "LIVE"}
         self._aggregates: Dict[str, Dict[str, Any]] = {}
+        if requested_enabled and not self.enabled:
+            self._warn(
+                "service_egress_metrics_configuration_warning",
+                reason="missing_or_invalid_environment_name",
+            )
 
     def _warn(self, message: str, **details: Any) -> None:
         try:
