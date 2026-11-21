@@ -37,6 +37,7 @@ def run_laqn(db, connector: dict, writer_factory, *, start, end, site_code,
     ):
         raise ValueError("invalid_values must list verified, finite, non-zero ERG sentinels")
     invalid_values = frozenset(sentinels)
+    retryable_sweep = start is None and end is None
     now = datetime.now(timezone.utc)
     end = min(end or now, now)
     window_hours = int(connector.get("poll_window_hours") or 48)
@@ -92,7 +93,7 @@ def run_laqn(db, connector: dict, writer_factory, *, start, end, site_code,
     for offset in range(0, len(station_ids), 200):
         checkpoints.update({
             row["station_id"]: row for row in _rows(schemas.raw.table(checkpoint_table)
-                .select("station_id,last_attempt_at,last_delivered_at")
+                .select("station_id,last_attempt_at,last_delivered_at,retry_window_start")
                 .in_("station_id", station_ids[offset:offset + 200]).execute())
         })
     if max_stations is not None and max_stations < 1:
@@ -108,6 +109,7 @@ def run_laqn(db, connector: dict, writer_factory, *, start, end, site_code,
         "stations_without_delivery_checkpoint", "series_polled", "series_failed",
         "source_failures", "observations_selected", "observations_upserted",
         "timeseries_updated", "hours_blank", "hours_invalid", "hours_unknown_quality",
+        "retry_windows_clipped",
     ), 0)
     secondary = dict.fromkeys(("written", "enqueued", "pubsub_observs"), 0)
     warnings = []
@@ -116,6 +118,7 @@ def run_laqn(db, connector: dict, writer_factory, *, start, end, site_code,
     # Leave time for database calls and worker bookkeeping before the 900s supervisor cutoff.
     deadline = time.monotonic() + 750
     writer = writer_factory(db.client) if not dry_run else None
+    retry_floor = bounded_start(end - timedelta(hours=MAX_WINDOW_HOURS), now)
     api = ErgClient()
     with api.session:
         for station in stations:
@@ -123,10 +126,17 @@ def run_laqn(db, connector: dict, writer_factory, *, start, end, site_code,
                 break
             station_id, ref = station["id"], station["station_ref"]
             attempt_at = datetime.now(timezone.utc).isoformat()
+            previous = checkpoints.get(station_id, {})
+            retry_start = gmt_time(previous.get("retry_window_start")) if retryable_sweep else None
+            station_start = max(min(start, retry_start), retry_floor) if retry_start else start
+            if retry_start and retry_start < retry_floor:
+                counters["retry_windows_clipped"] += 1
+                warnings.append(f"{ref}: part of the retry window moved outside live ownership or lookback")
             if not dry_run:
-                schemas.raw.table(checkpoint_table).upsert({
-                    "station_id": station_id, "last_attempt_at": attempt_at, "updated_at": attempt_at,
-                }, on_conflict="station_id").execute()
+                attempt = {"station_id": station_id, "last_attempt_at": attempt_at, "updated_at": attempt_at}
+                if retryable_sweep:
+                    attempt["retry_window_start"] = station_start.isoformat()
+                schemas.raw.table(checkpoint_table).upsert(attempt, on_conflict="station_id").execute()
             counters["stations_attempted"] += 1
             rows = []
             station_failed = False
@@ -136,7 +146,7 @@ def run_laqn(db, connector: dict, writer_factory, *, start, end, site_code,
                     station_failed = True
                     warnings.append(f"{ref}: sweep budget exhausted within station")
                     break
-                series_from = max(start, series_start)
+                series_from = max(station_start, series_start)
                 if series_from >= end:
                     complete = False
                     continue
@@ -181,12 +191,13 @@ def run_laqn(db, connector: dict, writer_factory, *, start, end, site_code,
                 if not rows or not complete or station_failed:
                     counters["stations_without_delivery_checkpoint"] += 1
                 if not dry_run and last_delivered:
-                    previous = checkpoints.get(station_id, {}).get("last_delivered_at")
+                    previous_delivered = gmt_time(previous.get("last_delivered_at"))
                     patch = {"updated_at": datetime.now(timezone.utc).isoformat()}
-                    if not previous or gmt_time(last_delivered) > gmt_time(previous):
+                    if not previous_delivered or gmt_time(last_delivered) > previous_delivered:
                         patch["last_delivered_at"] = last_delivered
-                    if complete and not station_failed:
+                    if retryable_sweep and complete and not station_failed:
                         patch["last_polled_at"] = attempt_at
+                        patch["retry_window_start"] = None
                     schemas.raw.table(checkpoint_table).update(patch).eq("station_id", station_id) \
                         .eq("last_attempt_at", attempt_at).execute()
                 if last_delivered:
@@ -199,7 +210,10 @@ def run_laqn(db, connector: dict, writer_factory, *, start, end, site_code,
     deferred = total_stations - counters["stations_attempted"]
     if counters["stations_attempted"] == counters["stations_failed"] and not newest:
         status = "failed"
-    elif deferred or counters["stations_failed"] or counters["stations_without_delivery_checkpoint"]:
+    elif (
+        deferred or counters["stations_failed"]
+        or counters["stations_without_delivery_checkpoint"] or counters["retry_windows_clipped"]
+    ):
         status = "partial"
     else:
         status = "succeeded"
@@ -210,7 +224,8 @@ def run_laqn(db, connector: dict, writer_factory, *, start, end, site_code,
         "run_message": (
             f"{METHOD}: {counters['observations_selected']} observations, "
             f"{counters['stations_failed']} failed, {deferred} deferred, "
-            f"{counters['stations_without_usable_values']} stations without usable values"
+            f"{counters['stations_without_usable_values']} stations without usable values, "
+            f"{counters['retry_windows_clipped']} retry windows clipped"
         ),
         "acquisition_method": METHOD, "stations_total": total_stations,
         "stations_deferred": deferred, "stations_updated": 0,
