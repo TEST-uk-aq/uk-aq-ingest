@@ -46,6 +46,8 @@ type ConnectorRow = {
   label: string;
   display_name: string | null;
   service_url: string | null;
+  scheduler_backend: string;
+  poll_enabled: boolean;
 };
 
 type DropboxConfig = {
@@ -782,7 +784,7 @@ async function loadConnector(
     "GET",
     "connectors",
     {
-      select: "id,connector_code,label,display_name,service_url",
+      select: "id,connector_code,label,display_name,service_url,scheduler_backend,poll_enabled",
       connector_code: `eq.${connectorCode}`,
       limit: "1",
     },
@@ -1879,6 +1881,10 @@ serve(async (req) => {
       throw new Error("Connector not found.");
     }
 
+    if (connector?.scheduler_backend === "google_cloud_run" || !connector?.poll_enabled) {
+      return new Response("LAQN Edge polling is disabled", { status: 410 });
+    }
+
     const stationsPayload = await fetchJson(
       `${baseUrl}/Information/MonitoringSites/GroupName=${groupName}/Json`,
       undefined,
@@ -2080,10 +2086,16 @@ serve(async (req) => {
                   ?? entry["DateTime"]
                   ?? entry["Date"]
               );
-              const value = Number(
-                entry["@Value"] ?? entry["Value"] ?? entry["ScaledValue"] ?? entry["RawValue"]
-              );
-              if (!observedAt || Number.isNaN(value)) {
+              const rawValue =
+                entry["@Value"] ?? entry["Value"] ?? entry["ScaledValue"] ?? entry["RawValue"];
+              if (
+                typeof rawValue !== "number" &&
+                (typeof rawValue !== "string" || rawValue.trim() === "")
+              ) {
+                continue;
+              }
+              const value = Number(rawValue);
+              if (!observedAt || !Number.isFinite(value)) {
                 continue;
               }
               observations.push({

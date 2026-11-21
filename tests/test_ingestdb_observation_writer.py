@@ -152,7 +152,6 @@ def test_active_python_observation_writers_use_shared_contract_and_canonical_key
     paths = [
         root / "scripts/blondon_nodes/blondon_nodes_ingest.py",
         root / "scripts/sensorcommunity/sensorcommunity_ingest.py",
-        root / "scripts/erg_laqn/erg_laqn_ingest.py",
         root / "scripts/sos/sos_ingest_legacy.py",
     ]
     for path in paths:
@@ -163,6 +162,11 @@ def test_active_python_observation_writers_use_shared_contract_and_canonical_key
             or "uk_aq_rpc_observations_compact_upsert_v1" in source
         )
         assert "DEFAULT_POSTGREST_ATTEMPT_RUNTIME_MS" in source
+
+    laqn_source = (root / "scripts/erg_laqn/poll.py").read_text(encoding="utf-8")
+    official_source = (root / "scripts/official_networks/official_network_ingest.py").read_text(encoding="utf-8")
+    assert "db.write_observations(rows, METHOD)" in laqn_source
+    assert "uk_aq_rpc_observations_compact_upsert_v2" in official_source
 
     sensor_source = paths[1].read_text(encoding="utf-8")
     metadata_write = sensor_source.index("writer.upsert_timeseries(timeseries_metadata_payload)")
@@ -175,7 +179,7 @@ def test_active_python_observation_writers_use_shared_contract_and_canonical_key
     nodes_source = paths[0].read_text(encoding="utf-8")
     assert "if isinstance(exc, IngestDbObservationWriteError):" in nodes_source
 
-    sos_source = paths[3].read_text(encoding="utf-8")
+    sos_source = paths[2].read_text(encoding="utf-8")
     assert sos_source.count("if isinstance(exc, IngestDbObservationWriteError):") >= 2
 
     communities_source = (

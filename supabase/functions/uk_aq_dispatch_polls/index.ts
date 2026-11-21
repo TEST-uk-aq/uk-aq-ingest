@@ -109,7 +109,6 @@ const TARGET_CONNECTORS = [
   "sos",
   "sensorcommunity",
   "blondon_communities",
-  "erg_laqn",
   "openaq",
 ];
 const SCHEDULER_BACKEND_SUPABASE_FUNCTION = "supabase_function";
@@ -125,20 +124,17 @@ const DEFAULT_INTERVAL_MINUTES: Record<string, number> = {
   sos: 60,
   sensorcommunity: 15,
   blondon_communities: 60,
-  erg_laqn: 60,
   openaq: 60,
 };
 
 const DEFAULT_WINDOW_HOURS: Record<string, number> = {
   sos: 6,
   blondon_communities: 6,
-  erg_laqn: 24,
   openaq: 6,
 };
 
 const DEFAULT_BATCH_LIMIT: Record<string, number> = {
   blondon_communities: 10,
-  erg_laqn: 10,
   openaq: 56,
 };
 
@@ -1392,13 +1388,6 @@ async function callEdgeFunction(
   return { ok: resp.ok, status: resp.status, body: payloadBody };
 }
 
-function windowHoursToDays(windowHours: number): number {
-  if (!Number.isFinite(windowHours) || windowHours <= 0) {
-    return 1;
-  }
-  return Math.max(1, Math.ceil(windowHours / 24));
-}
-
 function getDispatchRemainingMs(dispatchStartedAtMs: number): number {
   return Math.max(
     0,
@@ -2056,63 +2045,6 @@ serve(async (req) => {
             await logError({
               severity: "error",
               message: "ingest_blondon_communities dispatch failed",
-              connector_id: connector?.id ?? null,
-              context: {
-                connector_code: connectorCode,
-                response_status: resp.status,
-                response_body: resp.body,
-              },
-            });
-          } else {
-            runStatus = "succeeded";
-            runMessage = "dispatched";
-          }
-          results.set(connectorCode, {
-            connector_code: connectorCode,
-            status: resp.ok ? "triggered" : "error",
-            response_status: resp.status,
-            detail: resp.ok ? "dispatched" : "dispatch_failed",
-          });
-        }
-      } else if (connectorCode === "erg_laqn") {
-        const batchLimit = getBatchLimit(connector, connectorCode);
-        const stationRefs = await loadStationRefs(
-          "erg_laqn_select_station_refs",
-          {
-            batchLimit,
-            activeOnly: true,
-          },
-        );
-        runScope.stationRefs = stationRefs;
-        if (!stationRefs.length) {
-          runStatus = "skipped";
-          runMessage = "no_station_refs";
-          results.set(connectorCode, {
-            connector_code: connectorCode,
-            status: "skipped",
-            detail: "no_station_refs",
-          });
-        } else {
-          const windowHours = getWindowHours(connector, connectorCode);
-          const resp = await callEdgeFunction(
-            "ingest_erg_laqn",
-            {
-              connector_code: connectorCode,
-              service_ref: connectorCode,
-              group: "London",
-              days: windowHoursToDays(windowHours),
-              start_from_latest: true,
-              station_refs: stationRefs,
-            },
-            dispatchStartedAtMs,
-          );
-          lastResponse = { status: resp.status, body: resp.body };
-          if (!resp.ok) {
-            runStatus = "failed";
-            runMessage = `HTTP ${resp.status}`;
-            await logError({
-              severity: "error",
-              message: "ingest_erg_laqn dispatch failed",
               connector_id: connector?.id ?? null,
               context: {
                 connector_code: connectorCode,

@@ -126,7 +126,7 @@ class RunTracker:
                 "connector_id": int(connector["id"]),
                 "connector_code": CONNECTOR_CODE,
                 "network_id": connector.get("default_network_id"),
-                "network_code": CONNECTOR_CODE,
+                "network_code": "laqn" if CONNECTOR_CODE == "erg_laqn" else CONNECTOR_CODE,
                 "run_started_at": run_started_at,
                 "run_ended_at": run_ended_at,
                 "run_status": run_status,
@@ -312,7 +312,7 @@ def run(payload: Dict[str, Any]) -> int:
     ):
         run_status = str(summary.get("run_status") or "succeeded")
         run_message = str(summary.get("run_message") or "ok")
-        response_status = 200
+        response_status = 207 if CONNECTOR_CODE == "erg_laqn" and run_status == "partial" else 200
     else:
         run_status = "failed"
         run_message = (

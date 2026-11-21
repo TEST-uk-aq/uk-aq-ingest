@@ -6,7 +6,7 @@ WRITERS = (
     "scripts/blondon_communities/blondon_communities_list_stations.py",
     "scripts/openaq/openaq_list_stations.py",
     "scripts/sensorcommunity/sensorcommunity_ingest.py",
-    "scripts/erg_laqn/erg_laqn_ingest.py",
+    "scripts/erg_laqn/erg_laqn_list_stations.py",
     "scripts/sos/sos_ingest.py",
     "scripts/sos/sos_list_stations.py",
     "scripts/blondon_nodes/blondon_nodes_ingest.py",

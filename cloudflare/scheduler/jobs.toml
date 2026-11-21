@@ -88,3 +88,12 @@ cloud_run_url_managed_by_deploy = true
 cloud_run_method = "POST"
 dry_run = false
 notes = "Northern Ireland Air ingest trigger;"
+
+[jobs.uk_aq_erg_laqn]
+enabled = false
+cron_expr = "*/30 * * * *"
+target_type = "cloud_run"
+cloud_run_url_managed_by_deploy = true
+cloud_run_method = "POST"
+dry_run = false
+notes = "Independent LAQN trigger. Enable in TEST after approved reference and polling acceptance."

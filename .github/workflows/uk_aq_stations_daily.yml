@@ -427,14 +427,6 @@ jobs:
           echo "ERROR: Breathe London Nodes discovery or complete retained-reference verification is required."
           exit 1
 
-      # Script needs updating before LAQN can start polling
-      # - name: Sync LAQN stations
-      #   env:
-      #     SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-      #     SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
-      #   run: |
-      #     python3 scripts/erg_laqn/erg_laqn_list_stations.py --to-supabase
-
       - name: Sync OpenAQ stations
         id: sync_openaq_stations
         if: always() && job.status == 'success' && steps.pause_openaq_polling.outputs.connector_found == '1' && steps.pause_openaq_polling.outputs.poll_was_enabled == '1'
@@ -664,6 +656,15 @@ jobs:
         run: |
           echo "ERROR: Northern Ireland reference refresh failed for a non-isolated reason."
           exit 1
+
+      - name: Refresh LAQN references through fixed-egress Cloud Run
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SB_SECRET_KEY: ${{ secrets.SB_SECRET_KEY }}
+          UK_AQ_EDGE_UPSTREAM_SECRET: ${{ secrets.UK_AQ_EDGE_UPSTREAM_SECRET }}
+          GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+          GCP_REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
+        run: python3 scripts/erg_laqn/erg_laqn_list_stations.py --dispatch
 
       - name: Resolve canonical physical monitoring sites
         env:
