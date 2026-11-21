@@ -24,9 +24,9 @@ RUN_JOB_SCRIPT = os.getenv(
 CONNECTOR_CODE = (
     os.getenv("UK_AQ_OFFICIAL_NETWORK_CONNECTOR_CODE") or ""
 ).strip().lower()
-if CONNECTOR_CODE not in {"waqn", "saqn", "ni"}:
+if CONNECTOR_CODE not in {"waqn", "saqn", "ni", "erg_laqn"}:
     raise RuntimeError(
-        "UK_AQ_OFFICIAL_NETWORK_CONNECTOR_CODE must be waqn, saqn or ni"
+        "UK_AQ_OFFICIAL_NETWORK_CONNECTOR_CODE must be waqn, saqn, ni or erg_laqn"
     )
 
 ACCEPTED_KEYS = {
@@ -182,6 +182,8 @@ def run_job(payload: dict[str, Any], timeout: int) -> tuple[int, dict[str, Any]]
     if process.returncode != 0:
         summary["ok"] = False
         return 500, summary
+    if CONNECTOR_CODE == "erg_laqn" and summary.get("run_status") == "partial":
+        return 207, summary
     return 200, summary
 
 
@@ -230,6 +232,29 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not has_valid_run_auth(self.headers):
             self._json_response(403, {"ok": False, "error": "forbidden"})
+            return
+        if self.path == "/reference":
+            if CONNECTOR_CODE != "erg_laqn":
+                self._json_response(404, {"ok": False, "error": "reference_route_unavailable"})
+                return
+            if not RUN_LOCK.acquire(blocking=False):
+                self._json_response(409, {"ok": False, "error": "run_in_flight"})
+                return
+            try:
+                process = subprocess.run(
+                    ["python3", "-m", "scripts.erg_laqn.erg_laqn_list_stations", "--refresh"],
+                    text=True, capture_output=True, timeout=360,
+                )
+                if process.returncode:
+                    print(process.stderr[-4000:], flush=True)
+                    self._json_response(502, {"ok": False, "error": "reference_refresh_failed"})
+                else:
+                    self._json_response(200, json.loads(process.stdout.strip().splitlines()[-1]))
+            except (ValueError, IndexError, subprocess.SubprocessError) as exc:
+                print(f"LAQN reference service failed: {exc}", flush=True)
+                self._json_response(500, {"ok": False, "error": "reference_runner_failed"})
+            finally:
+                RUN_LOCK.release()
             return
         try:
             length = int(self.headers.get("content-length") or 0)

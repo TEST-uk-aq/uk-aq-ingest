@@ -21,6 +21,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.uk_aq_retention import load_retention, eligible_observation, bounded_start, assert_eligible_rows
+from scripts.erg_laqn.poll import run_laqn
+from scripts.erg_laqn.source import CONNECTOR_CODE as LAQN_CONNECTOR
 from scripts.official_networks.graph_parser import (
     GraphDataError,
     parse_embedded_graph_data,
@@ -441,11 +443,11 @@ class IngestDatabase:
         if not rows:
             raise RuntimeError(f"Connector not found: {self.profile.connector_code}")
         row = rows[0]
-        if int(row["id"]) != self.profile.connector_id:
+        if self.profile.connector_id is not None and int(row["id"]) != self.profile.connector_id:
             raise RuntimeError(
                 f"{self.profile.connector_code} connector id does not match contract"
             )
-        if int(row["default_network_id"]) != self.profile.network_id:
+        if self.profile.network_id is not None and int(row["default_network_id"]) != self.profile.network_id:
             raise RuntimeError(
                 f"{self.profile.connector_code} default network does not match contract"
             )
@@ -724,6 +726,16 @@ def run_ingest(
     connector = db.connector()
     config = connector.get("config") if isinstance(connector.get("config"), dict) else {}
 
+    if connector_code == LAQN_CONNECTOR:
+        start = parse_iso(start_time) if start_time else None
+        end = parse_iso(end_time) if end_time else None
+        if (start_time and start is None) or (end_time and end is None):
+            raise ValueError("Invalid LAQN replay timestamp")
+        return run_laqn(
+            db, connector, ObservsWriter, start=start, end=end, site_code=site_code,
+            max_stations=max_stations, dry_run=dry_run,
+        )
+
     now = datetime.now(timezone.utc)
     days = retention_days()
     end = parse_iso(end_time) if end_time else now
@@ -925,11 +937,11 @@ def run_ingest(
     }
 
 
-def main(default_connector_code: Optional[str] = None) -> int:
+def main(default_connector_code: Optional[str] = None, *, force_dry_run: bool = False) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--connector-code",
-        choices=("waqn", "saqn", "ni"),
+        choices=("waqn", "saqn", "ni", LAQN_CONNECTOR),
         default=default_connector_code,
         required=default_connector_code is None,
     )
@@ -946,7 +958,7 @@ def main(default_connector_code: Optional[str] = None) -> int:
         start_time=args.start_time,
         end_time=args.end_time,
         max_stations=args.max_stations,
-        dry_run=args.dry_run,
+        dry_run=args.dry_run or force_dry_run,
     )
     print(
         "RUN_SUMMARY_JSON "

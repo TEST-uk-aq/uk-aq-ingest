@@ -1,4 +1,4 @@
-name: Deploy Devolved Official Network Cloud Run Services
+name: Deploy Official Network Cloud Run Services
 
 on:
   push:
@@ -14,6 +14,19 @@ on:
       - "scripts/cloudflare/uk_aq_reconcile_ingest_scheduler_url.sh"
       - ".github/workflows/uk_aq_official_networks_cloud_run_deploy.yml"
   workflow_dispatch:
+    inputs:
+      deploy_laqn:
+        description: Deploy only the LAQN service using approved fixed egress
+        type: boolean
+        default: false
+      laqn_vpc_network:
+        description: LAQN Direct VPC network name with Cloud NAT and approved static IP
+        type: string
+        required: false
+      laqn_vpc_subnet:
+        description: LAQN Direct VPC regional subnet name
+        type: string
+        required: false
 
 concurrency:
   group: uk-aq-ingest-cloud-run-shared-secret-deploy
@@ -25,16 +38,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - connector_code: waqn
-            service_name: uk-aq-waqn-ingest
-            scheduler_job_key: uk_aq_waqn
-          - connector_code: saqn
-            service_name: uk-aq-saqn-ingest
-            scheduler_job_key: uk_aq_saqn
-          - connector_code: ni
-            service_name: uk-aq-ni-ingest
-            scheduler_job_key: uk_aq_ni
+        include: >-
+          ${{ inputs.deploy_laqn &&
+              fromJSON('[{"connector_code":"erg_laqn","service_name":"uk-aq-erg-laqn-ingest","scheduler_job_key":"uk_aq_erg_laqn"}]') ||
+              fromJSON('[{"connector_code":"waqn","service_name":"uk-aq-waqn-ingest","scheduler_job_key":"uk_aq_waqn"},{"connector_code":"saqn","service_name":"uk-aq-saqn-ingest","scheduler_job_key":"uk_aq_saqn"},{"connector_code":"ni","service_name":"uk-aq-ni-ingest","scheduler_job_key":"uk_aq_ni"}]') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -45,6 +52,8 @@ jobs:
       REPO: ${{ vars.GCP_ARTIFACT_REPO || 'uk-aq' }}
       SERVICE_NAME: ${{ matrix.service_name }}
       CONNECTOR_CODE: ${{ matrix.connector_code }}
+      LAQN_VPC_NETWORK: ${{ inputs.laqn_vpc_network }}
+      LAQN_VPC_SUBNET: ${{ inputs.laqn_vpc_subnet }}
       SCHEDULER_D1_JOB_KEY: ${{ matrix.scheduler_job_key }}
       SERVICE_ACCOUNT: ${{ vars.GCP_SOS_SERVICE_ACCOUNT || vars.GCP_SOS_JOB_SERVICE_ACCOUNT || '' }}
       SUPABASE_URL: ${{ vars.SUPABASE_URL }}
@@ -116,6 +125,14 @@ jobs:
           esac
           case "${CONNECTOR_CODE}" in
             waqn|saqn|ni) ;;
+            erg_laqn)
+              resource_pattern='^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$'
+              if [[ ! "${LAQN_VPC_NETWORK}" =~ ${resource_pattern} ||
+                    ! "${LAQN_VPC_SUBNET}" =~ ${resource_pattern} ]]; then
+                echo "LAQN requires the approved fixed-egress VPC network and subnet names."
+                exit 1
+              fi
+              ;;
             *) echo "Unsupported connector code: ${CONNECTOR_CODE}"; exit 1 ;;
           esac
           case "${OFFICIAL_NETWORK_INGESTDB_WRITE_TRANSPORT}" in
@@ -241,7 +258,11 @@ jobs:
       - name: Deploy Cloud Run service
         run: |
           set -euo pipefail
-          gcloud run deploy "${SERVICE_NAME}"             --region "${REGION}"             --image "${{ steps.build.outputs.image }}"             --service-account "${SERVICE_ACCOUNT}"             --timeout "${SERVICE_TIMEOUT_SECONDS}"             --cpu "${SERVICE_CPU}"             --memory "${SERVICE_MEMORY}"             --concurrency "${SERVICE_CONCURRENCY}"             --max-instances "${SERVICE_MAX_INSTANCES}"             --min-instances "${SERVICE_MIN_INSTANCES}"             --no-cpu-boost             --cpu-throttling             --labels "job_name=uk-aq-${CONNECTOR_CODE}-ingest-service"             --allow-unauthenticated             --env-vars-file "${{ steps.args.outputs.env_file }}"             --set-secrets "${{ steps.args.outputs.secrets }}"
+          egress_args=()
+          if [ "${CONNECTOR_CODE}" = erg_laqn ]; then
+            egress_args=(--network "${LAQN_VPC_NETWORK}" --subnet "${LAQN_VPC_SUBNET}" --vpc-egress all-traffic)
+          fi
+          gcloud run deploy "${SERVICE_NAME}" "${egress_args[@]}"             --region "${REGION}"             --image "${{ steps.build.outputs.image }}"             --service-account "${SERVICE_ACCOUNT}"             --timeout "${SERVICE_TIMEOUT_SECONDS}"             --cpu "${SERVICE_CPU}"             --memory "${SERVICE_MEMORY}"             --concurrency "${SERVICE_CONCURRENCY}"             --max-instances "${SERVICE_MAX_INSTANCES}"             --min-instances "${SERVICE_MIN_INSTANCES}"             --no-cpu-boost             --cpu-throttling             --labels "job_name=uk-aq-${CONNECTOR_CODE}-ingest-service"             --allow-unauthenticated             --env-vars-file "${{ steps.args.outputs.env_file }}"             --set-secrets "${{ steps.args.outputs.secrets }}"
 
       - name: Reconcile service URL in ingest scheduler D1
         run: |

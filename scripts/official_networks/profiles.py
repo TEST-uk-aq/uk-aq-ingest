@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional
 
+from scripts.erg_laqn.source import CONNECTOR_CODE as LAQN_CONNECTOR, NETWORK_CODE as LAQN_NETWORK
+
 
 # Existing official site/SOS authority, also approved for metadata canonicalisation.
 WAQN_SITE_ORIGIN = "https://www.airquality.gov.wales"
@@ -50,9 +52,9 @@ PROPERTY_TO_SPEC: Dict[str, PollutantSpec] = {
 @dataclass(frozen=True)
 class OfficialNetworkProfile:
     connector_code: str
-    connector_id: int
+    connector_id: Optional[int]
     network_code: str
-    network_id: int
+    network_id: Optional[int]
     display_name: str
     sos_base_url: str
     sos_probe_enabled: bool
@@ -76,6 +78,18 @@ class OfficialNetworkProfile:
 
 
 PROFILES: Dict[str, OfficialNetworkProfile] = {
+    LAQN_CONNECTOR: OfficialNetworkProfile(
+        connector_code=LAQN_CONNECTOR,
+        connector_id=None,
+        network_code=LAQN_NETWORK,
+        network_id=None,
+        display_name="London Air Quality Network",
+        sos_base_url="",
+        sos_probe_enabled=False,
+        site_page_url_template="https://www.londonair.org.uk/london/asp/publicdetails.asp?site={site_code}",
+        site_graph_html_supported=False,
+        openair_metadata_url="",
+    ),
     "waqn": OfficialNetworkProfile(
         connector_code="waqn",
         connector_id=9,

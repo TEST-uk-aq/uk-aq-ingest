@@ -27,6 +27,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.erg_laqn.catalogue import OFFICIAL_AURN_LINKS, aurn_identity_evidence
+from scripts.erg_laqn.source import CONNECTOR_CODE as LAQN_CONNECTOR, SITE_URL as LAQN_SITE_URL, gmt_time
 from scripts.official_networks.profiles import get_profile
 from scripts.uk_aq_supabase import SupabaseSchemas, create_supabase_client
 
@@ -420,7 +422,7 @@ class CanonicalSiteResolver:
         rows = _rows(
             self.core.table("connectors")
             .select("id,connector_code")
-            .in_("connector_code", ["sos", *REGIONAL_CONNECTOR_CODES])
+            .in_("connector_code", ["sos", *REGIONAL_CONNECTOR_CODES, LAQN_CONNECTOR])
             .execute()
         )
         return {
@@ -435,7 +437,7 @@ class CanonicalSiteResolver:
         return _all_rows(
             lambda: self.core.table("stations")
                 .select(
-                    "id,connector_id,station_ref,station_name,label,latitude,longitude,"
+                    "id,connector_id,service_ref,station_ref,station_name,label,latitude,longitude,"
                     "match_id,removed_at"
                 )
                 .in_("connector_id", list(connector_ids))
@@ -448,6 +450,17 @@ class CanonicalSiteResolver:
                 .select("station_id,uk_air_ref,match_method,match_distance_m,source_snapshot_at")
                 .order("station_id")
         )
+
+    def _laqn_site_evidence(self, refs: list[str]) -> dict[str, dict]:
+        evidence = {}
+        for ref in refs:
+            rows = _rows(self.raw.table("laqn_site_register")
+                .select("site_ref,snapshot_at,networks,first_seen_at,removed_at")
+                .eq("site_ref", ref).eq("source_url", LAQN_SITE_URL)
+                .order("snapshot_at", desc=True).limit(1).execute())
+            if rows:
+                evidence[ref] = rows[0]
+        return evidence
 
     def _station_matches(self) -> List[Dict[str, Any]]:
         return _all_rows(
@@ -565,6 +578,31 @@ class CanonicalSiteResolver:
             target_ref_by_station[station_id] = uk_air_ref
             evidence_by_ref.setdefault(uk_air_ref, []).append(evidence)
 
+        sos_targets = set(target_ref_by_station.values())
+        laqn_stations = [station for station in stations
+                         if connector_by_id.get(int(station["connector_id"])) == LAQN_CONNECTOR]
+        laqn_refs = sorted({station["station_ref"] for station in laqn_stations} & OFFICIAL_AURN_LINKS.keys())
+        laqn_sources = self._laqn_site_evidence(laqn_refs)
+        for station in laqn_stations:
+            station_id, ref = int(station["id"]), station["station_ref"]
+            raw = laqn_sources.get(ref)
+            evidence = aurn_identity_evidence(
+                ref, raw["networks"], gmt_time(raw["first_seen_at"]),
+                gmt_time(raw["removed_at"]), aurn_sites,
+            ) if raw and station["service_ref"] == LAQN_CONNECTOR else None
+            member = {"station_id": station_id, "station_ref": ref, "connector_code": LAQN_CONNECTOR}
+            if not evidence or evidence["uk_air_ref"] not in sos_targets:
+                diagnostics.append({**member, "status": "unmatched", "reason": "no_verified_aurn_bridge"})
+                continue
+            target_ref = evidence["uk_air_ref"]
+            item = {
+                **member, "method": "published_laqn_defra_cross_reference",
+                "evidence": {**evidence, "laqn_catalogue_snapshot_at": raw["snapshot_at"]},
+            }
+            diagnostics.append({**item, "uk_air_ref": target_ref, "status": "matched"})
+            target_ref_by_station[station_id] = target_ref
+            evidence_by_ref.setdefault(target_ref, []).append(item)
+
         for station in stations:
             connector_code = connector_by_id.get(int(station["connector_id"]))
             if connector_code not in REGIONAL_CONNECTOR_CODES:
@@ -615,7 +653,8 @@ class CanonicalSiteResolver:
             if current_match_id is None:
                 continue
             current_ref = match_ref_by_id.get(int(current_match_id))
-            if not current_ref or current_ref == candidate_ref:
+            connector_code = connector_by_id.get(int(stations_by_id[station_id]["connector_id"]))
+            if current_ref == candidate_ref or (not current_ref and connector_code != LAQN_CONNECTOR):
                 continue
             protected_conflicts.append({
                 "station_id": station_id,
@@ -680,14 +719,20 @@ class CanonicalSiteResolver:
             assignments[station_id] = target_match_id
 
         if not self.dry_run:
-            assignments_by_match: Dict[int, List[int]] = {}
+            assignments_by_match: Dict[tuple[int, bool], List[int]] = {}
             for station_id, match_id in assignments.items():
-                assignments_by_match.setdefault(match_id, []).append(station_id)
-            for match_id, station_ids in sorted(assignments_by_match.items()):
+                only_unmatched = connector_by_id.get(
+                    int(stations_by_id[station_id]["connector_id"])
+                ) == LAQN_CONNECTOR
+                assignments_by_match.setdefault((match_id, only_unmatched), []).append(station_id)
+            for (match_id, only_unmatched), station_ids in sorted(assignments_by_match.items()):
                 for station_id_chunk in _chunks(station_ids):
-                    self.core.table("stations").update({"match_id": match_id}).in_(
+                    update = self.core.table("stations").update({"match_id": match_id}).in_(
                         "id", list(station_id_chunk)
-                    ).execute()
+                    )
+                    if only_unmatched:
+                        update = update.is_("match_id", "null")
+                    update.execute()
 
         status_counts: Dict[str, int] = {}
         for item in diagnostics:
