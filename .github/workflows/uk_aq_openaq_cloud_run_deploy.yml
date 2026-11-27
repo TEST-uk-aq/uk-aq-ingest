@@ -73,6 +73,7 @@ jobs:
       OPENAQ_DEFAULT_BATCH_LIMIT: ${{ vars.OPENAQ_DEFAULT_BATCH_LIMIT || '56' }}
       OPENAQ_MAX_REQUESTS_PER_HOUR: ${{ vars.OPENAQ_MAX_REQUESTS_PER_HOUR || '1900' }}
       OPENAQ_SHARED_BUDGET_TRANSPORT: ${{ vars.OPENAQ_SHARED_BUDGET_TRANSPORT || 'database' }}
+      OPENAQ_TIMESERIES_READ_TRANSPORT: ${{ vars.OPENAQ_TIMESERIES_READ_TRANSPORT || 'postgrest' }}
       OPENAQ_SHARED_BUDGET_ENFORCE: ${{ vars.OPENAQ_SHARED_BUDGET_ENFORCE || 'true' }}
       OPENAQ_SHARED_BUDGET_KEY: ${{ vars.OPENAQ_SHARED_BUDGET_KEY || 'openaq' }}
       OPENAQ_SHARED_BUDGET_CALLER: ${{ vars.OPENAQ_SHARED_BUDGET_CALLER || 'ingest_openaq' }}
@@ -153,6 +154,10 @@ jobs:
             echo "Missing required secret: UK_AQ_GCP_CLOUD_RUN_DATABASE_URL"
             exit 1
           fi
+          case "${OPENAQ_TIMESERIES_READ_TRANSPORT}" in
+            postgrest|database) ;;
+            *) echo "OPENAQ_TIMESERIES_READ_TRANSPORT must be postgrest or database."; exit 1 ;;
+          esac
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "pubsub_only" ]; then
             if [ -z "${GCP_OBSERVS_PUBSUB_TOPIC:-}" ]; then
@@ -405,6 +410,7 @@ jobs:
           add_env OPENAQ_DEFAULT_BATCH_LIMIT
           add_env OPENAQ_MAX_REQUESTS_PER_HOUR
           add_env OPENAQ_SHARED_BUDGET_TRANSPORT
+          add_env OPENAQ_TIMESERIES_READ_TRANSPORT
           add_env OPENAQ_SHARED_BUDGET_ENFORCE
           add_env OPENAQ_SHARED_BUDGET_KEY
           add_env OPENAQ_SHARED_BUDGET_CALLER

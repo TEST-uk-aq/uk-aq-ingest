@@ -300,6 +300,14 @@ const OPENAQ_SHARED_BUDGET_HOUR_LIMIT = Number(
 const OPENAQ_SHARED_BUDGET_TRANSPORT = (
   Deno.env.get("OPENAQ_SHARED_BUDGET_TRANSPORT") ?? "postgrest"
 ).trim().toLowerCase();
+const OPENAQ_TIMESERIES_READ_TRANSPORT =
+  Deno.env.get("OPENAQ_TIMESERIES_READ_TRANSPORT") ?? "postgrest";
+if (
+  OPENAQ_TIMESERIES_READ_TRANSPORT !== "postgrest" &&
+  OPENAQ_TIMESERIES_READ_TRANSPORT !== "database"
+) {
+  throw new Error("OPENAQ_TIMESERIES_READ_TRANSPORT must be postgrest or database");
+}
 const OPENAQ_LAG_STAT: LagStat = parseLagStat(
   Deno.env.get("OPENAQ_LAG_STAT"),
 );
@@ -2497,29 +2505,45 @@ async function fetchTimeseriesStationIds(
   if (!ids.length) {
     return {};
   }
+  const readViaDatabase = OPENAQ_TIMESERIES_READ_TRANSPORT === "database"
+    ? (await import("./openaq_budget_database.ts"))
+      .readTimeseriesStationIdsViaDatabase
+    : null;
   const mapping: Record<number, number> = {};
   for (let idx = 0; idx < ids.length; idx += 200) {
     const chunk = ids.slice(idx, idx + 200);
-    const { data, error } = await postgrestRequest<
-      Array<{ id: number; station_id: number | null }>
-    >(
-      "GET",
-      "timeseries",
-      {
-        select: "id,station_id",
-        id: postgrestIn(chunk.map((value) => String(value))),
-      },
-    );
-    if (error) {
-      throw new Error(
-        `Failed to load timeseries station ids: ${error.message}`,
+    let rows: Array<{ id: number; station_id: number | null }>;
+    if (readViaDatabase) {
+      rows = await readViaDatabase(chunk);
+    } else {
+      const { data, error } = await postgrestRequest<typeof rows>(
+        "GET",
+        "timeseries",
+        {
+          select: "id,station_id",
+          id: postgrestIn(chunk.map((value) => String(value))),
+        },
       );
+      if (error) {
+        throw new Error(
+          `Failed to load timeseries station ids: ${error.message}`,
+        );
+      }
+      rows = data ?? [];
     }
-    for (const row of data ?? []) {
+    for (const row of rows) {
       if (row.station_id) {
         mapping[Number(row.id)] = Number(row.station_id);
       }
     }
+  }
+  if (readViaDatabase) {
+    console.info(JSON.stringify({
+      event: "openaq_timeseries_station_read",
+      transport: "database",
+      timeseries_ids_requested: ids.length,
+      station_ids_mapped: Object.keys(mapping).length,
+    }));
   }
   return mapping;
 }
