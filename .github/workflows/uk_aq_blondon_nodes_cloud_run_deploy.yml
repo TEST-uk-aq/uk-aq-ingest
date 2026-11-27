@@ -67,6 +67,7 @@ jobs:
       BLONDON_NODES_IN_FLIGHT_TIMEOUT_MINUTES: ${{ vars.BLONDON_NODES_IN_FLIGHT_TIMEOUT_MINUTES || '14' }}
       BLONDON_NODES_CLAIM_TIMEOUT_MINUTES: ${{ vars.BLONDON_NODES_CLAIM_TIMEOUT_MINUTES || '14' }}
       BLONDON_NODES_INGESTDB_WRITE_TRANSPORT: ${{ vars.BLONDON_NODES_INGESTDB_WRITE_TRANSPORT || 'postgrest' }}
+      BLONDON_NODES_TIMESERIES_READ_TRANSPORT: ${{ vars.BLONDON_NODES_TIMESERIES_READ_TRANSPORT || 'postgrest' }}
       BLONDON_NODES_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.BLONDON_NODES_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
       UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
       BLONDON_NODES_ERROR_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.BLONDON_NODES_ERROR_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
@@ -168,23 +169,30 @@ jobs:
             exit 1
           fi
           case "${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT}" in
-            postgrest)
-              ;;
-            database)
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL:-}" ]; then
-                echo "BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
-                exit 1
-              fi
-              if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME:-}" ]; then
-                echo "BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=database requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
-                exit 1
-              fi
-              ;;
+            postgrest|database) ;;
             *)
               echo "BLONDON_NODES_INGESTDB_WRITE_TRANSPORT must be exactly postgrest or database."
               exit 1
               ;;
           esac
+          case "${BLONDON_NODES_TIMESERIES_READ_TRANSPORT}" in
+            postgrest|database) ;;
+            *)
+              echo "BLONDON_NODES_TIMESERIES_READ_TRANSPORT must be exactly postgrest or database."
+              exit 1
+              ;;
+          esac
+          if [ "${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT}" = "database" ] ||
+             [ "${BLONDON_NODES_TIMESERIES_READ_TRANSPORT}" = "database" ]; then
+            if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL:-}" ]; then
+              echo "Nodes pooled reads or writes require UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
+              exit 1
+            fi
+            if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME:-}" ]; then
+              echo "Nodes pooled reads or writes require UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
+              exit 1
+            fi
+          fi
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "pubsub_only" ] && [ -z "${GCP_OBSERVS_PUBSUB_TOPIC:-}" ]; then
             echo "OBSERVS_WRITE_MODE=pubsub_only requires GCP_OBSERVS_PUBSUB_TOPIC."
@@ -322,10 +330,11 @@ jobs:
           upsert_secret "UK_AQ_EDGE_UPSTREAM_SECRET" "${UK_AQ_EDGE_UPSTREAM_SECRET}" 1
           upsert_secret "${BLONDON_NODES_API_KEY_SECRET_NAME}" "${BLONDON_NODES_API_KEY}" 1
           upsert_secret "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" "${SB_UK_AQ_CRON_SECRET}" 0
-          if [ "${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT}" = "database" ]; then
+          if [ "${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT}" = "database" ] ||
+             [ "${BLONDON_NODES_TIMESERIES_READ_TRANSPORT}" = "database" ]; then
             upsert_secret "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL}" 1
           else
-            echo "Skipping shared database secret sync (BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT})."
+            echo "Skipping shared database secret sync (Nodes reads and writes use postgrest)."
           fi
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "direct" ]; then
@@ -412,6 +421,7 @@ jobs:
           add_env BLONDON_NODES_IN_FLIGHT_TIMEOUT_MINUTES
           add_env BLONDON_NODES_CLAIM_TIMEOUT_MINUTES
           add_env BLONDON_NODES_INGESTDB_WRITE_TRANSPORT
+          add_env BLONDON_NODES_TIMESERIES_READ_TRANSPORT
           add_env BLONDON_NODES_RAW_DROPBOX_ALLOWED_SUPABASE_URL
           add_env UK_AIR_RAW_DROPBOX_ALLOWED_SUPABASE_URL
           add_env BLONDON_NODES_ERROR_DROPBOX_ALLOWED_SUPABASE_URL
@@ -431,10 +441,11 @@ jobs:
           add_secret_binding "UK_AQ_EDGE_UPSTREAM_SECRET" "UK_AQ_EDGE_UPSTREAM_SECRET" 1
           add_secret_binding "SB_SECRET_KEY" "${SB_SECRET_KEY_SECRET_NAME}" 1
           add_secret_binding "BLONDON_NODES_API_KEY" "${BLONDON_NODES_API_KEY_SECRET_NAME}" 1
-          if [ "${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT}" = "database" ]; then
+          if [ "${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT}" = "database" ] ||
+             [ "${BLONDON_NODES_TIMESERIES_READ_TRANSPORT}" = "database" ]; then
             add_secret_binding "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" 1
           else
-            echo "Skipping shared database secret binding (BLONDON_NODES_INGESTDB_WRITE_TRANSPORT=${BLONDON_NODES_INGESTDB_WRITE_TRANSPORT})."
+            echo "Skipping shared database secret binding (Nodes reads and writes use postgrest)."
           fi
           if [ -n "${SB_UK_AQ_CRON_SECRET:-}" ]; then
             add_secret_binding "SB_UK_AQ_CRON_SECRET" "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" 0

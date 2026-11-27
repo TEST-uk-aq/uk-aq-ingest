@@ -66,6 +66,7 @@ jobs:
       BLONDON_COMMUNITIES_USER_AGENT: ${{ vars.BLONDON_COMMUNITIES_USER_AGENT || 'uk-air-quality-networks' }}
       BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS: ${{ vars.BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS || '300' }}
       BLONDON_COMMUNITIES_WRITE_PROFILE: ${{ vars.BLONDON_COMMUNITIES_WRITE_PROFILE }}
+      BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT: ${{ vars.BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT || 'postgrest' }}
       BLONDON_COMMUNITIES_IN_FLIGHT_TIMEOUT_MINUTES: ${{ vars.BLONDON_COMMUNITIES_IN_FLIGHT_TIMEOUT_MINUTES || '14' }}
       BLONDON_COMMUNITIES_CLAIM_TIMEOUT_MINUTES: ${{ vars.BLONDON_COMMUNITIES_CLAIM_TIMEOUT_MINUTES || '14' }}
       BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL: ${{ vars.BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL || '' }}
@@ -155,13 +156,21 @@ jobs:
               exit 1
               ;;
           esac
-          if [ "${BLONDON_COMMUNITIES_WRITE_PROFILE}" != "postgrest" ]; then
+          case "${BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT}" in
+            postgrest|database) ;;
+            *)
+              echo "BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT must be exactly postgrest or database."
+              exit 1
+              ;;
+          esac
+          if [ "${BLONDON_COMMUNITIES_WRITE_PROFILE}" != "postgrest" ] ||
+             [ "${BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT}" = "database" ]; then
             if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL:-}" ]; then
-              echo "BLONDON_COMMUNITIES_WRITE_PROFILE=${BLONDON_COMMUNITIES_WRITE_PROFILE} requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
+              echo "Communities pooled reads or writes require UK_AQ_GCP_CLOUD_RUN_DATABASE_URL."
               exit 1
             fi
             if [ -z "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME:-}" ]; then
-              echo "BLONDON_COMMUNITIES_WRITE_PROFILE=${BLONDON_COMMUNITIES_WRITE_PROFILE} requires UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
+              echo "Communities pooled reads or writes require UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME."
               exit 1
             fi
           fi
@@ -302,10 +311,11 @@ jobs:
           upsert_secret "UK_AQ_EDGE_UPSTREAM_SECRET" "${UK_AQ_EDGE_UPSTREAM_SECRET}" 1
           upsert_secret "${BLONDON_COMMUNITIES_API_KEY_SECRET_NAME}" "${BLONDON_COMMUNITIES_API_KEY}" 1
           upsert_secret "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" "${SB_UK_AQ_CRON_SECRET}" 0
-          if [ "${BLONDON_COMMUNITIES_WRITE_PROFILE}" != "postgrest" ]; then
+          if [ "${BLONDON_COMMUNITIES_WRITE_PROFILE}" != "postgrest" ] ||
+             [ "${BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT}" = "database" ]; then
             upsert_secret "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL}" 1
           else
-            echo "Skipping shared database secret sync (Communities write profile is postgrest)."
+            echo "Skipping shared database secret sync (Communities reads and writes use postgrest)."
           fi
           observs_mode="$(printf '%s' "${OBSERVS_WRITE_MODE:-}" | tr '[:upper:]' '[:lower:]')"
           if [ "${observs_mode}" = "direct" ]; then
@@ -390,6 +400,7 @@ jobs:
           add_env BLONDON_COMMUNITIES_USER_AGENT
           add_env BLONDON_COMMUNITIES_MAX_RUNTIME_SECONDS
           add_env BLONDON_COMMUNITIES_WRITE_PROFILE
+          add_env BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT
           add_env BLONDON_COMMUNITIES_IN_FLIGHT_TIMEOUT_MINUTES
           add_env BLONDON_COMMUNITIES_CLAIM_TIMEOUT_MINUTES
           add_env BLONDON_COMMUNITIES_RAW_DROPBOX_ALLOWED_SUPABASE_URL
@@ -411,10 +422,11 @@ jobs:
           add_secret_binding "UK_AQ_EDGE_UPSTREAM_SECRET" "UK_AQ_EDGE_UPSTREAM_SECRET" 1
           add_secret_binding "SB_SECRET_KEY" "${SB_SECRET_KEY_SECRET_NAME}" 1
           add_secret_binding "BLONDON_COMMUNITIES_API_KEY" "${BLONDON_COMMUNITIES_API_KEY_SECRET_NAME}" 1
-          if [ "${BLONDON_COMMUNITIES_WRITE_PROFILE}" != "postgrest" ]; then
+          if [ "${BLONDON_COMMUNITIES_WRITE_PROFILE}" != "postgrest" ] ||
+             [ "${BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT}" = "database" ]; then
             add_secret_binding "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL" "${UK_AQ_GCP_CLOUD_RUN_DATABASE_URL_SECRET_NAME}" 1
           else
-            echo "Skipping shared database secret binding (Communities write profile is postgrest)."
+            echo "Skipping shared database secret binding (Communities reads and writes use postgrest)."
           fi
           if [ -n "${SB_UK_AQ_CRON_SECRET:-}" ]; then
             add_secret_binding "SB_UK_AQ_CRON_SECRET" "${SB_UK_AQ_CRON_SECRET_SECRET_NAME}" 0
@@ -481,7 +493,7 @@ jobs:
           fi
           "${CMD[@]}"
 
-      - name: Verify Communities write profile configuration
+      - name: Verify Communities database transport configuration
         run: |
           set -euo pipefail
           service_json="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --format=json)"
@@ -493,15 +505,19 @@ jobs:
           profile = os.environ["BLONDON_COMMUNITIES_WRITE_PROFILE"]
           if env.get("BLONDON_COMMUNITIES_WRITE_PROFILE", {}).get("value") != profile:
               raise SystemExit("Cloud Run Communities write profile does not match the selected profile")
+          read_key = "BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT"
+          read_transport = os.environ[read_key]
+          if env.get(read_key, {}).get("value") != read_transport:
+              raise SystemExit("Cloud Run Communities timeseries read transport does not match the selected transport")
           retired = (
               "BLONDON_COMMUNITIES_INGESTDB_WRITE_TRANSPORT",
               "BLONDON_COMMUNITIES_CHECKPOINT_WRITE_TRANSPORT",
           )
           if any(key in env for key in retired):
               raise SystemExit("Retired Communities transport settings remain in Cloud Run")
-          if profile != "postgrest" and "valueFrom" not in env.get("UK_AQ_GCP_CLOUD_RUN_DATABASE_URL", {}):
+          if (profile != "postgrest" or read_transport == "database") and "valueFrom" not in env.get("UK_AQ_GCP_CLOUD_RUN_DATABASE_URL", {}):
               raise SystemExit("Cloud Run pooled database secret binding is missing")
-          print(f"Verified Communities profile={profile} and retired settings absent")
+          print(f"Verified Communities profile={profile}, timeseries_read_transport={read_transport}, and retired settings absent")
           ' <<< "${service_json}"
 
       - name: Verify service labels
