@@ -35,6 +35,7 @@ export type PerformanceDiagnostics = {
   runtime_budget_reached: boolean;
   runtime_budget_phase: string | null;
   database: {
+    timeseries_references: DatabaseOperation;
     observations: DatabaseOperation;
     species_checkpoints: DatabaseOperation;
     station_checkpoints: DatabaseOperation;
@@ -61,6 +62,7 @@ export function withPerformanceDiagnostics<T>(run: () => Promise<T>): Promise<T>
     runtime_budget_reached: false,
     runtime_budget_phase: null,
     database: {
+      timeseries_references: databaseOperation(),
       observations: databaseOperation(),
       species_checkpoints: databaseOperation(),
       station_checkpoints: databaseOperation(),

@@ -31,6 +31,8 @@ import {
   classifyCommunitiesTimeseriesRows,
 } from "../../../shared/blondon_communities_reference.mjs";
 import {
+  type CommunitiesTimeseriesRow,
+  readCommunitiesTimeseriesReferencesViaDatabase,
   upsertCommunitiesObservationsViaDatabase,
   updateCommunitiesLastValuesViaDatabase,
   upsertCommunitiesSpeciesCheckpointViaDatabase,
@@ -212,6 +214,16 @@ const BLONDON_COMMUNITIES_WRITE_PROFILE = (() => {
   ) {
     throw new Error(
       "BLONDON_COMMUNITIES_WRITE_PROFILE must be explicitly set to exactly postgrest, observations, observations_checkpoints or all_database.",
+    );
+  }
+  return value;
+})();
+const BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT = (() => {
+  const value = Deno.env.get("BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT") ??
+    "postgrest";
+  if (value !== "postgrest" && value !== "database") {
+    throw new Error(
+      "BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT must be exactly postgrest or database.",
     );
   }
   return value;
@@ -991,11 +1003,6 @@ async function fetchCanonicalPhenomenaMappings(
   return canonicalCommunitiesMappings(payload, diagnostics);
 }
 
-type CommunitiesTimeseriesRow = Record<string, unknown> & {
-  id: number;
-  timeseries_ref: string;
-};
-
 const COMMUNITIES_TIMESERIES_SELECT = [
   "id",
   "connector_id",
@@ -1017,6 +1024,12 @@ async function fetchTimeseriesRows(
   const rows: CommunitiesTimeseriesRow[] = [];
   for (let idx = 0; idx < refs.length; idx += 200) {
     const refsChunk = refs.slice(idx, idx + 200);
+    if (BLONDON_COMMUNITIES_TIMESERIES_READ_TRANSPORT === "database") {
+      rows.push(
+        ...await readCommunitiesTimeseriesReferencesViaDatabase(Number(connectorId), refsChunk),
+      );
+      continue;
+    }
     const { data, error } = await postgrestRequest<CommunitiesTimeseriesRow[]>(
       "GET",
       "timeseries",

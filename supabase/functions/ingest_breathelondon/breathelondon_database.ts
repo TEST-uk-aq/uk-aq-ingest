@@ -14,6 +14,28 @@ export type CommunitiesLastValuesRpcArgsV1 = {
   last_value_ats: string[];
 };
 
+export type CommunitiesTimeseriesRow = {
+  id: number;
+  connector_id: number;
+  station_id: number | null;
+  timeseries_ref: string;
+  label: string | null;
+  uom: string | null;
+  service_ref: string | null;
+  phenomenon_id: number | null;
+  observed_property_id: number | null;
+  extras: unknown;
+};
+
+type DatabaseTimeseriesRow = Omit<
+  CommunitiesTimeseriesRow,
+  "station_id" | "phenomenon_id" | "observed_property_id"
+> & {
+  station_id: string | null;
+  phenomenon_id: string | null;
+  observed_property_id: string | null;
+};
+
 const DATABASE_URL_ENV = "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL";
 const QUERY_TIMEOUT_MS = 30_000;
 const STATEMENT_TIMEOUT_MS = 29_000;
@@ -124,6 +146,61 @@ function postgresArrayLiteral(
       return `"${escaped}"`;
     }).join(",")
   }}`;
+}
+
+export async function readCommunitiesTimeseriesReferencesViaDatabase(
+  connectorId: number,
+  refs: string[],
+): Promise<CommunitiesTimeseriesRow[]> {
+  const diagnosticStarted = performanceNow();
+  const previousOperation = communitiesDatabaseOperationQueue;
+  let releaseOperation: () => void = () => undefined;
+  communitiesDatabaseOperationQueue = new Promise<void>((resolve) => {
+    releaseOperation = resolve;
+  });
+  await previousOperation;
+  const queueMs = performanceNow() - diagnosticStarted;
+
+  let failed = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const sql = getCommunitiesDatabaseClient();
+    const query = sql.begin("read only", async (transaction) => {
+      await transaction.unsafe(
+        `set local statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`,
+      );
+      return await transaction<DatabaseTimeseriesRow[]>`
+        select *
+        from uk_aq_public.uk_aq_rpc_timeseries_reference_read_v1(
+          ${connectorId}::integer, ${postgresArrayLiteral(refs)}::text[]
+        )
+      `;
+    });
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error("Communities timeseries reference database read timed out.")),
+        QUERY_TIMEOUT_MS,
+      );
+    });
+    const rows = await Promise.race([query, timeout]);
+    // postgres.js returns bigint as text. Match the previous JSON numbers and nulls.
+    return rows.map((row) => ({
+      ...row,
+      station_id: row.station_id === null ? null : Number(row.station_id),
+      phenomenon_id: row.phenomenon_id === null ? null : Number(row.phenomenon_id),
+      observed_property_id: row.observed_property_id === null
+        ? null
+        : Number(row.observed_property_id),
+    }));
+  } catch (error) {
+    failed = true;
+    await closeCommunitiesDatabaseClient();
+    throw error;
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    releaseOperation();
+    recordDatabaseOperation("timeseries_references", diagnosticStarted, queueMs, failed);
+  }
 }
 
 export async function upsertCommunitiesObservationsViaDatabase(

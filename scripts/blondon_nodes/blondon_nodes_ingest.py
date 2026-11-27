@@ -109,13 +109,16 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def parse_iso(value: Optional[str]) -> Optional[datetime]:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    text = value.strip().replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
+def parse_iso(value: str | datetime | None) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str) and value.strip():
+        text = value.strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    else:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -345,11 +348,23 @@ class SupabaseWriter:
                 "BLONDON_NODES_INGESTDB_WRITE_TRANSPORT must be exactly "
                 "postgrest or database."
             )
-        self.observation_database = (
+        read_transport = os.getenv(
+            "BLONDON_NODES_TIMESERIES_READ_TRANSPORT", "postgrest"
+        )
+        if read_transport not in {"postgrest", "database"}:
+            raise RuntimeError(
+                "BLONDON_NODES_TIMESERIES_READ_TRANSPORT must be exactly "
+                "postgrest or database."
+            )
+        database = (
             BlondonNodesDatabase.from_environment()
-            if self.ingestdb_write_transport == "database"
+            if "database" in (self.ingestdb_write_transport, read_transport)
             else None
         )
+        self.observation_database = (
+            database if self.ingestdb_write_transport == "database" else None
+        )
+        self.timeseries_read_database = database if read_transport == "database" else None
         self.client: Client = create_supabase_client()
         schemas = SupabaseSchemas.from_client(self.client)
         self.core = schemas.core
@@ -393,6 +408,27 @@ class SupabaseWriter:
     ) -> Tuple[Dict[str, int], Dict[str, int]]:
         return upsert_nodes_phenomena(self.public, connector_id, species)
 
+    def _read_timeseries_references(
+        self, connector_id: int, refs: Sequence[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        result: Dict[str, Dict[str, Any]] = {}
+        for refs_chunk in chunked(refs, 200):
+            if self.timeseries_read_database is not None:
+                stored_rows = self.timeseries_read_database.read_timeseries_references(
+                    connector_id, refs_chunk
+                )
+            else:
+                resp = self.core.table("timeseries").select(
+                    ",".join(TIMESERIES_REFERENCE_FIELDS)
+                ).eq("connector_id", connector_id).in_("timeseries_ref", refs_chunk).execute()
+                stored_rows = resp.data or []
+            for row in stored_rows:
+                ref = str(row["timeseries_ref"])
+                if ref in result:
+                    raise RuntimeError(f"Duplicate stored Nodes timeseries identity: {ref}")
+                result[ref] = dict(row)
+        return result
+
     def upsert_timeseries(self, rows: Sequence[Dict[str, Any]]) -> Dict[str, int]:
         if not rows:
             return {}
@@ -400,18 +436,8 @@ class SupabaseWriter:
         refs = list(expected_by_ref)
         if len(refs) != len(rows):
             raise RuntimeError("Duplicate generated Nodes timeseries identities")
-        before: Dict[str, Dict[str, Any]] = {}
-        for refs_chunk in chunked(refs, 200):
-            resp = self.core.table("timeseries").select(
-                ",".join(TIMESERIES_REFERENCE_FIELDS)
-            ).eq("connector_id", rows[0]["connector_id"]).in_(
-                "timeseries_ref", refs_chunk
-            ).execute()
-            for r in resp.data or []:
-                ref = str(r["timeseries_ref"])
-                if ref in before:
-                    raise RuntimeError(f"Duplicate stored Nodes timeseries identity: {ref}")
-                before[ref] = dict(r)
+        connector_id = rows[0]["connector_id"]
+        before = self._read_timeseries_references(connector_id, refs)
         missing_rows = [row for row in rows if row["timeseries_ref"] not in before]
         missing_by_station: Dict[str, List[Dict[str, Any]]] = {}
         for row in missing_rows:
@@ -429,18 +455,22 @@ class SupabaseWriter:
                 self.reference_repair_errors.append(message)
                 LOG.error("Nodes reference repair failed for %s: %s", station_ref, exc)
 
-        final: Dict[str, Dict[str, Any]] = {}
-        for refs_chunk in chunked(refs, 200):
-            resp = self.core.table("timeseries").select(
-                ",".join(TIMESERIES_REFERENCE_FIELDS)
-            ).eq("connector_id", rows[0]["connector_id"]).in_(
-                "timeseries_ref", refs_chunk
-            ).execute()
-            for r in resp.data or []:
-                ref = str(r["timeseries_ref"])
-                if ref in final:
-                    raise RuntimeError(f"Duplicate stored Nodes timeseries identity: {ref}")
-                final[ref] = dict(r)
+        # Reuse the initial database rows only when the whole set is already valid.
+        reuse_initial_references = (
+            self.timeseries_read_database is not None
+            and not missing_by_station
+            and before.keys() == expected_by_ref.keys()
+            and all(
+                type(actual.get("id")) is int
+                and actual["id"] > 0
+                and timeseries_reference_matches(actual, expected_by_ref[ref])
+                for ref, actual in before.items()
+            )
+            and len({actual["id"] for actual in before.values()}) == len(refs)
+        )
+        final = before if reuse_initial_references else self._read_timeseries_references(
+            connector_id, refs
+        )
 
         out: Dict[str, int] = {}
         unresolved: List[str] = []
@@ -512,11 +542,15 @@ class SupabaseWriter:
             return 0
 
         existing: Dict[int, Dict[str, Any]] = {}
-        for ids in chunked([str(value) for value in grouped], 200):
-            resp = self.core.table("timeseries").select(
-                "id,first_value_at,last_value_at,last_value"
-            ).in_("id", ids).execute()
-            for row in resp.data or []:
+        for ids in chunked(list(grouped), 200):
+            if self.timeseries_read_database is not None:
+                stored_rows = self.timeseries_read_database.read_timeseries_value_bounds(ids)
+            else:
+                resp = self.core.table("timeseries").select(
+                    "id,first_value_at,last_value_at,last_value"
+                ).in_("id", [str(value) for value in ids]).execute()
+                stored_rows = resp.data or []
+            for row in stored_rows:
                 existing[int(row["id"])] = dict(row)
 
         updated_ids: set[int] = set()

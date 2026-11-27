@@ -1,13 +1,15 @@
-"""Pooled IngestDB transport for Breathe London Nodes observations."""
+"""Pooled IngestDB transport for Breathe London Nodes."""
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import psycopg
 from psycopg.conninfo import conninfo_to_dict
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 DATABASE_URL_ENV = "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL"
@@ -17,7 +19,7 @@ STATEMENT_TIMEOUT_SECONDS = 30
 
 
 class BlondonNodesDatabase:
-    """Invoke only the authorised compact observation v1 database function."""
+    """Invoke the authorised Nodes database functions on one connection."""
 
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url.strip()
@@ -62,6 +64,55 @@ class BlondonNodesDatabase:
 
     def close(self) -> None:
         self._discard_connection()
+
+    def _read_rows(self, query: str, arguments: tuple[Any, ...]) -> list[dict[str, Any]]:
+        connection = self._connect()
+        try:
+            with connection.transaction():
+                with connection.cursor(row_factory=dict_row) as cursor:
+                    cursor.execute(
+                        f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_SECONDS}s'"
+                    )
+                    cursor.execute(query, arguments)
+                    return cursor.fetchall()
+        except Exception:
+            self._discard_connection()
+            raise
+
+    def read_timeseries_references(
+        self, connector_id: int, refs: Sequence[str]
+    ) -> list[dict[str, Any]]:
+        return self._read_rows(
+            """select * from uk_aq_public.uk_aq_rpc_timeseries_reference_read_v1(
+                %s::integer, %s::text[]
+            )""",
+            (connector_id, list(refs)),
+        )
+
+    def read_timeseries_value_bounds(self, ids: Sequence[int]) -> list[dict[str, Any]]:
+        # Keep timestamps that the previous ISO parser could represent in Python.
+        rows = self._read_rows(
+            """
+            select id,
+                case when first_value_at >= timestamptz '0001-01-01 00:00:00+00'
+                      and first_value_at < timestamptz '10000-01-01 00:00:00+00'
+                     then first_value_at end as first_value_at,
+                case when last_value_at >= timestamptz '0001-01-01 00:00:00+00'
+                      and last_value_at < timestamptz '10000-01-01 00:00:00+00'
+                     then last_value_at end as last_value_at,
+                last_value
+            from uk_aq_public.uk_aq_rpc_timeseries_value_bounds_read_v1(%s::integer[])
+            """,
+            (list(ids),),
+        )
+        for row in rows:
+            value = row["last_value"]
+            if value is not None and not math.isfinite(value):
+                # PostgreSQL JSON represents non-finite floats as strings.
+                row["last_value"] = {
+                    "inf": "Infinity", "-inf": "-Infinity", "nan": "NaN"
+                }[str(value)]
+        return rows
 
     def recover_observations(
         self, rows: Sequence[Mapping[str, Any]], config: Mapping[str, Any],
