@@ -33,17 +33,15 @@ export type OpenAQBudgetDatabaseRow = {
 const DATABASE_URL_ENV = "UK_AQ_GCP_CLOUD_RUN_DATABASE_URL";
 const QUERY_TIMEOUT_MS = 30_000;
 
-let budgetDatabaseClient: ReturnType<typeof postgres> | null = null;
-let budgetDatabaseClientFailed = false;
-let budgetDatabaseClosePromise: Promise<void> | null = null;
-let budgetReservationQueue: Promise<void> = Promise.resolve();
+type DatabaseClient = ReturnType<typeof postgres>;
 
-function getBudgetDatabaseClient(): ReturnType<typeof postgres> {
-  if (budgetDatabaseClientFailed) {
-    throw new Error("OpenAQ shared budget database transport is unavailable");
-  }
-  if (budgetDatabaseClient) {
-    return budgetDatabaseClient;
+let databaseClient: DatabaseClient | null = null;
+let budgetReservationFailed = false;
+let databaseOperationQueue: Promise<void> = Promise.resolve();
+
+function getDatabaseClient(): DatabaseClient {
+  if (databaseClient) {
+    return databaseClient;
   }
 
   const databaseUrl = (Deno.env.get(DATABASE_URL_ENV) ?? "").trim();
@@ -53,7 +51,7 @@ function getBudgetDatabaseClient(): ReturnType<typeof postgres> {
     );
   }
 
-  budgetDatabaseClient = postgres(databaseUrl, {
+  databaseClient = postgres(databaseUrl, {
     max: 1,
     prepare: false,
     ssl: "require",
@@ -66,27 +64,17 @@ function getBudgetDatabaseClient(): ReturnType<typeof postgres> {
       application_name: "uk_aq_openaq_budget",
     },
   });
-  return budgetDatabaseClient;
+  return databaseClient;
 }
 
-async function closeFailedBudgetDatabaseClient(): Promise<void> {
-  budgetDatabaseClientFailed = true;
-  if (budgetDatabaseClosePromise) {
-    await budgetDatabaseClosePromise;
-    return;
+async function closeFailedDatabaseClient(): Promise<void> {
+  const client = databaseClient;
+  databaseClient = null;
+  if (client) {
+    await client.end({ timeout: 1 }).catch(() => {
+      // Keep connection details out of the operation error.
+    });
   }
-
-  const client = budgetDatabaseClient;
-  budgetDatabaseClient = null;
-  if (!client) {
-    return;
-  }
-
-  budgetDatabaseClosePromise = client.end({ timeout: 1 }).catch(() => {
-    // The reservation result is already uncertain. Do not retry or expose
-    // connection details while forcing this child-process client closed.
-  });
-  await budgetDatabaseClosePromise;
 }
 
 function timestampString(value: unknown): string | null {
@@ -172,33 +160,60 @@ function normalizeBudgetRow(
   };
 }
 
-function boundedDatabaseError(error: unknown): Error {
+function boundedDatabaseError(message: string, error: unknown): Error {
   const rawCode = error && typeof error === "object" && "code" in error
     ? String((error as { code?: unknown }).code ?? "")
     : "";
   const code = /^[A-Z0-9_]{2,32}$/.test(rawCode) ? rawCode : null;
-  return new Error(
-    code
-      ? `OpenAQ shared budget database reservation failed (${code})`
-      : "OpenAQ shared budget database reservation failed",
-  );
+  return new Error(code ? `${message} (${code})` : message);
 }
 
-export async function reserveOpenaqBudgetViaDatabase(
+function runDatabaseOperation<T>(
+  kind: "budget reservation" | "timeseries station read",
+  operation: (sql: DatabaseClient) => Promise<T>,
+): Promise<T> {
+  const result = databaseOperationQueue.then(async () => {
+    const isReservation = kind === "budget reservation";
+    const failureMessage = isReservation
+      ? "OpenAQ shared budget database reservation failed"
+      : "OpenAQ timeseries station database read failed";
+    // An uncertain reservation stays latched for this child process even if a
+    // later read reconnects to finish processing observations already fetched.
+    if (isReservation && budgetReservationFailed) {
+      throw new Error(failureMessage);
+    }
+
+    let timeoutId: number | undefined;
+    try {
+      const sql = getDatabaseClient();
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error(`${failureMessage}: query timed out`)),
+          QUERY_TIMEOUT_MS,
+        );
+      });
+      return await Promise.race([operation(sql), timeout]);
+    } catch (error) {
+      if (isReservation) {
+        budgetReservationFailed = true;
+      }
+      await closeFailedDatabaseClient();
+      throw boundedDatabaseError(failureMessage, error);
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+    }
+  });
+  databaseOperationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function reserveOpenaqBudgetViaDatabase(
   args: OpenAQBudgetDatabaseArgs,
 ): Promise<OpenAQBudgetDatabaseRow[]> {
-  const previousReservation = budgetReservationQueue;
-  let releaseReservation: () => void = () => undefined;
-  budgetReservationQueue = new Promise<void>((resolve) => {
-    releaseReservation = resolve;
-  });
-  await previousReservation;
-
-  let timeoutId: number | undefined;
-
-  try {
-    const sql = getBudgetDatabaseClient();
-    const query = sql<Record<string, unknown>[]>`
+  return runDatabaseOperation("budget reservation", async (sql) => {
+    const rows = await sql<Record<string, unknown>[]>`
       select *
       from uk_aq_public.uk_aq_rpc_openaq_token_budget_reserve(
         ${args.pBudgetKey}::text,
@@ -208,15 +223,6 @@ export async function reserveOpenaqBudgetViaDatabase(
         ${args.pCaller}::text
       )
     `;
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timeoutId = setTimeout(
-        () =>
-          reject(new Error("OpenAQ shared budget database query timed out")),
-        QUERY_TIMEOUT_MS,
-      );
-    });
-    const rows = await Promise.race([query, timeout]);
-
     if (rows.length !== 1) {
       throw new Error("OpenAQ shared budget database returned no usable row");
     }
@@ -225,13 +231,25 @@ export async function reserveOpenaqBudgetViaDatabase(
       throw new Error("OpenAQ shared budget database returned no usable row");
     }
     return [row];
-  } catch (error) {
-    await closeFailedBudgetDatabaseClient();
-    throw boundedDatabaseError(error);
-  } finally {
-    if (timeoutId !== undefined) {
-      clearTimeout(timeoutId);
-    }
-    releaseReservation();
-  }
+  });
+}
+
+export function readTimeseriesStationIdsViaDatabase(
+  timeseriesIds: number[],
+): Promise<Array<{ id: number; station_id: number | null }>> {
+  return runDatabaseOperation("timeseries station read", async (sql) => {
+    // Bind the integer array as text since type discovery is disabled.
+    const ids = `{${timeseriesIds.join(",")}}`;
+    const rows = await sql<Array<{ id: number; station_id: string | null }>>`
+      select id, station_id
+      from uk_aq_public.uk_aq_rpc_timeseries_station_ids_read_v1(
+        ${ids}::integer[]
+      )
+    `;
+    // postgres.js returns bigint as text. Preserve the PostgREST numbers and nulls.
+    return rows.map(({ id, station_id }) => ({
+      id,
+      station_id: station_id === null ? null : Number(station_id),
+    }));
+  });
 }
