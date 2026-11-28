@@ -1104,6 +1104,7 @@ def run_ingest(args: argparse.Namespace, raw_capture: NodesRawCapture) -> int:
                     for rows_chunk in rows_chunks:
                         assert_eligible_rows(rows_chunk)
                         writer.upsert_observations(rows_chunk)
+                        committed_chunks.append(rows_chunk)
                         observations_upserted += len(rows_chunk)
                         written_observation_rows.extend(rows_chunk)
                     if last_at and eligible_observation(last_at) and last_value is not None:
